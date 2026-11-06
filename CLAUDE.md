@@ -690,11 +690,12 @@ Bump `build/config/VERSION` for each release so running systems detect the new v
 Run **`./launch.sh`** to resume the most recent Claude Code session for this project.
 
 ### Where things live
-- **GitHub repo:** `github.com/yo-repo87/helix-os` — **private**. Auth PAT is in
-  `./gitkey` (gitignored). Git remote `helix-os` points here; `origin` still points
-  at the old `template` repo and is unused.
-- **Branches:** `main` (project baseline) · `helix-osupdate` (OTA feature, **PR #1**,
-  mergeable — merge it to land OTA + this section on `main`).
+- **GitHub repo:** `github.com/yo-repo87/helix-os` — **public** (made public
+  2026-11-06). Auth PAT is in `./gitkey` (gitignored) and used for pushes/releases;
+  `gh auth setup-git` wires it into git. Git remote `helix-os` points here; `origin`
+  still points at the old `template` repo and is unused.
+- **Branches:** `main` (baseline + OTA, **PR #1 merged** 2026-11-06) ·
+  `fix/live-boot-storage-drivers` (live-boot driver fix, **PR #2** — see §18).
 - **Releases:** `images-2026.11.06` (full installer images) · `v0.1.0` (OTA update
   bundle: per-arch boot files + `helix-release.json`).
 - **Flashable images** (repo root, not in git — too large):
@@ -739,11 +740,38 @@ Note: inside a git worktree the shell sandbox refuses `export GH_TOKEN=$(cat …
 GitHub commands from the main checkout, or let the scripts read `./gitkey` themselves.
 
 ### Open caveats / next steps
-- Images verified structurally (arch, modules, bootloader) but **not boot-tested** on
-  hardware/VM. A headless QEMU smoke test of the ISO is a good next step.
 - OTA validated live except the physical **reboot-into-new-image** step.
-- A **private** repo needs a read-only token pasted into Settings → Helix OS Update
-  (stored at `/boot/config/osupdate.cfg`) for a running Helix OS to fetch updates.
-- Merge **PR #1** to bring OTA + §16/§17 onto `main`.
+- A read-only token pasted into Settings → Helix OS Update (stored at
+  `/boot/config/osupdate.cfg`) lets a running Helix OS fetch updates (needed while
+  the repo/release is private; harmless when public).
+
+---
+
+## 18. Live-Boot Device-Driver Fix (2026-11-06)
+
+First boot attempt (Proxmox) hung at `[helix] Searching for boot device
+(label=HELIXBOOT, timeout=30s)…`. Root cause: the live-boot initramfs bundled only
+filesystem modules (squashfs/overlay/vfat/isofs) and **no block-device controller
+drivers**, so the kernel never saw the HELIXBOOT device on a VM disk/CD, USB stick,
+or SD card. A second latent bug hard-mounted the boot device as `vfat`, which fails
+on the iso9660 ISO.
+
+**Fixed** (`build/initramfs/`, PR #2 → `fix/live-boot-storage-drivers`):
+- `build-initramfs.sh`: bundle SCSI/SATA/NVMe/VirtIO/USB/MMC drivers. `install_module`
+  now matches `modules.dep` with `-`/`_` treated interchangeably — kernel module
+  **file** names use `-` (`usb-storage.ko`, `xhci-hcd.ko`, `sdhci-iproc.ko`) while
+  module names use `_`, so the first attempt silently skipped every dash-named driver
+  (USB + SD among them).
+- `init`: `modprobe` the controllers before the device scan and let probing settle;
+  mount the boot device by auto-detect then `iso9660`/`vfat` fallback; treat a
+  read-only boot medium (ISO/CD) as non-fatal; dump visible block devices on failure;
+  rename the leftover `[hive]` tag / `/run/hive` paths to `[helix]` / `/run/helix`.
+
+Rebuilt both images and verified the initramfs now contains the drivers
+(amd64: usb-storage, uas, xhci/ehci/ohci/uhci-hcd, sr_mod, ahci, nvme, virtio_blk,
+sdhci — 59 modules). Covers boot from CD/DVD, USB, SATA, VirtIO, NVMe, and SD.
+Build scratch was also moved off the `nodev` tmpfs (`/tmp/helix-build` →
+`/var/tmp/helix-build`) so the arm64 cross-build's `mkinitramfs` can create device
+nodes under qemu.
 
 *Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

@@ -82,9 +82,13 @@ fi
 install_module() {
     # Copy a module AND its dependency closure (modules.dep lists transitive
     # deps per line), decompressing .ko.xz/.zst/.gz so busybox can load them.
-    local name="$1" line rel src base
+    local name="$1" line rel src base pat
     [ -f "$SRC_MODS/modules.dep" ] || return 0
-    line=$(grep -m1 -E "(^|/)${name}\.ko([.][a-z]+)?:" "$SRC_MODS/modules.dep") || {
+    # Kernel module FILE names use '-' where module names use '_' (e.g.
+    # usb_storage -> usb-storage.ko, xhci_hcd -> xhci-hcd.ko). modprobe treats
+    # them interchangeably, so match either when scanning modules.dep.
+    pat=$(printf '%s' "$name" | sed 's/[_-]/[_-]/g')
+    line=$(grep -m1 -E "(^|/)${pat}\.ko([.][a-z]+)?:" "$SRC_MODS/modules.dep") || {
         echo "  (module not found: $name)"; return 0; }
     for rel in $(echo "$line" | tr ':' ' '); do
         src="$SRC_MODS/$rel"

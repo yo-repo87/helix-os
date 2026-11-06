@@ -643,4 +643,107 @@ All features implemented in `webui/frontend/index.html` (artifact: https://claud
 
 **All features complete as of 2026-11-05.**
 
-*Last updated: 2026-11-05. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+---
+
+## 16. Over-the-Air OS Updates from GitHub (2026-11-06)
+
+Helix OS updates itself by swapping the boot-image set on the boot partition and
+rebooting — the same model as Unraid's USB `bz*` replacement. Because the OS runs
+from a read-only squashfs in RAM, **settings** live on `/boot/config/`, and
+**apps + data** live on the array/pools, an update never touches user data.
+
+### How it works
+1. A release is published to the GitHub repo (`yo-repo87/helix-os`) with a
+   `helix-release.json` manifest asset plus per-arch boot files named
+   `<arch>-filesystem.squashfs`, `<arch>-vmlinuz`, `<arch>-initrd.img`.
+2. The in-OS updater reads `/etc/helix-version`, queries the GitHub Releases API,
+   and compares versions. For a **private** repo it uses a read-only token saved
+   in `/boot/config/osupdate.cfg` (set via the UI); it drops the auth header on
+   GitHub's S3 asset redirect.
+3. On apply it downloads the three files for the machine's architecture, verifies
+   sha256 against the manifest, then the privileged helper stages them on `/boot`
+   as `*.new`, rotates the current set to `*.prev`, and swaps in the new set.
+4. Reboot loads the new image. If a swap was interrupted or the new squashfs fails
+   to mount, the initramfs automatically boots the `*.prev` image. Manual rollback
+   is available in the UI.
+
+### Components
+- `webui/backend/routers/osupdate.py` — API: `/api/osupdate/{current,check,apply,stream,status,rollback,reboot,settings}`
+- `webui/backend/helpers/helix-osupdate` — privileged `/boot` swap helper (installed to `/usr/local/sbin`, run via sudo); the only thing that writes to the boot device
+- `build/initramfs/init` — `.prev` fallback on interrupted/failed update
+- Frontend: Settings → "Helix OS Update" card (check / update with live log / reboot / rollback / repo+token settings)
+- `/etc/helix-version` stamped from `build/config/VERSION` at build time
+
+### Publishing an update (maintainer side)
+```bash
+# Build the images first (build/build-all.sh), then per architecture:
+sudo build/make-update-bundle.sh --arch amd64 --from output-amd64/boot --version 0.1.1
+sudo build/make-update-bundle.sh --arch arm64 --from output-arm64/boot --version 0.1.1
+GH_TOKEN=<token> build/publish-update.sh --repo yo-repo87/helix-os   # creates release v0.1.1
+```
+Bump `build/config/VERSION` for each release so running systems detect the new version.
+
+---
+
+## 17. Project State & Quick Resume (2026-11-06)
+
+Run **`./launch.sh`** to resume the most recent Claude Code session for this project.
+
+### Where things live
+- **GitHub repo:** `github.com/yo-repo87/helix-os` — **private**. Auth PAT is in
+  `./gitkey` (gitignored). Git remote `helix-os` points here; `origin` still points
+  at the old `template` repo and is unused.
+- **Branches:** `main` (project baseline) · `helix-osupdate` (OTA feature, **PR #1**,
+  mergeable — merge it to land OTA + this section on `main`).
+- **Releases:** `images-2026.11.06` (full installer images) · `v0.1.0` (OTA update
+  bundle: per-arch boot files + `helix-release.json`).
+- **Flashable images** (repo root, not in git — too large):
+  `helix-os-20261106.iso` (x86_64, UEFI+BIOS) and
+  `helix-os-pi-20261106.img.xz` (arm64, Pi 4/5). Also GitHub Release assets.
+- **Excluded from git:** the proprietary Unraid 7.3.4 source (`unRAIDServer-*.zip`,
+  `unraid-extracted/`, `bzroot-fs/`, `bzmodules-emhttp/`), the images, and `gitkey`.
+- **Build scratch:** `/tmp/helix-build` → `/home/pi/helix-work/build` (symlinked off
+  the small tmpfs so debootstrap/squashfs don't OOM on this RAM-tight host where
+  `llama-server` holds ~6.5 GB).
+
+### Build recipes
+```bash
+sudo build/build-all.sh          # amd64 ISO + arm64 Pi image (debootstrap+squashfs; arm64 via qemu)
+# individually:
+sudo build/build.sh --arch amd64 && sudo build/make-iso.sh
+sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh
+```
+The custom initramfs (`build/initramfs/`) sources a static busybox + kernel modules
+from the *target rootfs* so it is architecture-correct for both amd64 and arm64.
+
+### Run the web UI locally (dev)
+```bash
+cd webui && sudo ./install.sh                 # creates .venv, installs helix-webui.service
+# or ad-hoc:
+webui/.venv/bin/uvicorn main:app --app-dir webui/backend --host 0.0.0.0 --port 8082
+```
+
+### Publish an OS update (see §16)
+```bash
+# bump build/config/VERSION, build images, then per arch:
+sudo build/make-update-bundle.sh --arch amd64 --from output-amd64/boot --version X.Y.Z
+sudo build/make-update-bundle.sh --arch arm64 --from output-arm64/boot --version X.Y.Z
+GH_TOKEN=$(cat gitkey) build/publish-update.sh --repo yo-repo87/helix-os
+```
+
+### GitHub ops
+```bash
+GH_TOKEN=$(cat gitkey) gh <command>           # e.g. gh pr view 1 --repo yo-repo87/helix-os
+```
+Note: inside a git worktree the shell sandbox refuses `export GH_TOKEN=$(cat …)`; run
+GitHub commands from the main checkout, or let the scripts read `./gitkey` themselves.
+
+### Open caveats / next steps
+- Images verified structurally (arch, modules, bootloader) but **not boot-tested** on
+  hardware/VM. A headless QEMU smoke test of the ISO is a good next step.
+- OTA validated live except the physical **reboot-into-new-image** step.
+- A **private** repo needs a read-only token pasted into Settings → Helix OS Update
+  (stored at `/boot/config/osupdate.cfg`) for a running Helix OS to fetch updates.
+- Merge **PR #1** to bring OTA + §16/§17 onto `main`.
+
+*Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

@@ -1393,6 +1393,46 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
         </div>
       </div>
 
+      <!-- Helix OS Update (GitHub) card -->
+      <div class="settings-card">
+        <div class="settings-card-hdr">Helix OS Update
+          <button class="settings-btn" onclick="osuCheck()" style="font-size:11px">Check for Updates</button>
+        </div>
+        <div class="settings-card-body">
+          <div id="osu-current" style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">Loading…</div>
+          <div id="osu-result" style="font-size:12px;margin-bottom:8px;color:var(--fg-muted)"></div>
+          <div id="osu-notes" hidden style="font-size:11px;color:var(--fg-muted);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px;white-space:pre-wrap;max-height:120px;overflow-y:auto"></div>
+          <div id="osu-apply-row" hidden style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <button class="settings-btn settings-btn-primary" onclick="osuApply()">Update Now</button>
+            <span id="osu-apply-status" style="font-size:11px;color:var(--fg-muted)"></span>
+          </div>
+          <div id="osu-log" hidden style="margin-bottom:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:11px;font-family:monospace;max-height:170px;overflow-y:auto;white-space:pre-wrap;color:var(--fg-muted)"></div>
+          <div id="osu-post-row" hidden style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <button class="settings-btn settings-btn-primary" onclick="osuReboot()">Reboot to Apply</button>
+            <button class="settings-btn" onclick="osuRollback()" style="font-size:11px">Roll Back</button>
+          </div>
+          <div style="font-size:11px;color:var(--fg-dim);margin-bottom:8px">Updates swap the OS image only — your settings, apps and data are never touched.</div>
+          <details>
+            <summary style="font-size:11px;color:var(--fg-dim);cursor:pointer">Update source settings</summary>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+              <label style="font-size:11px;color:var(--fg-muted)">GitHub repo (owner/name)
+                <input id="osu-repo" class="settings-input" style="width:100%" placeholder="yo-repo87/helix-os"></label>
+              <label style="font-size:11px;color:var(--fg-muted)">Channel
+                <select id="osu-channel" class="settings-input" style="width:100%">
+                  <option value="stable">stable</option>
+                  <option value="beta">beta (include pre-releases)</option>
+                </select></label>
+              <label style="font-size:11px;color:var(--fg-muted)">Access token (required for a private repo)
+                <input id="osu-token" type="password" class="settings-input" style="width:100%" placeholder="(leave blank to keep current)"></label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="settings-btn" onclick="osuSaveSettings()" style="font-size:11px">Save</button>
+                <span id="osu-settings-msg" style="font-size:11px;color:var(--fg-muted)"></span>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
       <!-- HTTPS / SSL card -->
       <div class="settings-card">
         <div class="settings-card-hdr">HTTPS / SSL Certificate
@@ -2621,6 +2661,7 @@ async function loadSettings() {
   loadFtpConfig();
   loadUpdatesStatus();
   loadSslStatus();
+  osuLoadCurrent();
 }
 
 // ── API Keys ─────────────────────────────────────────────────────
@@ -2813,6 +2854,108 @@ async function applyUpdates() {
       log.scrollTop = log.scrollHeight;
     }
   };
+}
+
+// ── Helix OS Update (GitHub image updates) ────────────────────────
+let _osuES = null;
+
+async function osuLoadCurrent() {
+  const s = await fetchJSON('/api/osupdate/settings').catch(()=>null);
+  if (s) {
+    const repo = document.getElementById('osu-repo');
+    if (repo && !repo.value) repo.value = s.repo || '';
+    const ch = document.getElementById('osu-channel');
+    if (ch) ch.value = s.channel || 'stable';
+    const tok = document.getElementById('osu-token');
+    if (tok) tok.placeholder = s.token_configured ? '•••••• (saved — leave blank to keep)' : '(required for a private repo)';
+  }
+  const c = await fetchJSON('/api/osupdate/current').catch(()=>null);
+  const el = document.getElementById('osu-current');
+  if (el && c) {
+    const rb = (c.boot && c.boot.rollback_available);
+    el.innerHTML = `Current version <strong>${c.version}</strong> (${c.arch})` + (rb ? ' · rollback available' : '');
+    if (rb) document.getElementById('osu-post-row').hidden = false;
+  }
+}
+
+async function osuCheck() {
+  const r = document.getElementById('osu-result');
+  if (r) { r.textContent = 'Checking GitHub…'; r.style.color = 'var(--fg-muted)'; }
+  const d = await fetchJSON('/api/osupdate/check').catch(()=>null);
+  const notes = document.getElementById('osu-notes');
+  const applyRow = document.getElementById('osu-apply-row');
+  if (!d) { if (r){ r.textContent = 'Error contacting server'; r.style.color = 'var(--err)'; } return; }
+  if (!d.ok) { if (r){ r.textContent = d.error || 'Check failed'; r.style.color = 'var(--warn)'; } return; }
+  if (notes) { if (d.notes){ notes.hidden = false; notes.textContent = d.notes; } else notes.hidden = true; }
+  if (d.update_available && d.arch_supported) {
+    r.innerHTML = `<strong style="color:var(--warn)">Update available: ${d.current} → ${d.latest}</strong>`;
+    if (applyRow) applyRow.hidden = false;
+  } else if (d.update_available && !d.arch_supported) {
+    r.textContent = `Version ${d.latest} is available but has no ${d.arch} image.`;
+    r.style.color = 'var(--warn)';
+    if (applyRow) applyRow.hidden = true;
+  } else {
+    r.textContent = `Up to date ✓ (latest ${d.latest || d.current})`;
+    r.style.color = 'var(--ok)';
+    if (applyRow) applyRow.hidden = true;
+  }
+}
+
+async function osuApply() {
+  if (!confirm('Download and install the new OS image?\n\nYour settings, apps and data are preserved. A reboot is required to finish.')) return;
+  const log = document.getElementById('osu-log');
+  const st = document.getElementById('osu-apply-status');
+  if (log) { log.hidden = false; log.textContent = 'Starting…\n'; }
+  if (st) { st.textContent = 'Running…'; st.style.color = 'var(--fg-muted)'; }
+  await fetchJSON('/api/osupdate/apply', {method:'POST'}).catch(()=>{});
+  if (_osuES) _osuES.close();
+  _osuES = new EventSource('/api/osupdate/stream');
+  _osuES.onmessage = e => {
+    if (e.data === 'DONE') { _osuES.close(); _osuES = null; osuAfterApply(); }
+    else if (log) { log.textContent += e.data + '\n'; log.scrollTop = log.scrollHeight; }
+  };
+}
+
+async function osuAfterApply() {
+  const st = document.getElementById('osu-apply-status');
+  const s = await fetchJSON('/api/osupdate/status').catch(()=>null);
+  if (s && s.last_status === 'staged') {
+    if (st) { st.textContent = 'Installed — reboot to apply'; st.style.color = 'var(--ok)'; }
+    document.getElementById('osu-post-row').hidden = false;
+    document.getElementById('osu-apply-row').hidden = true;
+  } else if (st) {
+    const status = s ? (s.last_status || 'done') : 'done';
+    st.textContent = status;
+    st.style.color = String(status).startsWith('failed') ? 'var(--err)' : 'var(--fg-muted)';
+  }
+}
+
+async function osuReboot() {
+  if (!confirm('Reboot now to finish applying the update?')) return;
+  await fetchJSON('/api/osupdate/reboot', {method:'POST'}).catch(()=>{});
+  alert('Rebooting… reconnect in about a minute.');
+}
+
+async function osuRollback() {
+  if (!confirm('Roll back to the previously installed OS image? A reboot is required.')) return;
+  const d = await fetchJSON('/api/osupdate/rollback', {method:'POST'}).catch(()=>null);
+  if (d && d.ok) { if (confirm('Rolled back to the previous image. Reboot now?')) osuReboot(); }
+  else alert('Rollback failed: ' + ((d && d.message) || 'unknown'));
+}
+
+async function osuSaveSettings() {
+  const msg = document.getElementById('osu-settings-msg');
+  const body = {
+    repo: document.getElementById('osu-repo').value.trim(),
+    channel: document.getElementById('osu-channel').value,
+  };
+  const tok = document.getElementById('osu-token').value;
+  if (tok) body.token = tok;
+  const d = await fetchJSON('/api/osupdate/settings',
+    {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}).catch(()=>null);
+  if (msg) { msg.textContent = (d && d.ok) ? 'Saved ✓' : 'Save failed'; msg.style.color = (d && d.ok) ? 'var(--ok)' : 'var(--err)'; }
+  document.getElementById('osu-token').value = '';
+  osuLoadCurrent();
 }
 
 // ── SSL / HTTPS ───────────────────────────────────────────────────

@@ -42,6 +42,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 cd "$(dirname "$0")"
 
-echo "Helix OS — resuming Claude Code session (repo: yo-repo87/helix-os)…"
-claude --continue --dangerously-skip-permissions "$@" \
+# This conversation's session id — resume it exactly. Falls back to the most
+# recent session, then to a fresh one, if that id is unavailable on this machine.
+SESSION_ID="f84c9aab-aa35-4855-89cf-da1e13c5de2c"
+
+echo "Helix OS — resuming Claude Code session $SESSION_ID…"
+claude --resume "$SESSION_ID" --dangerously-skip-permissions "$@" \
+  || claude --continue --dangerously-skip-permissions "$@" \
   || claude --dangerously-skip-permissions "$@"

@@ -44,6 +44,13 @@ sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 # ── OS identity ───────────────────────────────────────────────────────────────
 cp /build/config/os-release /etc/os-release
 
+# Stamp the running OS version (read by the GitHub updater to compare releases).
+if [ -f /build/config/VERSION ]; then
+    tr -d '[:space:]' < /build/config/VERSION > /etc/helix-version
+else
+    sed -n 's/^VERSION_ID="\?\([^"]*\)"\?/\1/p' /etc/os-release > /etc/helix-version
+fi
+
 # ── /boot/config mount point ──────────────────────────────────────────────────
 mkdir -p /boot
 # The initramfs bind-mounts the USB here; add a placeholder fstab comment.

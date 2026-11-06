@@ -90,6 +90,12 @@ SVCEOF
 systemctl enable nginx
 systemctl enable helix-backend
 
+# ── Privileged OS-update helper (swaps the boot image; invoked via sudo) ──────
+if [ -f "$BACKEND_SRC/helpers/helix-osupdate" ]; then
+    install -m 0755 "$BACKEND_SRC/helpers/helix-osupdate" /usr/local/sbin/helix-osupdate
+    echo "  installed /usr/local/sbin/helix-osupdate"
+fi
+
 # ── State directory ───────────────────────────────────────────────────────────
 mkdir -p /var/lib/helix
 chown helix:helix /var/lib/helix

@@ -1,0 +1,133 @@
+#!/bin/bash
+# helix-osupdate — privileged boot-image swap helper for Helix OS updates.
+#
+# This is the ONLY component that writes to the boot partition. It swaps the
+# three OS-image files (filesystem.squashfs, vmlinuz, initrd.img) on the boot
+# device and keeps the previous set for rollback. It NEVER touches:
+#   - /boot/config/        (user settings — persistent)
+#   - the array or pools   (data + apps)
+# because those live outside the OS image. An update is just a swap + reboot,
+# exactly like Unraid's USB bz* replacement.
+#
+# Usage:
+#   helix-osupdate info
+#   helix-osupdate stage <srcdir>      # copy *.new from srcdir (already verified)
+#   helix-osupdate commit [version]    # rotate current->.prev, .new->current
+#   helix-osupdate rollback            # restore .prev -> current
+#   helix-osupdate clean               # discard staged *.new
+#   helix-osupdate reboot
+#
+# Env:
+#   HELIX_BOOT   boot mount (default /boot). The OS files live in $HELIX_BOOT/boot.
+#
+set -euo pipefail
+
+BOOT="${HELIX_BOOT:-/boot}"
+IMGDIR="$BOOT/boot"                       # where vmlinuz/initrd.img/squashfs live
+CFGDIR="$BOOT/config"
+FILES=(filesystem.squashfs vmlinuz initrd.img)
+INFLIGHT="$IMGDIR/.helix-update-inflight"
+
+die() { echo "helix-osupdate: $*" >&2; exit 1; }
+
+sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+
+cmd_info() {
+    local free avail prev="true"
+    avail=$(df -P -B1 "$BOOT" 2>/dev/null | awk 'NR==2{print $4}')
+    for f in "${FILES[@]}"; do [ -f "$IMGDIR/$f.prev" ] || prev="false"; done
+    printf '{'
+    printf '"boot":"%s","imgdir":"%s","free_bytes":%s,"rollback_available":%s,' \
+           "$BOOT" "$IMGDIR" "${avail:-0}" "$prev"
+    printf '"inflight":%s,' "$([ -f "$INFLIGHT" ] && echo true || echo false)"
+    printf '"current":{'
+    local first=1
+    for f in "${FILES[@]}"; do
+        [ $first -eq 1 ] || printf ','
+        first=0
+        printf '"%s":"%s"' "$f" "$(sha "$IMGDIR/$f")"
+    done
+    printf '}}'
+    echo
+}
+
+cmd_stage() {
+    local src="${1:-}"
+    [ -n "$src" ] && [ -d "$src" ] || die "stage: source dir not found: $src"
+    mkdir -p "$IMGDIR"
+    # Verify the full set is present in the source before touching the boot dir.
+    for f in "${FILES[@]}"; do
+        [ -f "$src/$f" ] || die "stage: missing $f in $src"
+    done
+    # Check free space: need room for the new set alongside the old.
+    local need avail
+    need=$(du -cb "${FILES[@]/#/$src/}" 2>/dev/null | awk 'END{print $1}')
+    avail=$(df -P -B1 "$BOOT" | awk 'NR==2{print $4}')
+    [ "${avail:-0}" -gt "${need:-0}" ] || die "stage: not enough free space on $BOOT (need $need, have $avail)"
+    for f in "${FILES[@]}"; do
+        cp -f "$src/$f" "$IMGDIR/$f.new"
+    done
+    sync
+    echo "staged: ${FILES[*]} -> $IMGDIR/*.new"
+}
+
+cmd_commit() {
+    local version="${1:-}"
+    for f in "${FILES[@]}"; do
+        [ -f "$IMGDIR/$f.new" ] || die "commit: $f.new not staged — run stage first"
+    done
+    : > "$INFLIGHT"; sync
+    for f in "${FILES[@]}"; do
+        [ -f "$IMGDIR/$f" ] && cp -f "$IMGDIR/$f" "$IMGDIR/$f.prev"
+    done
+    sync
+    for f in "${FILES[@]}"; do
+        mv -f "$IMGDIR/$f.new" "$IMGDIR/$f"
+    done
+    sync
+    rm -f "$INFLIGHT"; sync
+    if [ -n "$version" ]; then
+        mkdir -p "$CFGDIR"
+        printf '{"version":"%s","applied_at":%s}\n' "$version" "$(date +%s)" \
+            > "$CFGDIR/helix-update.json"
+        sync
+    fi
+    echo "committed${version:+ version $version} (previous set kept as *.prev)"
+}
+
+cmd_rollback() {
+    for f in "${FILES[@]}"; do
+        [ -f "$IMGDIR/$f.prev" ] || die "rollback: no previous $f to restore"
+    done
+    for f in "${FILES[@]}"; do
+        cp -f "$IMGDIR/$f.prev" "$IMGDIR/$f"
+    done
+    sync
+    echo "rolled back to previous OS image (*.prev)"
+}
+
+cmd_clean() {
+    for f in "${FILES[@]}"; do rm -f "$IMGDIR/$f.new"; done
+    rm -f "$INFLIGHT"
+    echo "cleaned staged files"
+}
+
+cmd_reboot() {
+    ( sleep 2; systemctl reboot 2>/dev/null || reboot ) >/dev/null 2>&1 &
+    echo "rebooting in 2s"
+}
+
+main() {
+    local c="${1:-}"; shift || true
+    case "$c" in
+        info)     cmd_info "$@" ;;
+        stage)    cmd_stage "$@" ;;
+        commit)   cmd_commit "$@" ;;
+        rollback) cmd_rollback "$@" ;;
+        clean)    cmd_clean "$@" ;;
+        reboot)   cmd_reboot "$@" ;;
+        *) die "unknown command: '$c' (info|stage|commit|rollback|clean|reboot)" ;;
+    esac
+}
+
+main "$@"

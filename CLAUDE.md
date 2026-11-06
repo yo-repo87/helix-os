@@ -643,4 +643,44 @@ All features implemented in `webui/frontend/index.html` (artifact: https://claud
 
 **All features complete as of 2026-11-05.**
 
-*Last updated: 2026-11-05. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+---
+
+## 16. Over-the-Air OS Updates from GitHub (2026-11-06)
+
+Helix OS updates itself by swapping the boot-image set on the boot partition and
+rebooting — the same model as Unraid's USB `bz*` replacement. Because the OS runs
+from a read-only squashfs in RAM, **settings** live on `/boot/config/`, and
+**apps + data** live on the array/pools, an update never touches user data.
+
+### How it works
+1. A release is published to the GitHub repo (`yo-repo87/helix-os`) with a
+   `helix-release.json` manifest asset plus per-arch boot files named
+   `<arch>-filesystem.squashfs`, `<arch>-vmlinuz`, `<arch>-initrd.img`.
+2. The in-OS updater reads `/etc/helix-version`, queries the GitHub Releases API,
+   and compares versions. For a **private** repo it uses a read-only token saved
+   in `/boot/config/osupdate.cfg` (set via the UI); it drops the auth header on
+   GitHub's S3 asset redirect.
+3. On apply it downloads the three files for the machine's architecture, verifies
+   sha256 against the manifest, then the privileged helper stages them on `/boot`
+   as `*.new`, rotates the current set to `*.prev`, and swaps in the new set.
+4. Reboot loads the new image. If a swap was interrupted or the new squashfs fails
+   to mount, the initramfs automatically boots the `*.prev` image. Manual rollback
+   is available in the UI.
+
+### Components
+- `webui/backend/routers/osupdate.py` — API: `/api/osupdate/{current,check,apply,stream,status,rollback,reboot,settings}`
+- `webui/backend/helpers/helix-osupdate` — privileged `/boot` swap helper (installed to `/usr/local/sbin`, run via sudo); the only thing that writes to the boot device
+- `build/initramfs/init` — `.prev` fallback on interrupted/failed update
+- Frontend: Settings → "Helix OS Update" card (check / update with live log / reboot / rollback / repo+token settings)
+- `/etc/helix-version` stamped from `build/config/VERSION` at build time
+
+### Publishing an update (maintainer side)
+```bash
+# Build the images first (build/build-all.sh), then per architecture:
+sudo build/make-update-bundle.sh --arch amd64 --from output-amd64/boot --version 0.1.1
+sudo build/make-update-bundle.sh --arch arm64 --from output-arm64/boot --version 0.1.1
+GH_TOKEN=<token> build/publish-update.sh --repo yo-repo87/helix-os   # creates release v0.1.1
+```
+Bump `build/config/VERSION` for each release so running systems detect the new version.
+
+*Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

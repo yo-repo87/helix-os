@@ -24,12 +24,18 @@ apt-get install -y --no-install-recommends python3-venv python3-dev gcc 2>/dev/n
 mkdir -p "$HIVE_DIR"
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet || echo "  WARN: pip self-upgrade failed (continuing)"
-# Non-fatal: a flaky package download must not abort the whole image build.
-# Prefer prebuilt wheels so no compiler/Rust toolchain is needed in the chroot.
-if ! "$VENV_DIR/bin/pip" install -r "$BACKEND_SRC/requirements.txt" --quiet; then
-    echo "  WARN: backend dependency install failed — image will build, but the"
-    echo "        helix-backend service may not start until deps are installed."
+# Fatal: an image whose backend deps are missing boots to an nginx 502, so a
+# failed install must abort the build rather than ship a dead web UI.
+if ! "$VENV_DIR/bin/pip" install -r "$BACKEND_SRC/requirements.txt"; then
+    echo "  ERROR: backend dependency install failed (check chroot DNS/network)." >&2
+    exit 1
 fi
+# Verify the service's entrypoint deps actually import before we trust the image.
+if ! "$VENV_DIR/bin/python" -c "import fastapi, uvicorn" 2>/dev/null; then
+    echo "  ERROR: fastapi/uvicorn not importable after install — aborting." >&2
+    exit 1
+fi
+echo "  backend deps OK (fastapi + uvicorn import cleanly)"
 
 # ── Copy app files ────────────────────────────────────────────────────────────
 cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"

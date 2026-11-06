@@ -804,4 +804,24 @@ with the hostname, each interface's IPv4, and the web UI URL (`http://<ip>/`)
 *before* the login prompt, and restart `getty@tty1` so the address shows
 immediately. Helix OS has no console password, so this is how you find the box.
 
+---
+
+## 20. Web UI 502 — Backend Dependency Install Fix (2026-11-06)
+
+The web UI returned **502 Bad Gateway** (nginx up, backend down). Cause: during the
+build, `systemd-resolved`'s postinst repoints `/etc/resolv.conf` at a stub that
+doesn't exist inside the chroot, so `pip install` in `03-helix-install.sh` had no
+DNS (`Temporary failure in name resolution` → `No matching distribution found for
+fastapi`). `apt` had already downloaded its packages, so only `pip` broke. The
+result: no `fastapi`/`uvicorn` in `/opt/helix/venv`, `helix-backend.service`
+couldn't start, and nginx proxying to `127.0.0.1:8082` returned 502.
+
+Fixes:
+- `build.sh` writes a working `/etc/resolv.conf` (1.1.1.1/8.8.8.8) in the chroot
+  before apt and again before the hooks run, then restores the systemd-resolved
+  symlink for the shipped image.
+- `03-helix-install.sh` now treats a failed `pip install` (or a failed
+  `import fastapi, uvicorn`) as **fatal** — the build aborts instead of shipping
+  an image whose web UI 502s.
+
 *Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

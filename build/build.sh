@@ -122,6 +122,16 @@ if [ -d "$WEBUI_SRC" ]; then
     cp -r "$WEBUI_SRC" "$ROOTFS_DIR/build/webui"
 fi
 
+# Copy helper script trees the hooks install into the image (network bring-up,
+# array/share/gpu helpers). Without these the services that reference
+# /usr/local/sbin/helix-* fail at boot (e.g. no network config is applied).
+for helper in network array shares gpu; do
+    if [ -d "$SCRIPT_DIR/../$helper" ]; then
+        echo "  Copying $helper/ into chroot..."
+        cp -r "$SCRIPT_DIR/../$helper" "$ROOTFS_DIR/build/$helper"
+    fi
+done
+
 for hook in "$BUILD_DIR/hooks/"*.sh; do
     echo "  Running: $(basename "$hook")"
     chmod +x "$hook"

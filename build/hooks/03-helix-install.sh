@@ -96,6 +96,51 @@ if [ -f "$BACKEND_SRC/helpers/helix-osupdate" ]; then
     echo "  installed /usr/local/sbin/helix-osupdate"
 fi
 
+# ── Network bring-up helper (applies /boot/config/network.cfg at boot) ────────
+# helix-config-network.service (hook 02) runs this; without it NO networkd
+# units are written and the box never requests DHCP.
+if [ -f /build/network/helix-apply-network ]; then
+    install -m 0755 /build/network/helix-apply-network /usr/local/sbin/helix-apply-network
+    echo "  installed /usr/local/sbin/helix-apply-network"
+fi
+
+# Fallback: DHCP on any wired interface, so the machine is reachable out of the
+# box even if helix-apply-network hasn't run or network.cfg is empty. The
+# config-driven units are written as 10-helix-*.network and take precedence
+# (lower prefix wins) over this 99- fallback.
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/99-helix-dhcp-fallback.network <<'NETEOF'
+[Match]
+Name=en* eth*
+Type=ether
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+NETEOF
+echo "  installed DHCP fallback /etc/systemd/network/99-helix-dhcp-fallback.network"
+
+# ── Console banner: show IP + web UI URL before the login prompt ──────────────
+if [ -f /build/network/helix-console-banner ]; then
+    install -m 0755 /build/network/helix-console-banner /usr/local/sbin/helix-console-banner
+    cat > /etc/systemd/system/helix-console-banner.service <<'SVCEOF'
+[Unit]
+Description=Helix OS console IP banner (/etc/issue)
+After=network-online.target systemd-networkd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/helix-console-banner
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+    systemctl enable helix-console-banner 2>/dev/null || true
+    echo "  installed /usr/local/sbin/helix-console-banner + service"
+fi
+
 # ── State directory ───────────────────────────────────────────────────────────
 mkdir -p /var/lib/helix
 chown helix:helix /var/lib/helix

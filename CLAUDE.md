@@ -774,4 +774,34 @@ Build scratch was also moved off the `nodev` tmpfs (`/tmp/helix-build` →
 `/var/tmp/helix-build`) so the arm64 cross-build's `mkinitramfs` can create device
 nodes under qemu.
 
+---
+
+## 19. Networking Bring-Up + Console IP Banner (2026-11-06)
+
+**No network / no DHCP lease.** `helix-config-network.service` runs
+`/usr/local/sbin/helix-apply-network`, but that script was never installed into
+the image — `build.sh` copied only `webui/` into the chroot, and no hook installed
+the `network/` helpers. The service failed at boot, so no systemd-networkd
+`.network` units were written and the box never requested DHCP (nothing appeared
+on the router). The shipped `/boot/config/network.cfg` was also in a different
+format (`IFACE=`/`DHCP=`) than `helix-apply-network` parses (`[network]` INI with
+`IFNAME`/`USE_DHCP`), so its values were ignored. NIC drivers were never the
+problem — the squashfs carries Debian's full module set (virtio_net, e1000/e1000e,
+r8169, igb, tg3, vmxnet3, … 448 net drivers).
+
+Fixes:
+- `build.sh` copies the helper trees (`network/`, `array/`, `shares/`, `gpu/`)
+  into the chroot.
+- `03-helix-install.sh` installs `/usr/local/sbin/helix-apply-network` and ships
+  `99-helix-dhcp-fallback.network` (DHCP on `en*`/`eth*`) so the box is reachable
+  out of the box even if the config-driven path hasn't run; the config-driven
+  `10-helix-*.network` units take precedence.
+- `build/usb-layout/config/network.cfg` rewritten to the `[network]` INI format.
+
+**Console IP banner.** New `/usr/local/sbin/helix-console-banner` +
+`helix-console-banner.service` (after `network-online.target`) write `/etc/issue`
+with the hostname, each interface's IPv4, and the web UI URL (`http://<ip>/`)
+*before* the login prompt, and restart `getty@tty1` so the address shows
+immediately. Helix OS has no console password, so this is how you find the box.
+
 *Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

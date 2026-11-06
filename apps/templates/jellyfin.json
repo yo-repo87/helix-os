@@ -1,0 +1,30 @@
+{
+  "name": "jellyfin",
+  "title": "Jellyfin",
+  "description": "Free software media system — stream movies, TV, music, and photos.",
+  "category": "Media",
+  "icon": "jellyfin",
+  "port": 8096,
+  "vars": [
+    {"key": "MEDIA_PATH",  "label": "Media library path",  "default": "/mnt/user/media"},
+    {"key": "CONFIG_PATH", "label": "Config/data path",    "default": "/mnt/user/appdata/jellyfin"}
+  ],
+  "compose": {
+    "services": {
+      "jellyfin": {
+        "image": "jellyfin/jellyfin:latest",
+        "container_name": "jellyfin",
+        "network_mode": "host",
+        "volumes": [
+          "{{CONFIG_PATH}}/config:/config",
+          "{{CONFIG_PATH}}/cache:/cache",
+          "{{MEDIA_PATH}}:/media:ro"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "JELLYFIN_PublishedServerUrl": "http://0.0.0.0:8096"
+        }
+      }
+    }
+  }
+}

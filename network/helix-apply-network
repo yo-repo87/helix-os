@@ -1,0 +1,340 @@
+#!/bin/bash
+# helix-apply-network — Generate systemd-networkd unit files from network.cfg
+# and reload networkd. Safe to run on a live system; existing connections are
+# re-validated without dropping them unless the IP/interface actually changed.
+#
+# Usage:
+#   helix-apply-network           — write units + reload
+#   helix-apply-network --dry-run — print what would be written, don't write
+#   helix-apply-network --status  — show current interface state as JSON
+
+set -euo pipefail
+
+HELIX_CONFIG="${HELIX_CONFIG:-/boot/config}"
+NET_CFG="$HELIX_CONFIG/network.cfg"
+NETD_DIR="${NETD_DIR:-/etc/systemd/network}"
+DRY_RUN=""
+STATUS_ONLY=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)    DRY_RUN=1 ;;
+    --status)     STATUS_ONLY=1 ;;
+  esac
+done
+
+# ── INI helpers ────────────────────────────────────────────────────────────────
+cfg_get() {
+  awk -F= -v sec="[$1]" -v k="$2" '
+    /^\[/{ in_s=($0==sec) }
+    in_s && $1~/^[[:space:]]*'"$2"'[[:space:]]*$/{
+      gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", $2); print $2; exit
+    }' "$3" 2>/dev/null || true
+}
+
+# ── Status mode ────────────────────────────────────────────────────────────────
+if [[ -n "$STATUS_ONLY" ]]; then
+  python3 - <<'PYEOF'
+import subprocess, json, re, socket
+
+def ifaces():
+    result = {}
+    try:
+        out = subprocess.check_output(["ip", "-j", "addr"], text=True)
+        for iface in json.loads(out):
+            name = iface["ifname"]
+            if name == "lo": continue
+            flags = iface.get("flags", [])
+            addrs = [a["local"] for a in iface.get("addr_info", []) if a.get("family") == "inet"]
+            addrs6 = [a["local"] for a in iface.get("addr_info", []) if a.get("family") == "inet6"
+                      and not a["local"].startswith("fe80")]
+            result[name] = {
+                "up": "UP" in flags,
+                "ip": addrs[0] if addrs else None,
+                "ip6": addrs6[0] if addrs6 else None,
+                "flags": flags,
+            }
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+def routes():
+    gw = None
+    try:
+        out = subprocess.check_output(["ip", "-j", "route"], text=True)
+        for r in json.loads(out):
+            if r.get("dst") == "default":
+                gw = r.get("gateway")
+                break
+    except Exception:
+        pass
+    return {"gateway": gw}
+
+print(json.dumps({"interfaces": ifaces(), "routes": routes()}, indent=2))
+PYEOF
+  exit 0
+fi
+
+# ── Read config ────────────────────────────────────────────────────────────────
+USE_DHCP=$(cfg_get  "network" "USE_DHCP"       "$NET_CFG"); USE_DHCP="${USE_DHCP:-yes}"
+IPADDR=$(cfg_get    "network" "IPADDR"         "$NET_CFG")
+NETMASK=$(cfg_get   "network" "NETMASK"        "$NET_CFG"); NETMASK="${NETMASK:-255.255.255.0}"
+GATEWAY=$(cfg_get   "network" "GATEWAY"        "$NET_CFG")
+DNS1=$(cfg_get      "network" "DNS_SERVER1"    "$NET_CFG")
+DNS2=$(cfg_get      "network" "DNS_SERVER2"    "$NET_CFG")
+DOMAIN=$(cfg_get    "network" "DOMAIN_NAME"    "$NET_CFG")
+IFNAME=$(cfg_get    "network" "IFNAME"         "$NET_CFG")
+MTU=$(cfg_get       "network" "MTU"            "$NET_CFG"); MTU="${MTU:-0}"
+BONDING=$(cfg_get   "network" "BONDING"        "$NET_CFG"); BONDING="${BONDING:-no}"
+BOND_NAME=$(cfg_get "network" "BOND_NAME"      "$NET_CFG"); BOND_NAME="${BOND_NAME:-bond0}"
+BOND_MEMBERS=$(cfg_get "network" "BOND_MEMBERS" "$NET_CFG")
+BOND_MODE=$(cfg_get "network" "BONDING_MODE"   "$NET_CFG"); BOND_MODE="${BOND_MODE:-1}"
+BOND_MII=$(cfg_get  "network" "BONDING_MIIMON" "$NET_CFG"); BOND_MII="${BOND_MII:-100}"
+BRIDGING=$(cfg_get  "network" "BRIDGING"       "$NET_CFG"); BRIDGING="${BRIDGING:-no}"
+BRIDGE_NAME=$(cfg_get "network" "BRIDGE_NAME"  "$NET_CFG"); BRIDGE_NAME="${BRIDGE_NAME:-br0}"
+VLAN_ID=$(cfg_get   "network" "VLAN_ID"        "$NET_CFG"); VLAN_ID="${VLAN_ID:-0}"
+USE_DHCP6=$(cfg_get "network" "USE_DHCP6"      "$NET_CFG"); USE_DHCP6="${USE_DHCP6:-auto}"
+DHCP_HOST=$(cfg_get "network" "DHCP_HOSTNAME"  "$NET_CFG")
+
+# Auto-detect primary interface if not set
+if [[ -z "$IFNAME" ]]; then
+  IFNAME=$(ip -o link show 2>/dev/null | awk -F': ' '!/lo|^[0-9]+: lo/{gsub(/@.*/,"",$2); print $2; exit}' || true)
+fi
+[[ -z "$IFNAME" ]] && { echo "ERROR: no network interface found"; exit 1; }
+
+# Determine what the "upstream" (non-bridge) interface is called
+# when bonding: upstream = bond0; when plain: upstream = $IFNAME
+if [[ "$BONDING" == "yes" ]]; then
+  UPSTREAM="$BOND_NAME"
+else
+  UPSTREAM="$IFNAME"
+fi
+# When bridging, the bridge becomes the final interface that gets an IP
+if [[ "$BRIDGING" == "yes" ]]; then
+  FINAL_IF="$BRIDGE_NAME"
+else
+  FINAL_IF="$UPSTREAM"
+fi
+
+# CIDR prefix from netmask
+netmask_to_prefix() {
+  python3 -c "
+import ipaddress, sys
+try:
+    n = ipaddress.ip_network('0.0.0.0/' + sys.argv[1], strict=False)
+    print(n.prefixlen)
+except Exception:
+    print(24)
+" "$1" 2>/dev/null || echo "24"
+}
+PREFIX=$(netmask_to_prefix "$NETMASK")
+
+# DNS string for systemd-networkd
+dns_line() {
+  local dns=""
+  [[ -n "$DNS1" ]] && dns="DNS=$DNS1"$'\n'
+  [[ -n "$DNS2" ]] && dns+="DNS=$DNS2"$'\n'
+  [[ -n "$DOMAIN" ]] && dns+="Domains=$DOMAIN"$'\n'
+  echo -n "$dns"
+}
+
+# ── Unit file builders ─────────────────────────────────────────────────────────
+
+make_bond_netdev() {
+  cat <<EOF
+[NetDev]
+Name=$BOND_NAME
+Kind=bond
+
+[Bond]
+Mode=$BOND_MODE
+MIIMonitorSec=${BOND_MII}ms
+EOF
+}
+
+make_bond_member_network() {
+  local member="$1"
+  cat <<EOF
+[Match]
+Name=$member
+
+[Network]
+Bond=$BOND_NAME
+EOF
+}
+
+make_bridge_netdev() {
+  cat <<EOF
+[NetDev]
+Name=$BRIDGE_NAME
+Kind=bridge
+
+[Bridge]
+STP=no
+EOF
+}
+
+make_primary_network() {
+  # The primary .network — attaches UPSTREAM into the bridge (or sets IP directly)
+  local addr_section=""
+  if [[ "$BRIDGING" == "yes" ]]; then
+    addr_section="Bridge=$BRIDGE_NAME"
+  else
+    addr_section=$(make_address_section)
+  fi
+
+  cat <<EOF
+[Match]
+Name=$UPSTREAM
+
+[Network]
+$addr_section
+EOF
+}
+
+make_address_section() {
+  # Combine IPv4 + IPv6 DHCP into one DHCP= directive
+  local dhcp_val ra_val=""
+  if [[ "$USE_DHCP" == "yes" ]]; then
+    case "$USE_DHCP6" in
+      auto|yes) dhcp_val="yes";  ra_val="IPv6AcceptRA=yes" ;;
+      no)       dhcp_val="ipv4"; ra_val="IPv6AcceptRA=no" ;;
+      *)        dhcp_val="ipv4" ;;
+    esac
+    echo "DHCP=$dhcp_val"
+    [[ -n "$ra_val" ]] && echo "$ra_val"
+    [[ -n "$DHCP_HOST" ]] && echo "Hostname=$DHCP_HOST"
+  else
+    case "$USE_DHCP6" in
+      auto|yes) dhcp_val="ipv6"; ra_val="IPv6AcceptRA=yes" ;;
+      no)       dhcp_val="no";   ra_val="IPv6AcceptRA=no" ;;
+      *)        dhcp_val="no" ;;
+    esac
+    echo "DHCP=$dhcp_val"
+    [[ -n "$ra_val" ]] && echo "$ra_val"
+  fi
+  local dns
+  dns=$(dns_line)
+  [[ -n "$dns" ]] && echo "$dns"
+}
+
+make_bridge_network() {
+  local body
+  body=$(make_address_section)
+  cat <<EOF
+[Match]
+Name=$BRIDGE_NAME
+
+[Network]
+$body
+EOF
+  if [[ "$USE_DHCP" != "yes" && -n "$IPADDR" ]]; then
+    echo ""
+    echo "[Address]"
+    echo "Address=$IPADDR/$PREFIX"
+    if [[ -n "$GATEWAY" ]]; then
+      echo ""
+      echo "[Route]"
+      echo "Gateway=$GATEWAY"
+    fi
+  fi
+}
+
+make_final_network() {
+  local body
+  body=$(make_address_section)
+  cat <<EOF
+[Match]
+Name=$FINAL_IF
+
+[Network]
+$body
+EOF
+  if [[ "$USE_DHCP" != "yes" && -n "$IPADDR" ]]; then
+    echo ""
+    echo "[Address]"
+    echo "Address=$IPADDR/$PREFIX"
+    if [[ -n "$GATEWAY" ]]; then
+      echo ""
+      echo "[Route]"
+      echo "Gateway=$GATEWAY"
+    fi
+  fi
+}
+
+make_vlan_netdev() {
+  cat <<EOF
+[NetDev]
+Name=${FINAL_IF}.${VLAN_ID}
+Kind=vlan
+
+[VLAN]
+Id=$VLAN_ID
+EOF
+}
+
+# ── Collect units ──────────────────────────────────────────────────────────────
+declare -A UNITS  # filename → content
+
+# Bond .netdev + member .networks
+if [[ "$BONDING" == "yes" && -n "$BOND_MEMBERS" ]]; then
+  UNITS["10-helix-${BOND_NAME}.netdev"]=$(make_bond_netdev)
+  for m in $BOND_MEMBERS; do
+    UNITS["10-helix-${m}.network"]=$(make_bond_member_network "$m")
+  done
+fi
+
+# Bridge .netdev
+if [[ "$BRIDGING" == "yes" ]]; then
+  UNITS["10-helix-${BRIDGE_NAME}.netdev"]=$(make_bridge_netdev)
+  UNITS["10-helix-${UPSTREAM}.network"]=$(make_primary_network)
+  UNITS["10-helix-${BRIDGE_NAME}.network"]=$(make_bridge_network)
+else
+  # No bridge — primary interface gets the IP
+  UNITS["10-helix-${FINAL_IF}.network"]=$(make_final_network)
+fi
+
+# VLAN overlay
+if [[ "$VLAN_ID" -gt 0 ]] 2>/dev/null; then
+  UNITS["10-helix-vlan${VLAN_ID}.netdev"]=$(make_vlan_netdev)
+fi
+
+# MTU injection — append to whichever .network gets an IP
+IP_UNIT="10-helix-${FINAL_IF}.network"
+if [[ "${MTU:-0}" -gt 0 ]] 2>/dev/null; then
+  if [[ -n "${UNITS[$IP_UNIT]+x}" ]]; then
+    UNITS["$IP_UNIT"]+=$'\n[Link]\nMTUBytes='"$MTU"
+  fi
+fi
+
+# ── Output ─────────────────────────────────────────────────────────────────────
+if [[ -n "$DRY_RUN" ]]; then
+  echo "=== Network unit preview (not written) ==="
+  echo "Interface: $IFNAME  Bridge: $BRIDGING  Bonding: $BONDING  DHCP: $USE_DHCP"
+  echo ""
+  for fname in $(echo "${!UNITS[@]}" | tr ' ' '\n' | sort); do
+    echo "── $NETD_DIR/$fname ──────────"
+    echo "${UNITS[$fname]}"
+    echo ""
+  done
+  exit 0
+fi
+
+[[ -d "$NETD_DIR" ]] || { echo "systemd-networkd not found (no $NETD_DIR). Install: apt install systemd"; exit 1; }
+
+# Remove old hive-managed units
+find "$NETD_DIR" -name "10-helix-*.network" -o -name "10-helix-*.netdev" 2>/dev/null | xargs rm -f 2>/dev/null || true
+
+# Write new units
+for fname in "${!UNITS[@]}"; do
+  printf '%s\n' "${UNITS[$fname]}" > "$NETD_DIR/$fname"
+  echo "Written: $NETD_DIR/$fname"
+done
+
+# Reload
+if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+  networkctl reload 2>/dev/null || systemctl restart systemd-networkd
+  echo "networkd reloaded."
+else
+  echo "systemd-networkd not running — units written, start with: systemctl start systemd-networkd"
+fi

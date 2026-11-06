@@ -1,0 +1,9 @@
+NAME="Helix OS"
+VERSION="0.1.0"
+ID=hiveos
+ID_LIKE=debian
+PRETTY_NAME="Helix OS 0.1.0"
+VERSION_ID="0.1.0"
+HOME_URL="https://github.com/hive-os/hive"
+BUG_REPORT_URL="https://github.com/hive-os/hive/issues"
+HIVE_CODENAME="Apis"

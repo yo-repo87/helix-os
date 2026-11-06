@@ -1,0 +1,96 @@
+#!/bin/bash
+# helix-array-start — Start the Helix OS array.
+# Mounts all data disks, starts mergerfs user share, generates snapraid.conf.
+# Equivalent to Unraid's "Start Array" button.
+
+set -euo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+
+# Check if already started
+[ -f "$ARRAY_STATE" ] && [ "$(cat "$ARRAY_STATE")" = "started" ] && {
+    helix_log "Array is already started."
+    exit 0
+}
+
+helix_log "Starting array..."
+load_disk_config
+ensure_dirs
+
+# ── Mount parity drives ───────────────────────────────────────────────────────
+# Parity drives have no filesystem — SnapRAID writes directly to them.
+# We just need the parity mount point; the device is managed by snapraid.
+# If the parity device has a filesystem (some configs use a partition), mount it.
+idx=1
+for dev in "${PARITY_DEVS[@]}"; do
+    mnt="$MNTBASE/parity$idx"
+    if [ ! -b "$dev" ]; then
+        helix_log "WARN: Parity device $dev not found — continuing without it."
+        idx=$((idx+1)); continue
+    fi
+    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+    if [ -n "$fstype" ]; then
+        mountpoint -q "$mnt" || mount -t "$fstype" "$dev" "$mnt"
+        helix_log "Mounted parity$idx: $dev → $mnt ($fstype)"
+    else
+        # Raw device: snapraid writes parity file directly (no mount needed)
+        helix_log "Parity$idx: $dev (raw — no mount, snapraid direct I/O)"
+        # For raw parity, update snapraid.conf to point to device path
+        sed -i "s|$mnt/snapraid.parity|$dev.parity|" "$SNAPRAID_CONF" 2>/dev/null || true
+    fi
+    idx=$((idx+1))
+done
+
+# ── Mount data drives ─────────────────────────────────────────────────────────
+MOUNTED_MNTS=()
+for i in "${!DATA_DISKS[@]}"; do
+    dev="${DATA_DEVS[$i]}"
+    mnt="${DATA_MNTS[$i]}"
+    name="${DATA_DISKS[$i]}"
+
+    if [ ! -b "$dev" ]; then
+        helix_log "WARN: $name device $dev not found — skipping."
+        continue
+    fi
+
+    if mountpoint -q "$mnt"; then
+        helix_log "$name already mounted at $mnt"
+    else
+        fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+        [ -n "$fstype" ] || { helix_log "WARN: $name ($dev) has no filesystem — skipping. Format it first."; continue; }
+        mount -t "$fstype" -o defaults,noatime "$dev" "$mnt"
+        helix_log "Mounted $name: $dev → $mnt ($fstype)"
+    fi
+    MOUNTED_MNTS+=("$mnt")
+done
+
+[ ${#MOUNTED_MNTS[@]} -eq 0 ] && { helix_err "No data drives mounted — cannot start array."; exit 1; }
+
+# ── Generate SnapRAID config ──────────────────────────────────────────────────
+generate_snapraid_conf
+helix_log "SnapRAID config written to $SNAPRAID_CONF"
+
+# ── Start mergerfs (user share) ───────────────────────────────────────────────
+# Policy: ff (first found) for reads, mfs (most free space) for creates
+# Branches are all mounted data disk paths
+BRANCHES=$(IFS=:; echo "${MOUNTED_MNTS[*]}")
+
+if mountpoint -q "$USER_SHARE"; then
+    helix_log "mergerfs already mounted at $USER_SHARE"
+else
+    mergerfs \
+        -o defaults,allow_other,use_ino,cache.files=partial \
+        -o dropcacheonclose=true,category.create=mfs \
+        -o minfreespace=4G,fsname=helix-user \
+        "$BRANCHES" "$USER_SHARE"
+    helix_log "mergerfs started: $BRANCHES → $USER_SHARE"
+fi
+
+# ── Record state ──────────────────────────────────────────────────────────────
+echo "started" > "$ARRAY_STATE"
+date -Iseconds >> "$ARRAY_STATE"
+
+helix_log "Array started. ${#MOUNTED_MNTS[@]} data drive(s) online."
+helix_log "User share: $USER_SHARE"
+helix_log "Run 'helix-parity-check' to sync parity after adding new files."

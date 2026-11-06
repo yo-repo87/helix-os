@@ -1,0 +1,40 @@
+# Helix OS — full NAS stack (installed on top of packages-base.list)
+
+# ── Array / storage ───────────────────────────────────────────────────────────
+mergerfs
+snapraid
+zfsutils-linux
+# (snapraid built from source if not in repo — see hooks/03-snapraid.sh)
+
+# ── File sharing ──────────────────────────────────────────────────────────────
+samba
+nfs-kernel-server
+avahi-daemon
+avahi-utils
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+docker.io
+docker-compose-plugin
+
+# ── Web UI stack ──────────────────────────────────────────────────────────────
+nginx
+php8.2-fpm
+php8.2-cli
+php8.2-json
+
+# ── VPN ───────────────────────────────────────────────────────────────────────
+wireguard
+wireguard-tools
+
+# ── UPS monitoring ────────────────────────────────────────────────────────────
+apcupsd
+nut
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+# (handled by our Python daemon — no extra packages needed)
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+cron
+
+# ── Monitoring ───────────────────────────────────────────────────────────────
+prometheus-node-exporter

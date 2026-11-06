@@ -1,0 +1,35 @@
+{
+  "name": "qbittorrent",
+  "title": "qBittorrent",
+  "description": "Torrent client with web UI — lightweight, no ads.",
+  "category": "Downloaders",
+  "icon": "qbittorrent",
+  "port": 8080,
+  "vars": [
+    {"key": "CONFIG_PATH",    "label": "Config path",    "default": "/mnt/user/appdata/qbittorrent"},
+    {"key": "DOWNLOADS_PATH", "label": "Downloads path", "default": "/mnt/user/downloads"},
+    {"key": "WEBUI_PORT",     "label": "Web UI port",    "default": "8080"},
+    {"key": "PUID",           "label": "User ID",        "default": "1000"},
+    {"key": "PGID",           "label": "Group ID",       "default": "1000"}
+  ],
+  "compose": {
+    "services": {
+      "qbittorrent": {
+        "image": "linuxserver/qbittorrent:latest",
+        "container_name": "qbittorrent",
+        "ports": ["{{WEBUI_PORT}}:{{WEBUI_PORT}}", "6881:6881", "6881:6881/udp"],
+        "volumes": [
+          "{{CONFIG_PATH}}:/config",
+          "{{DOWNLOADS_PATH}}:/downloads"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "PUID": "{{PUID}}",
+          "PGID": "{{PGID}}",
+          "TZ": "UTC",
+          "WEBUI_PORT": "{{WEBUI_PORT}}"
+        }
+      }
+    }
+  }
+}

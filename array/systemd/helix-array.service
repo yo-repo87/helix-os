@@ -1,0 +1,18 @@
+[Unit]
+Description=Helix OS Array (mergerfs + SnapRAID)
+Documentation=https://github.com/helix-os/helix
+After=local-fs.target network.target
+Before=smbd.service nfs-server.service docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-array-start
+ExecStop=/usr/local/sbin/helix-array-stop
+TimeoutStartSec=120
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+{
+  "name": "homeassistant",
+  "title": "Home Assistant",
+  "description": "Open source home automation platform — control everything locally.",
+  "category": "Home Automation",
+  "icon": "homeassistant",
+  "port": 8123,
+  "vars": [
+    {"key": "CONFIG_PATH", "label": "Config path", "default": "/mnt/user/appdata/homeassistant"}
+  ],
+  "compose": {
+    "services": {
+      "homeassistant": {
+        "image": "ghcr.io/home-assistant/home-assistant:stable",
+        "container_name": "homeassistant",
+        "network_mode": "host",
+        "volumes": [
+          "{{CONFIG_PATH}}:/config",
+          "/run/dbus:/run/dbus:ro"
+        ],
+        "restart": "unless-stopped",
+        "privileged": true,
+        "environment": {
+          "TZ": "UTC"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+#!/bin/bash
+# helix-parity-rebuild — Rebuild a failed data drive from parity.
+# Equivalent to Unraid's "Rebuild" after a drive failure.
+#
+# Usage:
+#   helix-parity-rebuild disk2          # rebuild disk2 onto current device
+#   helix-parity-rebuild disk2 /dev/sdg # rebuild disk2 onto new device /dev/sdg
+
+set -euo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+
+DISK_NAME="${1:-}"
+NEW_DEV="${2:-}"
+
+[ -n "$DISK_NAME" ] || { echo "Usage: $0 <diskN> [new_device]"; exit 1; }
+
+load_disk_config
+
+# Find the disk in config
+DISK_IDX=-1
+for i in "${!DATA_DISKS[@]}"; do
+    [ "${DATA_DISKS[$i]}" = "$DISK_NAME" ] && { DISK_IDX=$i; break; }
+done
+[ $DISK_IDX -ge 0 ] || { helix_err "Disk '$DISK_NAME' not found in disks.cfg"; exit 1; }
+
+TARGET_DEV="${DATA_DEVS[$DISK_IDX]}"
+TARGET_MNT="${DATA_MNTS[$DISK_IDX]}"
+
+# If a new device was specified, format it first
+if [ -n "$NEW_DEV" ]; then
+    [ -b "$NEW_DEV" ] || { helix_err "$NEW_DEV is not a block device"; exit 1; }
+    helix_log "Formatting $NEW_DEV as XFS for $DISK_NAME..."
+    mkfs.xfs -f "$NEW_DEV"
+    # Update disks.cfg to point to the new device
+    sed -i "/^\[${DISK_NAME}\]/,/^\[/ s|device=.*|device=$NEW_DEV|" "$DISKS_CFG"
+    helix_log "Updated $DISKS_CFG: $DISK_NAME → $NEW_DEV"
+    TARGET_DEV="$NEW_DEV"
+fi
+
+# Mount the new/replacement drive
+[ -b "$TARGET_DEV" ] || { helix_err "$TARGET_DEV not found"; exit 1; }
+mountpoint -q "$TARGET_MNT" || mount -t xfs "$TARGET_DEV" "$TARGET_MNT"
+
+helix_log "Starting rebuild of $DISK_NAME from parity..."
+helix_log "This can take many hours depending on drive size."
+START=$(date +%s)
+
+snapraid -c "$SNAPRAID_CONF" fix -d "$DISK_NAME"
+
+ELAPSED=$(( $(date +%s) - START ))
+helix_log "Rebuild of $DISK_NAME complete in ${ELAPSED}s."
+helix_log "Run 'helix-parity-check' to verify parity after rebuild."

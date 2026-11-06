@@ -1,0 +1,73 @@
+#!/bin/bash
+# helix-array-status — Print array state in a format usable by the web UI.
+# Outputs plain text to stdout; --json flag outputs JSON for the API.
+
+source "$(dirname "$0")/helix-array-lib.sh"
+
+JSON="${1:-}"
+load_disk_config
+
+state="stopped"
+[ -f "$ARRAY_STATE" ] && state=$(head -1 "$ARRAY_STATE")
+
+# ── Gather per-disk info ──────────────────────────────────────────────────────
+declare -a disk_info
+for i in "${!DATA_DISKS[@]}"; do
+    name="${DATA_DISKS[$i]}"
+    dev="${DATA_DEVS[$i]}"
+    mnt="${DATA_MNTS[$i]}"
+
+    present="no";  [ -b "$dev" ]             && present="yes"
+    mounted="no";  mountpoint -q "$mnt" 2>/dev/null && mounted="yes"
+
+    size=""; used=""; avail=""; pct=""
+    if [ "$mounted" = "yes" ]; then
+        read -r size used avail pct _ < <(df -h --output=size,used,avail,pcent "$mnt" | tail -1)
+    fi
+
+    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo "unknown")
+    temp=$(smartctl -A "$dev" 2>/dev/null \
+           | grep -i "temperature_celsius" | awk '{print $10}' || echo "")
+
+    disk_info+=("$name|$dev|$present|$mounted|$fstype|$size|$used|$avail|$pct|$temp")
+done
+
+# ── mergerfs aggregate ────────────────────────────────────────────────────────
+user_mounted="no"; user_size=""; user_used=""; user_avail=""
+if mountpoint -q "$USER_SHARE" 2>/dev/null; then
+    user_mounted="yes"
+    read -r user_size user_used user_avail _ < <(df -h --output=size,used,avail "$USER_SHARE" | tail -1)
+fi
+
+# ── Output ────────────────────────────────────────────────────────────────────
+if [ "$JSON" = "--json" ]; then
+    printf '{\n'
+    printf '  "array_state": "%s",\n' "$state"
+    printf '  "user_share": {"mounted": %s, "size": "%s", "used": "%s", "avail": "%s"},\n' \
+        "$([ "$user_mounted" = "yes" ] && echo true || echo false)" \
+        "$user_size" "$user_used" "$user_avail"
+    printf '  "disks": [\n'
+    local_sep=""
+    for entry in "${disk_info[@]}"; do
+        IFS='|' read -r name dev present mounted fstype size used avail pct temp <<< "$entry"
+        printf '%s    {"name":"%s","device":"%s","present":%s,"mounted":%s,"fstype":"%s","size":"%s","used":"%s","avail":"%s","use_pct":"%s","temp_c":"%s"}' \
+            "$local_sep" "$name" "$dev" \
+            "$([ "$present" = "yes" ] && echo true || echo false)" \
+            "$([ "$mounted" = "yes" ] && echo true || echo false)" \
+            "$fstype" "$size" "$used" "$avail" "$pct" "$temp"
+        local_sep=",\n"
+    done
+    printf '\n  ]\n}\n'
+else
+    printf "Array state : %s\n" "$state"
+    printf "User share  : %s  (%s used of %s, %s free)\n" \
+        "$user_mounted" "$user_used" "$user_size" "$user_avail"
+    printf "\n%-8s  %-12s  %-8s  %-8s  %-6s  %-6s  %-6s  %-4s  %s\n" \
+        "Name" "Device" "Present" "Mounted" "FS" "Size" "Used" "Pct" "Temp"
+    printf "%s\n" "$(printf '─%.0s' {1..75})"
+    for entry in "${disk_info[@]}"; do
+        IFS='|' read -r name dev present mounted fstype size used avail pct temp <<< "$entry"
+        printf "%-8s  %-12s  %-8s  %-8s  %-6s  %-6s  %-6s  %-4s  %s\n" \
+            "$name" "$dev" "$present" "$mounted" "$fstype" "$size" "$used" "$pct" "${temp:+${temp}°C}"
+    done
+fi

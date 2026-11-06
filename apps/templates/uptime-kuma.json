@@ -1,0 +1,25 @@
+{
+  "name": "uptime-kuma",
+  "title": "Uptime Kuma",
+  "description": "Self-hosted monitoring tool — HTTP, TCP, DNS, Docker uptime checks.",
+  "category": "Management",
+  "icon": "monitor",
+  "port": 3001,
+  "vars": [
+    {"key": "CONFIG_PATH", "label": "Data path", "default": "/mnt/user/appdata/uptime-kuma"}
+  ],
+  "compose": {
+    "services": {
+      "uptime-kuma": {
+        "image": "louislam/uptime-kuma:latest",
+        "container_name": "uptime-kuma",
+        "ports": ["3001:3001"],
+        "volumes": [
+          "{{CONFIG_PATH}}:/app/data",
+          "/var/run/docker.sock:/var/run/docker.sock:ro"
+        ],
+        "restart": "unless-stopped"
+      }
+    }
+  }
+}

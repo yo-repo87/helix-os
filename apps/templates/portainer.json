@@ -1,0 +1,25 @@
+{
+  "name": "portainer",
+  "title": "Portainer",
+  "description": "Docker management UI — control containers, images, volumes, and networks.",
+  "category": "Management",
+  "icon": "portainer",
+  "port": 9000,
+  "vars": [
+    {"key": "CONFIG_PATH", "label": "Data path", "default": "/mnt/user/appdata/portainer"}
+  ],
+  "compose": {
+    "services": {
+      "portainer": {
+        "image": "portainer/portainer-ce:latest",
+        "container_name": "portainer",
+        "ports": ["9000:9000", "9443:9443"],
+        "volumes": [
+          "/var/run/docker.sock:/var/run/docker.sock",
+          "{{CONFIG_PATH}}:/data"
+        ],
+        "restart": "unless-stopped"
+      }
+    }
+  }
+}

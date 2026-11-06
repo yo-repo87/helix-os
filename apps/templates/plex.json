@@ -1,0 +1,32 @@
+{
+  "name": "plex",
+  "title": "Plex Media Server",
+  "description": "Organize and stream your personal media collection.",
+  "category": "Media",
+  "icon": "plex",
+  "port": 32400,
+  "vars": [
+    {"key": "MEDIA_PATH",   "label": "Media library path",  "default": "/mnt/user/media"},
+    {"key": "CONFIG_PATH",  "label": "Config/data path",    "default": "/mnt/user/appdata/plex"},
+    {"key": "PLEX_CLAIM",   "label": "Plex claim token (optional)", "default": ""}
+  ],
+  "compose": {
+    "services": {
+      "plex": {
+        "image": "plexinc/pms-docker:latest",
+        "container_name": "plex",
+        "network_mode": "host",
+        "volumes": [
+          "{{CONFIG_PATH}}:/config",
+          "{{CONFIG_PATH}}/transcode:/transcode",
+          "{{MEDIA_PATH}}:/data:ro"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "PLEX_CLAIM": "{{PLEX_CLAIM}}",
+          "ADVERTISE_IP": ""
+        }
+      }
+    }
+  }
+}

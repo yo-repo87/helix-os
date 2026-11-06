@@ -1,0 +1,86 @@
+# Helix OS — base package list (debootstrap second-stage)
+# One package per line. Comments ignored by build.sh.
+
+# ── Init system ───────────────────────────────────────────────────────────────
+systemd
+systemd-sysv
+systemd-resolved
+dbus
+
+# ── Core utilities ────────────────────────────────────────────────────────────
+bash
+coreutils
+util-linux
+bsdutils
+findutils
+grep
+sed
+gawk
+less
+file
+tree
+
+# ── Filesystem tools ──────────────────────────────────────────────────────────
+squashfs-tools
+busybox-static
+dosfstools
+xfsprogs
+e2fsprogs
+btrfs-progs
+gdisk
+parted
+
+# ── Networking ────────────────────────────────────────────────────────────────
+iproute2
+net-tools
+iputils-ping
+curl
+wget
+dnsutils
+ethtool
+
+# ── SSH ───────────────────────────────────────────────────────────────────────
+openssh-server
+openssh-client
+
+# ── Package management ────────────────────────────────────────────────────────
+apt
+apt-utils
+
+# ── Hardware / udev ───────────────────────────────────────────────────────────
+udev
+kmod
+pciutils
+usbutils
+hdparm
+smartmontools
+
+# ── Editors / diagnostics ─────────────────────────────────────────────────────
+vim-tiny
+nano
+htop
+lsof
+strace
+tcpdump
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+sudo
+ca-certificates
+locales
+tzdata
+rsync
+git
+python3
+python3-pip
+python3-venv
+python3-dev
+
+# ── Kernel (architecture-specific) ────────────────────────────────────────────
+# build.sh substitutes the right meta-package at build time.
+# For amd64 builds this becomes linux-image-amd64.
+# For arm64 builds this becomes linux-image-arm64.
+# Placeholder — build.sh replaces KERNEL_PKG_PLACEHOLDER:
+KERNEL_PKG_PLACEHOLDER
+
+# ── Web server ────────────────────────────────────────────────────────────────
+nginx

@@ -1,0 +1,102 @@
+#!/bin/sh
+# Helix OS — Live Boot Init
+# Runs inside the initramfs before switching to real root.
+# Mirrors Unraid's boot model: USB → squashfs → RAM → overlayfs → pivot.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+BOOT_LABEL="HELIXBOOT"
+SQUASHFS_PATH="boot/filesystem.squashfs"
+TIMEOUT=30
+
+msg()  { echo "[hive] $*"; }
+warn() { echo "[hive] WARN: $*" >&2; }
+die()  { echo "[hive] FATAL: $*" >&2; exec /bin/sh; }
+
+# ── 1. Essential pseudo-filesystems ──────────────────────────────────────────
+mount -t devtmpfs  devtmpfs /dev
+mount -t proc      proc     /proc
+mount -t sysfs     sysfs    /sys
+mount -t tmpfs     tmpfs    /run
+mkdir -p /run/hive/usb /run/hive/ro /run/hive/rw
+
+# ── 2. Kernel modules ─────────────────────────────────────────────────────────
+for mod in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8; do
+    modprobe "$mod" 2>/dev/null || true
+done
+
+# ── 3. Wait for boot USB (by filesystem label) ───────────────────────────────
+msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
+# Resolve the boot device by filesystem label. busybox blkid does not support
+# `-L`, so try several methods: util-linux blkid -L, busybox findfs, then a
+# parse of plain `blkid` output.
+find_boot_dev() {
+    local dev
+    dev=$(blkid -L "$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
+    dev=$(findfs "LABEL=$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
+    blkid 2>/dev/null | grep -i "LABEL=\"$BOOT_LABEL\"" | head -1 | cut -d: -f1
+}
+
+USB_DEV=""
+i=0
+while [ $i -lt $TIMEOUT ]; do
+    USB_DEV=$(find_boot_dev)
+    [ -n "$USB_DEV" ] && break
+    # trigger udev rescan on first miss (no-op under busybox mdev)
+    [ $i -eq 0 ] && { udevadm trigger 2>/dev/null || true; udevadm settle 2>/dev/null || true; }
+    sleep 1
+    i=$((i + 1))
+done
+[ -n "$USB_DEV" ] || die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
+msg "Found boot device: $USB_DEV"
+
+# ── 4. Mount USB read-only initially ─────────────────────────────────────────
+mount -t vfat -o ro,noatime "$USB_DEV" /run/hive/usb \
+    || die "Cannot mount $USB_DEV"
+
+# ── 5. Copy squashfs into RAM ─────────────────────────────────────────────────
+# Copying to RAM means the USB can be removed after boot (Unraid behaviour).
+[ -f "/run/hive/usb/$SQUASHFS_PATH" ] \
+    || die "filesystem.squashfs not found at $SQUASHFS_PATH on boot device."
+
+SQUASHFS_SIZE=$(du -k "/run/hive/usb/$SQUASHFS_PATH" | cut -f1)
+msg "Loading filesystem (~${SQUASHFS_SIZE}K) into RAM..."
+mkdir -p /run/hive/img
+mount -t tmpfs -o "size=$((SQUASHFS_SIZE * 2))k" tmpfs /run/hive/img
+cp "/run/hive/usb/$SQUASHFS_PATH" /run/hive/img/filesystem.squashfs
+
+# ── 6. Mount squashfs (read-only base layer) ──────────────────────────────────
+mount -t squashfs -o loop,ro /run/hive/img/filesystem.squashfs /run/hive/ro \
+    || die "Cannot mount squashfs."
+
+# ── 7. Set up overlayfs (RAM layer on top) ───────────────────────────────────
+mount -t tmpfs -o mode=0755 tmpfs /run/hive/rw
+mkdir -p /run/hive/rw/upper /run/hive/rw/work
+mount -t overlay overlay \
+    -o "lowerdir=/run/hive/ro,upperdir=/run/hive/rw/upper,workdir=/run/hive/rw/work" \
+    /root \
+    || die "Cannot mount overlay filesystem."
+
+# ── 8. Mount USB read-write, bind as /boot (config lives here) ───────────────
+mount -o remount,rw "$USB_DEV" /run/hive/usb
+mkdir -p /root/boot
+mount --bind /run/hive/usb /root/boot
+
+# ── 9. Move pseudo-filesystems into new root ─────────────────────────────────
+mkdir -p /root/dev /root/proc /root/sys /root/run
+mount --move /dev  /root/dev
+mount --move /proc /root/proc
+mount --move /sys  /root/sys
+# /run stays — the overlayfs, squashfs tmpfs, and rw tmpfs are mounted under it;
+# switch_root cleans up the initramfs but those mounts survive as they are
+# referenced by the new root's overlayfs.
+
+# ── 10. Run /boot/config/go if present (like Unraid's startup script) ─────────
+if [ -f /root/boot/config/go ]; then
+    msg "Found /boot/config/go — will execute after pivot."
+    # We can't run it here; it runs from real root via rc.local/systemd
+fi
+
+msg "Switching to live filesystem..."
+exec switch_root /root /sbin/init
+die "switch_root failed — dropping to emergency shell."

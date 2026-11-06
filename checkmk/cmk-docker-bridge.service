@@ -1,0 +1,19 @@
+[Unit]
+Description=Helix OS — Checkmk Docker Event Bridge
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/cmk-docker-bridge.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=CMK_URL=http://localhost:5050/cmk/check_mk/api/1.0
+Environment=CMK_USER_FILE=/home/pi/.config/helix/checkmk_user
+Environment=CMK_SECRET_FILE=/home/pi/.config/helix/checkmk_secret
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+{
+  "name": "overseerr",
+  "title": "Overseerr",
+  "description": "Media request management for Plex — let users request movies and TV.",
+  "category": "Media",
+  "icon": "overseerr",
+  "port": 5055,
+  "vars": [
+    {"key": "CONFIG_PATH", "label": "Config path", "default": "/mnt/user/appdata/overseerr"}
+  ],
+  "compose": {
+    "services": {
+      "overseerr": {
+        "image": "linuxserver/overseerr:latest",
+        "container_name": "overseerr",
+        "ports": ["5055:5055"],
+        "volumes": [
+          "{{CONFIG_PATH}}:/config"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "PUID": "1000",
+          "PGID": "1000",
+          "TZ": "UTC"
+        }
+      }
+    }
+  }
+}

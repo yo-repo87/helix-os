@@ -1,0 +1,35 @@
+{
+  "name": "sonarr",
+  "title": "Sonarr",
+  "description": "TV series management — automatic downloading and organisation.",
+  "category": "*arr",
+  "icon": "sonarr",
+  "port": 8989,
+  "vars": [
+    {"key": "CONFIG_PATH",    "label": "Config path",    "default": "/mnt/user/appdata/sonarr"},
+    {"key": "MEDIA_PATH",     "label": "TV shows path",  "default": "/mnt/user/media/tv"},
+    {"key": "DOWNLOADS_PATH", "label": "Downloads path", "default": "/mnt/user/downloads"},
+    {"key": "PUID",           "label": "User ID",        "default": "1000"},
+    {"key": "PGID",           "label": "Group ID",       "default": "1000"}
+  ],
+  "compose": {
+    "services": {
+      "sonarr": {
+        "image": "linuxserver/sonarr:latest",
+        "container_name": "sonarr",
+        "ports": ["8989:8989"],
+        "volumes": [
+          "{{CONFIG_PATH}}:/config",
+          "{{MEDIA_PATH}}:/tv",
+          "{{DOWNLOADS_PATH}}:/downloads"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "PUID": "{{PUID}}",
+          "PGID": "{{PGID}}",
+          "TZ": "UTC"
+        }
+      }
+    }
+  }
+}

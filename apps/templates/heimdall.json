@@ -1,0 +1,31 @@
+{
+  "name": "heimdall",
+  "title": "Heimdall",
+  "description": "Application dashboard — a homepage for all your self-hosted services.",
+  "category": "Management",
+  "icon": "heimdall",
+  "port": 8082,
+  "vars": [
+    {"key": "CONFIG_PATH", "label": "Config path", "default": "/mnt/user/appdata/heimdall"},
+    {"key": "HTTP_PORT",   "label": "HTTP port",   "default": "8880"},
+    {"key": "HTTPS_PORT",  "label": "HTTPS port",  "default": "8443"}
+  ],
+  "compose": {
+    "services": {
+      "heimdall": {
+        "image": "linuxserver/heimdall:latest",
+        "container_name": "heimdall",
+        "ports": ["{{HTTP_PORT}}:80", "{{HTTPS_PORT}}:443"],
+        "volumes": [
+          "{{CONFIG_PATH}}:/config"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "PUID": "1000",
+          "PGID": "1000",
+          "TZ": "UTC"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "nextcloud",
+  "title": "Nextcloud",
+  "description": "Self-hosted cloud storage, calendar, contacts, and office suite.",
+  "category": "Cloud",
+  "icon": "cloud",
+  "port": 8181,
+  "vars": [
+    {"key": "CONFIG_PATH",    "label": "App data path", "default": "/mnt/user/appdata/nextcloud"},
+    {"key": "DATA_PATH",      "label": "User files path","default": "/mnt/user/nextcloud-data"},
+    {"key": "WEBUI_PORT",     "label": "Web UI port",   "default": "8181"},
+    {"key": "DB_PASSWORD",    "label": "Database password","default": "changeme123"},
+    {"key": "ADMIN_PASSWORD", "label": "Admin password", "default": "changeme123"}
+  ],
+  "compose": {
+    "services": {
+      "nextcloud-db": {
+        "image": "mariadb:lts",
+        "container_name": "nextcloud-db",
+        "volumes": ["{{CONFIG_PATH}}/db:/var/lib/mysql"],
+        "restart": "unless-stopped",
+        "environment": {
+          "MYSQL_ROOT_PASSWORD": "{{DB_PASSWORD}}",
+          "MYSQL_DATABASE": "nextcloud",
+          "MYSQL_USER": "nextcloud",
+          "MYSQL_PASSWORD": "{{DB_PASSWORD}}"
+        }
+      },
+      "nextcloud": {
+        "image": "nextcloud:latest",
+        "container_name": "nextcloud",
+        "ports": ["{{WEBUI_PORT}}:80"],
+        "volumes": [
+          "{{CONFIG_PATH}}/app:/var/www/html",
+          "{{DATA_PATH}}:/var/www/html/data"
+        ],
+        "restart": "unless-stopped",
+        "depends_on": ["nextcloud-db"],
+        "environment": {
+          "MYSQL_HOST": "nextcloud-db",
+          "MYSQL_DATABASE": "nextcloud",
+          "MYSQL_USER": "nextcloud",
+          "MYSQL_PASSWORD": "{{DB_PASSWORD}}",
+          "NEXTCLOUD_ADMIN_USER": "admin",
+          "NEXTCLOUD_ADMIN_PASSWORD": "{{ADMIN_PASSWORD}}"
+        }
+      }
+    }
+  }
+}

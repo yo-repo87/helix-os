@@ -31,3 +31,19 @@ build/
 MediaCover/
 Backups/
 
+
+# --- Helix OS: proprietary Unraid source material (not ours to redistribute) ---
+unRAIDServer-*.zip
+usb-creator.exe
+unraid-extracted/
+bzroot-fs/
+bzroot-contents/
+bzmodules-emhttp/
+
+# --- Compiled images (shipped via GitHub Releases, too large for git) ---
+*.iso
+*.img
+*.img.xz
+
+# --- misc logs ---
+wget-log*

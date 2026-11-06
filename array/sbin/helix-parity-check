@@ -1,0 +1,50 @@
+#!/bin/bash
+# helix-parity-check — Run SnapRAID sync + optional scrub.
+# Equivalent to Unraid's "Check Parity" / "Parity-Check" operation.
+#
+# Usage:
+#   helix-parity-check              # sync only (fast — catches new files)
+#   helix-parity-check --scrub      # sync + full bit-rot scrub
+#   helix-parity-check --scrub 12   # scrub oldest 12% of data (incremental)
+
+set -euo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+
+SCRUB=""
+SCRUB_PCT=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --scrub) SCRUB="yes"; SCRUB_PCT="${2:-100}"; shift; [[ "$SCRUB_PCT" =~ ^[0-9]+$ ]] && shift || SCRUB_PCT=100 ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
+
+# Array must be started
+[ -f "$ARRAY_STATE" ] && [ "$(head -1 "$ARRAY_STATE")" = "started" ] || {
+    helix_err "Array is not started. Run helix-array-start first."
+    exit 1
+}
+
+[ -f "$SNAPRAID_CONF" ] || {
+    helix_err "No snapraid.conf found. Run helix-array-start to generate it."
+    exit 1
+}
+
+START=$(date +%s)
+helix_log "Starting parity sync..."
+snapraid -c "$SNAPRAID_CONF" sync
+SYNC_END=$(date +%s)
+helix_log "Sync complete in $((SYNC_END - START))s."
+
+if [ "$SCRUB" = "yes" ]; then
+    helix_log "Starting scrub (${SCRUB_PCT}% of data)..."
+    snapraid -c "$SNAPRAID_CONF" scrub -p "$SCRUB_PCT" -o 0
+    SCRUB_END=$(date +%s)
+    helix_log "Scrub complete in $((SCRUB_END - SYNC_END))s."
+fi
+
+TOTAL=$(($(date +%s) - START))
+helix_log "Parity check finished in ${TOTAL}s."

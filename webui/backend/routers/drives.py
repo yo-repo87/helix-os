@@ -274,11 +274,8 @@ def format_drive(name: str, req: FormatReq):
         raise HTTPException(400, "fs must be xfs, btrfs, or ext4")
 
     # Safety: refuse if mounted
-    rc, out, _ = subprocess.run(["findmnt", "-n", device],
-                                  capture_output=True, text=True).returncode, \
-                 *subprocess.run(["findmnt", "-n", device],
-                                  capture_output=True, text=True).stdout.splitlines()[:1], ""
-    if rc == 0 and out:
+    mnt = subprocess.run(["findmnt", "-n", device], capture_output=True, text=True)
+    if mnt.returncode == 0 and mnt.stdout.strip():
         raise HTTPException(409, f"{device} is currently mounted — unmount first")
 
     label_args: list[str] = []
@@ -304,11 +301,8 @@ def _run_preclear(device: str):
     _preclear_jobs[device] = {"pct": 0, "done": False, "error": ""}
     try:
         # Get drive size
-        rc, out, _ = subprocess.run(
-            ["blockdev", "--getsize64", device],
-            capture_output=True, text=True).returncode, \
-            *subprocess.run(["blockdev", "--getsize64", device],
-                             capture_output=True, text=True).stdout.strip().split()[:1], ""
+        bd = subprocess.run(["blockdev", "--getsize64", device], capture_output=True, text=True)
+        out = bd.stdout.strip()
         total_bytes = int(out) if out.isdigit() else 0
 
         proc = subprocess.Popen(

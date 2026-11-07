@@ -109,7 +109,12 @@ def available_drives():
     for d in data.get("blockdevices", []):
         if d.get("type") != "disk":
             continue  # skip partitions, loop, rom/CD, lvm
-        path = d.get("path") or f"/dev/{d.get('name')}"
+        name = d.get("name") or ""
+        # Skip pseudo/virtual/empty devices (floppy, loop, ram, zram, md, dm, sr).
+        if (d.get("size") or 0) < 1_000_000 or name.startswith(
+                ("fd", "sr", "loop", "ram", "zram", "md", "dm-", "nbd")):
+            continue
+        path = d.get("path") or f"/dev/{name}"
         role, aname = assigned.get(path, ("", ""))
         rota = d.get("rota")
         disks.append({

@@ -6,13 +6,20 @@ from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, U
 
 router = APIRouter(prefix="/api/array", tags=["array"])
 
-def _run_sbin(script: str, *args, env_override: dict | None = None) -> tuple[int, str, str]:
-    env = os.environ.copy()
-    env["HELIX_CONFIG"] = HELIX_CONFIG
-    if env_override:
-        env.update(env_override)
+def _sbin_cmd(script: str, *args) -> list:
+    """Build a sudo invocation for an array helper. The helpers mount disks /
+    start mergerfs and require root; the backend runs as the unprivileged 'helix'
+    user (NOPASSWD sudo), so run them via sudo with HELIX_CONFIG passed through."""
     path = os.path.join(ARRAY_SBIN, script)
-    r = subprocess.run(["/bin/bash", path, *args], capture_output=True, text=True, env=env)
+    return ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", "/bin/bash", path, *args]
+
+
+def _run_sbin(script: str, *args, env_override: dict | None = None) -> tuple[int, str, str]:
+    cmd = ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}"]
+    if env_override:
+        cmd += [f"{k}={v}" for k, v in env_override.items()]
+    cmd += ["/bin/bash", os.path.join(ARRAY_SBIN, script), *args]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
 def _array_state() -> str:
@@ -186,14 +193,11 @@ async def parity_stream(scrub: bool = False):
 
     async def _generate():
         global _parity_proc
-        env = os.environ.copy()
-        env["HELIX_CONFIG"] = HELIX_CONFIG
-        script = os.path.join(ARRAY_SBIN, "helix-parity-check")
-        args = ["/bin/bash", script] + (["--scrub"] if scrub else [])
+        args = _sbin_cmd("helix-parity-check", *(["--scrub"] if scrub else []))
 
         try:
             _parity_proc = await asyncio.create_subprocess_exec(
-                *args, env=env,
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -242,20 +246,16 @@ async def rebuild_stream():
     async def _gen():
         global _rebuild_proc
         script = os.path.join(ARRAY_SBIN, "helix-parity-rebuild")
-        if not os.path.isfile(script):
-            # Fallback: direct snapraid fix
-            script = None
+        if os.path.isfile(script):
+            cmd = _sbin_cmd("helix-parity-rebuild")
+        else:
+            # Fallback: direct snapraid fix (also needs root).
+            cmd = ["sudo", "-n", "snapraid", "fix", "-e"]
         try:
-            if script:
-                _rebuild_proc = await asyncio.create_subprocess_exec(
-                    script,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT)
-            else:
-                _rebuild_proc = await asyncio.create_subprocess_exec(
-                    "snapraid", "fix", "-e",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT)
+            _rebuild_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
         except FileNotFoundError as e:
             yield f"data: ERROR: {e}\n\n"
             yield "data: DONE\n\n"

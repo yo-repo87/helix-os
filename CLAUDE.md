@@ -986,4 +986,25 @@ wears it out; use zram or a real SSD for those).
   (writable boot) → `$STATE_DIR/config` (RAM fallback), so config/array
   assignments persist on writable media.
 
+---
+
+## 27. Array actually starts + versioning policy (2026-11-07)
+
+- **mergerfs/snapraid** were only in `packages-full` (images build `FULL=no`), so
+  the array could never start. Moved to `packages-base` (+`fuse3`).
+- **`helix-array-start` requires root** (mounts, mergerfs), but `array.py`
+  `_run_sbin` / parity / rebuild invoked the helpers **without sudo**, so they ran
+  as the unprivileged `helix` user and exited `Must run as root` — array_state
+  never became "started". Now all array helpers run via `sudo -n env
+  HELIX_CONFIG=… /bin/bash …` (`_sbin_cmd`). Format worked already because it used
+  `_sudo`.
+- **Format dialog** now shows a single **Done** button after completion.
+
+### Versioning policy
+`build/config/VERSION` is the revision stamped into `/etc/helix-version` (shown on
+the console banner + Settings → Helix OS Update). **Bump the PATCH/revision on
+every shipped update** so builds are distinguishable and the OTA updater flags new
+versions. Now **0.1.1** (the first patched revision over the initial 0.1.0 — all of
+today's boot/network/HTTPS/web-UI/drive/array fixes).
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

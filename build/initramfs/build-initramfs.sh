@@ -82,9 +82,13 @@ fi
 install_module() {
     # Copy a module AND its dependency closure (modules.dep lists transitive
     # deps per line), decompressing .ko.xz/.zst/.gz so busybox can load them.
-    local name="$1" line rel src base
+    local name="$1" line rel src base pat
     [ -f "$SRC_MODS/modules.dep" ] || return 0
-    line=$(grep -m1 -E "(^|/)${name}\.ko([.][a-z]+)?:" "$SRC_MODS/modules.dep") || {
+    # Kernel module FILE names use '-' where module names use '_' (e.g.
+    # usb_storage -> usb-storage.ko, xhci_hcd -> xhci-hcd.ko). modprobe treats
+    # them interchangeably, so match either when scanning modules.dep.
+    pat=$(printf '%s' "$name" | sed 's/[_-]/[_-]/g')
+    line=$(grep -m1 -E "(^|/)${pat}\.ko([.][a-z]+)?:" "$SRC_MODS/modules.dep") || {
         echo "  (module not found: $name)"; return 0; }
     for rel in $(echo "$line" | tr ':' ' '); do
         src="$SRC_MODS/$rel"
@@ -101,8 +105,23 @@ install_module() {
 
 if [ -d "$SRC_MODS" ]; then
     echo "  Modules from: $SRC_MODS"
-    for modname in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8 isofs \
-                   crc32c_generic libcrc32c; do
+    # Filesystems + the storage/controller drivers needed to even SEE the boot
+    # device. Debian ships these as modules, so without them here the kernel
+    # cannot find HELIXBOOT on a VM disk/CD (VirtIO/SATA/NVMe), USB stick, or SD
+    # card. install_module() silently skips any name absent from this arch's
+    # modules.dep, so arch-specific entries (e.g. sdhci_iproc) are harmless.
+    for modname in \
+        squashfs overlay loop \
+        vfat exfat isofs nls_cp437 nls_ascii nls_utf8 nls_iso8859_1 \
+        ext4 mbcache jbd2 crc32c_generic libcrc32c crc16 \
+        scsi_mod sd_mod sr_mod cdrom \
+        virtio virtio_ring virtio_pci virtio_mmio virtio_blk virtio_scsi \
+        ahci libahci libata ata_piix ata_generic pata_acpi \
+        nvme nvme_core \
+        usb_common usbcore ehci_hcd ehci_pci ohci_hcd ohci_pci uhci_hcd \
+        xhci_hcd xhci_pci usb_storage uas \
+        mmc_core mmc_block sdhci sdhci_pci sdhci_acpi sdhci_pltfm \
+        sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm; do
         install_module "$modname"
     done
     # Fresh dependency index for the flattened module set.

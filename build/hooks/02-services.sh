@@ -60,4 +60,16 @@ EOF
 
 systemctl enable helix-config-network
 
+# ── Make network-online.target complete promptly ──────────────────────────────
+# nginx (and other services) order After=network-online.target. The default
+# systemd-networkd-wait-online waits for ALL managed links, so one down/absent
+# interface can stall the web UI for ~120s after boot. --any lets a single link
+# coming online satisfy it, with a bounded timeout.
+mkdir -p /etc/systemd/system/systemd-networkd-wait-online.service.d
+cat > /etc/systemd/system/systemd-networkd-wait-online.service.d/helix.conf <<'WOEOF'
+[Service]
+ExecStart=
+ExecStart=/lib/systemd/systemd-networkd-wait-online --any --timeout=30
+WOEOF
+
 echo "==> [hook 02] Done."

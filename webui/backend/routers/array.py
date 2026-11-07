@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
-import asyncio, subprocess, os, json, re
+from pydantic import BaseModel
+import asyncio, subprocess, os, json, re, tempfile
 from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE
 
 router = APIRouter(prefix="/api/array", tags=["array"])
@@ -109,6 +110,58 @@ def drives():
 
             disks.append(info)
     return disks
+
+
+# ── Disk assignment (writes disks.cfg, consumed by helix-array-start) ─────────
+
+class AssignReq(BaseModel):
+    parity: list[str] = []   # device paths, e.g. ["/dev/sdb"]
+    data:   list[str] = []   # device paths for data disks
+    fmt:    str = "xfs"      # filesystem for data disks
+
+
+def _write_disks_cfg(content: str) -> str:
+    """Write disks.cfg; fall back to sudo since the backend is unprivileged and
+    /boot is usually root-owned. Returns '' on success or an error string."""
+    try:
+        os.makedirs(os.path.dirname(DISKS_CFG), exist_ok=True)
+        with open(DISKS_CFG, "w") as f:
+            f.write(content)
+        return ""
+    except (PermissionError, OSError):
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".disks") as tf:
+                tf.write(content)
+                tmp = tf.name
+            d = os.path.dirname(DISKS_CFG)
+            subprocess.run(["sudo", "-n", "mkdir", "-p", d], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["sudo", "-n", "cp", tmp, DISKS_CFG], capture_output=True, text=True, timeout=10)
+            os.unlink(tmp)
+            if r.returncode != 0:
+                return (f"cannot write {DISKS_CFG}: {r.stderr.strip() or 'permission denied'} — "
+                        "the boot medium is likely read-only (ISO/CD). Boot Helix from a writable "
+                        "USB/disk to save array assignments.")
+            return ""
+        except Exception as e:
+            return f"cannot write {DISKS_CFG}: {e}"
+
+
+@router.post("/assign")
+def assign_disks(req: AssignReq):
+    """Persist a parity/data disk assignment to disks.cfg (reboot-safe on a
+    writable boot medium). Does not start the array — call /start after."""
+    all_devs = req.parity + req.data
+    if len(set(all_devs)) != len(all_devs):
+        raise HTTPException(400, "A device was assigned to more than one slot.")
+    lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
+    for i, dev in enumerate(req.parity, 1):
+        lines += [f"[parity{i}]", f"device={dev}", ""]
+    for i, dev in enumerate(req.data, 1):
+        lines += [f"[disk{i}]", f"device={dev}", f"format={req.fmt}", ""]
+    err = _write_disks_cfg("\n".join(lines) + "\n")
+    if err:
+        raise HTTPException(500, err)
+    return {"ok": True, "parity": req.parity, "data": req.data, "fmt": req.fmt}
 
 
 # ── Parity check SSE streaming ────────────────────────────────────────────────

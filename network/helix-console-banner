@@ -1,0 +1,45 @@
+#!/bin/sh
+# helix-console-banner — write /etc/issue with the current IP address(es) and
+# the web UI URL, shown on the console *before* the login prompt.
+#
+# Helix OS has no password login (SSH is key-based; the web UI is open until you
+# create an account), so the console banner is how you find the box on your LAN.
+# Run at boot (after the network is up) by helix-console-banner.service, and
+# again whenever addresses change.
+set -eu
+
+ISSUE=/etc/issue
+HOST="$(hostname 2>/dev/null || echo helix)"
+VER="$(cat /etc/helix-version 2>/dev/null || echo '')"
+
+# Global-scope IPv4 addresses on real links (skip loopback/virtual/container).
+ips=$(ip -o -4 addr show scope global 2>/dev/null \
+  | awk '$2 !~ /^(lo|docker|veth|br-|virbr|tap|wg|kube|cni)/ {split($4,a,"/"); print $2" "a[1]}')
+
+{
+  printf '\n'
+  if [ -n "$VER" ]; then printf '  Helix OS %s  (%s)\n' "$VER" "$HOST"
+  else                    printf '  Helix OS  (%s)\n' "$HOST"; fi
+  printf '  ----------------------------------------------------------\n'
+  if [ -n "$ips" ]; then
+    printf '  Web UI (open in a browser):\n'
+    echo "$ips" | while read -r ifn ip; do
+      printf '      http://%s/         [%s]\n' "$ip" "$ifn"
+      printf '      https://%s/        [%s, self-signed cert]\n' "$ip" "$ifn"
+    done
+  else
+    printf '  Web UI:  no network link yet — check cabling / DHCP\n'
+  fi
+  printf '\n'
+  printf '  SSH:     key-based only (add keys to /boot/config/ssh/)\n'
+  printf '  Login:   no password is set on this console.\n'
+  printf '\n'
+} > "$ISSUE"
+
+cp "$ISSUE" /etc/issue.net 2>/dev/null || true
+
+# Redraw tty1 so the address appears on the already-displayed prompt. Nobody is
+# logged in at boot, so a restart is safe. Pass --no-restart to skip.
+if [ "${1:-}" != "--no-restart" ]; then
+  systemctl try-restart getty@tty1.service 2>/dev/null || true
+fi

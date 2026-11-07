@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth
-from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate
+from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc
 from services.drive_health import poll_loop
 from services.drive_history import history_poll_loop
 from routers.audit import AuditMiddleware
@@ -73,6 +73,7 @@ app.include_router(wol.router)
 app.include_router(scanner.router)
 app.include_router(cpu_oc.router)
 app.include_router(osupdate.router)
+app.include_router(pi_oc.router)
 
 # Serve frontend
 FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")

@@ -9,23 +9,41 @@ BOOT_LABEL="HELIXBOOT"
 SQUASHFS_PATH="boot/filesystem.squashfs"
 TIMEOUT=30
 
-msg()  { echo "[hive] $*"; }
-warn() { echo "[hive] WARN: $*" >&2; }
-die()  { echo "[hive] FATAL: $*" >&2; exec /bin/sh; }
+msg()  { echo "[helix] $*"; }
+warn() { echo "[helix] WARN: $*" >&2; }
+die()  { echo "[helix] FATAL: $*" >&2; exec /bin/sh; }
 
 # ── 1. Essential pseudo-filesystems ──────────────────────────────────────────
 mount -t devtmpfs  devtmpfs /dev
 mount -t proc      proc     /proc
 mount -t sysfs     sysfs    /sys
 mount -t tmpfs     tmpfs    /run
-mkdir -p /run/hive/usb /run/hive/ro /run/hive/rw
+mkdir -p /run/helix/usb /run/helix/ro /run/helix/rw
 
 # ── 2. Kernel modules ─────────────────────────────────────────────────────────
-for mod in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8; do
+# Load filesystem modules AND the storage/controller drivers needed to see the
+# boot device. Without the controller drivers (VirtIO on KVM/Proxmox, AHCI/SATA,
+# NVMe, USB, SD/MMC) the HELIXBOOT device never appears and the search below
+# times out. devtmpfs creates the device nodes automatically as each driver
+# attaches, so no udev is required.
+for mod in \
+    virtio_pci virtio_mmio virtio_blk virtio_scsi \
+    ahci ata_piix ata_generic pata_acpi libata \
+    scsi_mod sd_mod sr_mod cdrom \
+    nvme_core nvme \
+    usb_common usbcore ehci_pci ehci_hcd ohci_pci ohci_hcd uhci_hcd \
+    xhci_pci xhci_hcd usb_storage uas \
+    mmc_core mmc_block sdhci sdhci_pci sdhci_acpi sdhci_pltfm \
+    sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm \
+    squashfs overlay loop vfat exfat isofs nls_cp437 nls_ascii nls_utf8; do
     modprobe "$mod" 2>/dev/null || true
 done
 
-# ── 3. Wait for boot USB (by filesystem label) ───────────────────────────────
+# Let asynchronous probing (USB/VirtIO enumeration) settle before scanning.
+udevadm trigger 2>/dev/null || true
+udevadm settle --timeout=10 2>/dev/null || true
+
+# ── 3. Wait for boot device (by filesystem label) ────────────────────────────
 msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
 # Resolve the boot device by filesystem label. busybox blkid does not support
 # `-L`, so try several methods: util-linux blkid -L, busybox findfs, then a
@@ -42,25 +60,33 @@ i=0
 while [ $i -lt $TIMEOUT ]; do
     USB_DEV=$(find_boot_dev)
     [ -n "$USB_DEV" ] && break
-    # trigger udev rescan on first miss (no-op under busybox mdev)
-    [ $i -eq 0 ] && { udevadm trigger 2>/dev/null || true; udevadm settle 2>/dev/null || true; }
+    # Re-trigger enumeration periodically (no-op under busybox mdev).
+    udevadm trigger 2>/dev/null || true
     sleep 1
     i=$((i + 1))
 done
-[ -n "$USB_DEV" ] || die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
+if [ -z "$USB_DEV" ]; then
+    warn "Boot device (label=$BOOT_LABEL) not found. Visible block devices:"
+    blkid 2>/dev/null >&2 || true
+    die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
+fi
 msg "Found boot device: $USB_DEV"
 
-# ── 4. Mount USB read-only initially ─────────────────────────────────────────
-mount -t vfat -o ro,noatime "$USB_DEV" /run/hive/usb \
-    || die "Cannot mount $USB_DEV"
+# ── 4. Mount boot device read-only (auto-detect iso9660 vs vfat) ─────────────
+# The ISO image is iso9660; a USB written by write-usb.sh is vfat. Try auto
+# first (busybox reads /proc/filesystems), then explicit types.
+if   mount -o ro,noatime           "$USB_DEV" /run/helix/usb 2>/dev/null; then :
+elif mount -t iso9660 -o ro        "$USB_DEV" /run/helix/usb 2>/dev/null; then :
+elif mount -t vfat    -o ro,noatime "$USB_DEV" /run/helix/usb 2>/dev/null; then :
+else die "Cannot mount boot device $USB_DEV (tried auto, iso9660, vfat)."; fi
 
 # ── 5. Pick squashfs (fall back to previous image if an update was interrupted) ─
 # The GitHub updater keeps the prior image as *.prev and sets an inflight flag
 # while swapping. If that swap did not finish, or the new image is missing,
 # boot the previous one instead of failing.
-SQUASHFS_SRC="/run/hive/usb/$SQUASHFS_PATH"
-SQUASHFS_PREV="/run/hive/usb/${SQUASHFS_PATH}.prev"
-if [ -f "/run/hive/usb/boot/.helix-update-inflight" ] && [ -f "$SQUASHFS_PREV" ]; then
+SQUASHFS_SRC="/run/helix/usb/$SQUASHFS_PATH"
+SQUASHFS_PREV="/run/helix/usb/${SQUASHFS_PATH}.prev"
+if [ -f "/run/helix/usb/boot/.helix-update-inflight" ] && [ -f "$SQUASHFS_PREV" ]; then
     warn "Interrupted update detected — booting previous image (.prev)."
     SQUASHFS_SRC="$SQUASHFS_PREV"
 elif [ ! -f "$SQUASHFS_SRC" ] && [ -f "$SQUASHFS_PREV" ]; then
@@ -69,19 +95,19 @@ elif [ ! -f "$SQUASHFS_SRC" ] && [ -f "$SQUASHFS_PREV" ]; then
 fi
 [ -f "$SQUASHFS_SRC" ] || die "No bootable filesystem.squashfs on boot device."
 
-# Copying to RAM means the USB can be removed after boot (Unraid behaviour).
+# Copying to RAM means the USB/CD can be removed after boot (Unraid behaviour).
 SQUASHFS_SIZE=$(du -k "$SQUASHFS_SRC" | cut -f1)
 msg "Loading filesystem (~${SQUASHFS_SIZE}K) into RAM..."
-mkdir -p /run/hive/img
-mount -t tmpfs -o "size=$((SQUASHFS_SIZE * 2))k" tmpfs /run/hive/img
-cp "$SQUASHFS_SRC" /run/hive/img/filesystem.squashfs
+mkdir -p /run/helix/img
+mount -t tmpfs -o "size=$((SQUASHFS_SIZE * 2))k" tmpfs /run/helix/img
+cp "$SQUASHFS_SRC" /run/helix/img/filesystem.squashfs
 
 # ── 6. Mount squashfs (read-only base layer); on failure, try the previous one ─
-if ! mount -t squashfs -o loop,ro /run/hive/img/filesystem.squashfs /run/hive/ro; then
+if ! mount -t squashfs -o loop,ro /run/helix/img/filesystem.squashfs /run/helix/ro; then
     if [ "$SQUASHFS_SRC" != "$SQUASHFS_PREV" ] && [ -f "$SQUASHFS_PREV" ]; then
         warn "New image failed to mount — falling back to previous image (.prev)."
-        cp "$SQUASHFS_PREV" /run/hive/img/filesystem.squashfs
-        mount -t squashfs -o loop,ro /run/hive/img/filesystem.squashfs /run/hive/ro \
+        cp "$SQUASHFS_PREV" /run/helix/img/filesystem.squashfs
+        mount -t squashfs -o loop,ro /run/helix/img/filesystem.squashfs /run/helix/ro \
             || die "Cannot mount squashfs (including .prev fallback)."
     else
         die "Cannot mount squashfs."
@@ -89,17 +115,20 @@ if ! mount -t squashfs -o loop,ro /run/hive/img/filesystem.squashfs /run/hive/ro
 fi
 
 # ── 7. Set up overlayfs (RAM layer on top) ───────────────────────────────────
-mount -t tmpfs -o mode=0755 tmpfs /run/hive/rw
-mkdir -p /run/hive/rw/upper /run/hive/rw/work
+mount -t tmpfs -o mode=0755 tmpfs /run/helix/rw
+mkdir -p /run/helix/rw/upper /run/helix/rw/work
 mount -t overlay overlay \
-    -o "lowerdir=/run/hive/ro,upperdir=/run/hive/rw/upper,workdir=/run/hive/rw/work" \
+    -o "lowerdir=/run/helix/ro,upperdir=/run/helix/rw/upper,workdir=/run/helix/rw/work" \
     /root \
     || die "Cannot mount overlay filesystem."
 
-# ── 8. Mount USB read-write, bind as /boot (config lives here) ───────────────
-mount -o remount,rw "$USB_DEV" /run/hive/usb
+# ── 8. Bind the boot device as /boot (config lives here) ─────────────────────
+# Try to make it writable so config persists; a read-only medium (ISO/CD) is
+# fine — the system still boots, just without persisting changes to /boot.
+mount -o remount,rw "$USB_DEV" /run/helix/usb 2>/dev/null \
+    || warn "boot medium is read-only — /boot config persistence disabled (expected for ISO/CD boot)."
 mkdir -p /root/boot
-mount --bind /run/hive/usb /root/boot
+mount --bind /run/helix/usb /root/boot
 
 # ── 9. Move pseudo-filesystems into new root ─────────────────────────────────
 mkdir -p /root/dev /root/proc /root/sys /root/run

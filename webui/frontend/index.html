@@ -1660,11 +1660,13 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
       <button class="hw-tab" id="hw-tab-pci" onclick="switchHwTab('pci')" style="padding:7px 18px;font-size:12px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--fg-muted);cursor:pointer">PCI Devices</button>
       <button class="hw-tab" id="hw-tab-cpu" onclick="switchHwTab('cpu')" style="padding:7px 18px;font-size:12px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--fg-muted);cursor:pointer">CPU / Governor</button>
       <button class="hw-tab" id="hw-tab-cpuoc" onclick="switchHwTab('cpuoc')" style="padding:7px 18px;font-size:12px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--fg-muted);cursor:pointer">CPU Overclock</button>
+      <button class="hw-tab" id="hw-tab-pioc" onclick="switchHwTab('pioc')" style="display:none;padding:7px 18px;font-size:12px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;color:var(--fg-muted);cursor:pointer">Pi Overclock</button>
     </div>
     <div id="hw-pane-overview"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
     <div id="hw-pane-pci" hidden><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
     <div id="hw-pane-cpu" hidden><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
     <div id="hw-pane-cpuoc" hidden><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading OC profiles…</div></div>
+    <div id="hw-pane-pioc" hidden><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading Pi OC…</div></div>
   </div>
 
   <!-- GPU Management (hidden until #gpu-mgmt) -->
@@ -6864,7 +6866,7 @@ let _hwTab = 'overview';
 
 function switchHwTab(tab) {
   _hwTab = tab;
-  ['overview','pci','cpu','cpuoc'].forEach(t => {
+  ['overview','pci','cpu','cpuoc','pioc'].forEach(t => {
     const pane = document.getElementById(`hw-pane-${t}`);
     const btn  = document.getElementById(`hw-tab-${t}`);
     if (pane) pane.hidden = (t !== tab);
@@ -6877,9 +6879,18 @@ function switchHwTab(tab) {
   if (tab === 'pci')      _loadHwPci();
   if (tab === 'cpu')      _loadHwCpu();
   if (tab === 'cpuoc')    loadCpuOc();
+  if (tab === 'pioc')     loadPiOc();
 }
 
-async function loadHardware() { switchHwTab(_hwTab); }
+async function loadHardware() {
+  // Reveal the Pi Overclock tab only on Raspberry Pi hardware.
+  try {
+    const s = await fetchJSON('/api/pi-oc/status');
+    const btn = document.getElementById('hw-tab-pioc');
+    if (btn) btn.style.display = s && s.is_pi ? '' : 'none';
+  } catch(e) { /* non-Pi or endpoint unavailable — leave tab hidden */ }
+  switchHwTab(_hwTab);
+}
 
 async function _loadHwOverview() {
   const el = document.getElementById('hw-pane-overview');
@@ -7424,6 +7435,236 @@ function cpuOcLiveToggle() {
     _cpuOcLiveEs = null;
     if (btn) btn.textContent = '▶ Live';
   };
+}
+
+// ── Raspberry Pi Overclock ───────────────────────────────────────────────────
+let _piOcLiveEs = null;
+
+async function loadPiOc() {
+  const el = document.getElementById('hw-pane-pioc');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--fg-dim);padding:20px;text-align:center">Loading Pi OC…</div>';
+  try {
+    const [status, profiles] = await Promise.all([
+      fetchJSON('/api/pi-oc/status'),
+      fetchJSON('/api/pi-oc/profiles'),
+    ]);
+    if (!status.is_pi) {
+      el.innerHTML = '<div style="color:var(--fg-muted);padding:20px">This feature applies to Raspberry Pi hardware only.</div>';
+      return;
+    }
+    _renderPiOc(el, status, profiles);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--warn);padding:20px">Error loading Pi OC: ${e}</div>`;
+  }
+}
+
+function _piSettingBadges(s) {
+  const b = [];
+  if (s.arm_freq)           b.push(_ocBadge('CPU', s.arm_freq + ' MHz', 'var(--accent)'));
+  if (s.over_voltage)       b.push(_ocBadge('V', '+' + s.over_voltage, s.over_voltage > 6 ? 'var(--warn)' : ''));
+  if (s.over_voltage_delta) b.push(_ocBadge('ΔV', (s.over_voltage_delta/1000) + ' mV', ''));
+  if (s.gpu_freq)           b.push(_ocBadge('GPU', s.gpu_freq + ' MHz', ''));
+  if (s.v3d_freq)           b.push(_ocBadge('V3D', s.v3d_freq + ' MHz', ''));
+  if (s.core_freq)          b.push(_ocBadge('Core', s.core_freq + ' MHz', ''));
+  if (s.sdram_freq)         b.push(_ocBadge('RAM', s.sdram_freq + ' MHz', ''));
+  if (s.force_turbo === '1' || s.force_turbo === 1) b.push(_ocBadge('force_turbo', 'on', 'var(--warn)'));
+  return b.join('');
+}
+
+function _renderPiOc(el, status, profiles) {
+  const profs = profiles.profiles || [];
+  const soc = status.soc;
+  const cur = status.current_oc || {};
+  const hasCur = Object.keys(cur).length > 0;
+  const af = status.arm_freq || {};
+  const tempColor = t => t > 80 ? 'var(--err)' : t > 70 ? 'var(--warn)' : 'var(--ok)';
+  const thr = status.throttled || {};
+  const thrActive = thr.under_voltage_now || thr.throttled_now || thr.freq_capped_now;
+
+  el.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--warn);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--fg-muted)">
+      ⚠ Raspberry Pi overclocking edits <span class="mono">${status.config_txt}</span> and takes effect
+      <strong>after a reboot</strong>. Higher tiers need active cooling; <em>force_turbo</em> + over-voltage
+      sets the warranty bit. A weak power supply can cause under-voltage throttling.
+    </div>
+
+    ${hasCur ? `<div style="background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--accent)">
+      Overclock is staged in config.txt — <strong>reboot to apply.</strong>
+      <button class="ctr-btn" onclick="rebootForPiOc()" style="font-size:11px;margin-left:8px">⟳ Reboot now</button>
+    </div>` : ''}
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${status.model}</div>
+          <div style="font-size:11px;color:var(--fg-muted);margin-top:2px">SoC: <strong style="color:var(--accent)">${soc}</strong> · ${status.codename||''}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${status.temp_c != null ? `<span style="font-size:14px;font-weight:700;color:${tempColor(status.temp_c)}" id="pioc-temp">${status.temp_c.toFixed(1)}°C</span>` : ''}
+          <button class="ctr-btn" onclick="piOcLiveToggle()" id="pioc-live-btn" style="font-size:11px">▶ Live</button>
+          <button class="ctr-btn" onclick="resetPiOc()" style="font-size:11px;color:var(--warn);border-color:var(--warn)">↺ Reset</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12px">
+        <div><span style="color:var(--fg-muted)">ARM clock:</span> <strong id="pioc-curfreq">${af.cur_mhz||'—'} MHz</strong></div>
+        <div><span style="color:var(--fg-muted)">ARM max:</span> <strong>${af.max_mhz||'—'} MHz</strong></div>
+        <div><span style="color:var(--fg-muted)">Throttled:</span> <strong id="pioc-thr" style="color:${thrActive?'var(--warn)':'var(--ok)'}">${thrActive?'yes':'no'}</strong></div>
+      </div>
+      ${hasCur ? `<div style="margin-top:10px;font-size:11px;color:var(--fg-muted)">Staged config.txt: <span style="display:inline-flex;flex-wrap:wrap;gap:4px;vertical-align:middle">${_piSettingBadges(cur)}</span></div>` : ''}
+    </div>
+
+    <div id="pioc-result" style="display:none;padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px"></div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Profiles for ${status.codename||soc}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:16px">
+      ${profs.length ? profs.map(p => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+            <div>
+              <div style="font-size:13px;font-weight:600">${p.name}</div>
+              <div style="font-size:10px;color:var(--accent);margin-top:1px;text-transform:uppercase">${p.tier}</div>
+            </div>
+            <button class="ctr-btn primary" onclick="applyPiProfile('${p.id}')" style="font-size:11px;white-space:nowrap;flex-shrink:0">Apply</button>
+          </div>
+          <div style="font-size:11px;color:var(--fg-muted)">${p.description}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:2px">${_piSettingBadges(p.settings||{})}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${p.needs_cooling ? _ocBadge('cooling', 'required', 'var(--warn)') : _ocBadge('cooling', 'optional', 'var(--ok)')}
+            ${p.voids_warranty ? _ocBadge('warranty', 'voided', 'var(--err)') : ''}
+          </div>
+          ${p.notes ? `<div style="font-size:10px;color:var(--fg-dim);font-style:italic;margin-top:2px">${p.notes}</div>` : ''}
+        </div>
+      `).join('') : '<div style="color:var(--fg-muted);font-size:12px">No profiles for this board.</div>'}
+    </div>
+
+    <!-- Custom settings -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Custom Settings</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px 20px;font-size:12px">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">CPU arm_freq (MHz)</span>
+          <input id="pioc-arm" type="number" value="${cur.arm_freq||''}" placeholder="${af.max_mhz||''}" class="settings-input" style="font-size:12px">
+        </label>
+        ${soc === 'bcm2712' ? `
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">over_voltage_delta (µV)</span>
+          <input id="pioc-ovd" type="number" step="5000" value="${cur.over_voltage_delta||''}" placeholder="0" class="settings-input" style="font-size:12px">
+        </label>` : `
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">over_voltage (0–8)</span>
+          <input id="pioc-ov" type="number" min="0" max="8" value="${cur.over_voltage||''}" placeholder="0" class="settings-input" style="font-size:12px">
+        </label>`}
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">GPU gpu_freq (MHz)</span>
+          <input id="pioc-gpu" type="number" value="${cur.gpu_freq||''}" placeholder="default" class="settings-input" style="font-size:12px">
+        </label>
+        ${(soc === 'bcm2837' || soc === 'bcm2710') ? `
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">Memory sdram_freq (MHz)</span>
+          <input id="pioc-sdram" type="number" value="${cur.sdram_freq||''}" placeholder="default" class="settings-input" style="font-size:12px">
+        </label>` : ''}
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--fg-muted)">temp_limit (°C)</span>
+          <input id="pioc-templimit" type="number" min="50" max="85" value="${cur.temp_limit||''}" placeholder="85" class="settings-input" style="font-size:12px">
+        </label>
+      </div>
+      <button class="ctr-btn primary" onclick="applyCustomPiOc('${soc}')" style="margin-top:12px;font-size:12px">Stage Custom Settings</button>
+      <span style="font-size:11px;color:var(--fg-dim);margin-left:8px">Written to config.txt — reboot to apply.</span>
+    </div>
+  `;
+}
+
+function _piResult(msg, color) {
+  const r = document.getElementById('pioc-result');
+  if (!r) return;
+  r.style.display = 'block';
+  r.style.border = `1px solid ${color||'var(--border)'}`;
+  r.style.color = color || 'var(--fg-muted)';
+  r.innerHTML = msg;
+}
+
+async function applyPiProfile(id) {
+  _piResult('Staging profile…');
+  try {
+    const d = await fetchJSON('/api/pi-oc/apply', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({profile_id:id}),
+    });
+    const warns = (d.warnings||[]).join('; ');
+    _piResult(d.ok
+      ? `✓ <strong>${d.profile}</strong> staged in config.txt — reboot to apply.${warns?`<br><span style="color:var(--warn)">${warns}</span>`:''}`
+      : `⚠ ${d.message||'Failed'}<br><span style="color:var(--warn)">${warns}</span>`,
+      d.ok ? 'var(--ok)' : 'var(--warn)');
+    setTimeout(loadPiOc, 800);
+  } catch(e) { _piResult(`Error: ${e}`, 'var(--err)'); }
+}
+
+async function applyCustomPiOc(soc) {
+  const num = id => { const v = document.getElementById(id); if (!v || v.value==='') return undefined; return parseInt(v.value); };
+  const body = {
+    arm_freq: num('pioc-arm'),
+    gpu_freq: num('pioc-gpu'),
+    temp_limit: num('pioc-templimit'),
+  };
+  if (soc === 'bcm2712') body.over_voltage_delta = num('pioc-ovd');
+  else body.over_voltage = num('pioc-ov');
+  if (soc === 'bcm2837' || soc === 'bcm2710') body.sdram_freq = num('pioc-sdram');
+  Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
+
+  _piResult('Staging custom settings…');
+  try {
+    const d = await fetchJSON('/api/pi-oc/custom', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const warns = (d.warnings||[]).join('; ');
+    _piResult(d.ok
+      ? `✓ Staged in config.txt — reboot to apply.${warns?`<br><span style="color:var(--warn)">${warns}</span>`:''}`
+      : `⚠ ${d.message||'Failed'}<br><span style="color:var(--warn)">${warns}</span>`,
+      d.ok ? 'var(--ok)' : 'var(--warn)');
+    setTimeout(loadPiOc, 800);
+  } catch(e) { _piResult(`Error: ${e}`, 'var(--err)'); }
+}
+
+async function resetPiOc() {
+  _piResult('Removing overclock from config.txt…');
+  try {
+    const d = await fetchJSON('/api/pi-oc/reset', {method:'POST'});
+    _piResult(d.ok ? '✓ Overclock removed — reboot to return to stock.' : `⚠ ${(d.warnings||[]).join('; ')}`,
+      d.ok ? 'var(--ok)' : 'var(--warn)');
+    setTimeout(loadPiOc, 800);
+  } catch(e) { _piResult(`Error: ${e}`, 'var(--err)'); }
+}
+
+async function rebootForPiOc() {
+  if (!confirm('Reboot now to apply the staged overclock?')) return;
+  try { await fetchJSON('/api/osupdate/reboot', {method:'POST'}); _piResult('Rebooting…', 'var(--fg-muted)'); }
+  catch(e) { _piResult(`Reboot request failed: ${e} — reboot manually to apply.`, 'var(--warn)'); }
+}
+
+function piOcLiveToggle() {
+  const btn = document.getElementById('pioc-live-btn');
+  if (_piOcLiveEs) { _piOcLiveEs.close(); _piOcLiveEs = null; if (btn) btn.textContent = '▶ Live'; return; }
+  _piOcLiveEs = new EventSource('/api/pi-oc/live');
+  if (btn) btn.textContent = '■ Stop';
+  _piOcLiveEs.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data); if (d.error) return;
+      const tempEl = document.getElementById('pioc-temp');
+      if (tempEl && d.temp_c != null) {
+        tempEl.style.color = d.temp_c > 80 ? 'var(--err)' : d.temp_c > 70 ? 'var(--warn)' : 'var(--ok)';
+        tempEl.textContent = `${d.temp_c.toFixed(1)}°C`;
+      }
+      const fEl = document.getElementById('pioc-curfreq');
+      if (fEl && d.arm_freq) fEl.textContent = `${d.arm_freq.cur_mhz} MHz`;
+      const tEl = document.getElementById('pioc-thr');
+      const thr = d.throttled || {};
+      const active = thr.under_voltage_now || thr.throttled_now || thr.freq_capped_now;
+      if (tEl) { tEl.style.color = active ? 'var(--warn)' : 'var(--ok)'; tEl.textContent = active ? 'yes' : 'no'; }
+    } catch(_) {}
+  };
+  _piOcLiveEs.onerror = () => { _piOcLiveEs = null; if (btn) btn.textContent = '▶ Live'; };
 }
 
 </script>

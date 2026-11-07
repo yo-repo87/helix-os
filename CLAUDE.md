@@ -851,4 +851,32 @@ one-time self-signed warning; real certs can be managed later via Settings →
 HTTPS/SSL (`routers/ssl.py`). Let's Encrypt is not used (no public domain on a
 LAN-by-IP appliance).
 
+---
+
+## 22. Raspberry Pi Overclocking (2026-11-07)
+
+Pi boards are overclocked through the firmware `config.txt`, not sysfs/MSR like
+x86 (see §15 cpu_oc.py/gpu.py), so this is a separate module.
+
+- **Backend** `routers/pi_oc.py` (`/api/pi-oc/{status,profiles,apply,custom,reset,live}`):
+  detects the board/SoC from `/proc/device-tree/{model,compatible}`
+  (bcm2712=Pi 5, bcm2711=Pi 4/CM4/400, bcm2837/2710=Pi 3/Zero 2 W); reads/writes a
+  Helix-managed block in `/boot/config.txt` (markers `# >>> helix-oc >>>`), backs up
+  once to `config.txt.helix-bak`, and falls back to `sudo cp` since the backend runs
+  as the unprivileged `helix` user (NOPASSWD sudo) and `/boot` is root-owned. `custom`
+  merges into the current block; `reset` removes it. `live` SSE streams ARM clock,
+  SoC temp, and decoded `vcgencmd get_throttled` flags. Changes need a reboot.
+- **Profiles** `data/pi_oc_profiles.json` (11), model-aware across CPU / GPU / memory:
+  - Pi 5: arm_freq 2.0–3.0 GHz with `over_voltage_delta` (µV) + gpu_freq.
+  - Pi 4: arm_freq 1.2–2.2 GHz with `over_voltage` (0–8) + gpu_freq/v3d_freq;
+    an "Extreme" tier uses `force_turbo` (flagged warranty-voiding).
+  - Pi 3 / Zero 2 W: arm_freq + over_voltage + core_freq + `sdram_freq` (memory OC,
+    which only applies on Pi 1–3). Each profile carries needs_cooling / voids_warranty
+    flags and notes.
+- **Frontend**: a "Pi Overclock" tab on the Hardware page, shown only when
+  `/api/pi-oc/status` reports `is_pi`. Profile cards (CPU/GPU/RAM/voltage badges +
+  cooling/warranty flags), a model-adaptive custom panel (Pi 5 shows
+  over_voltage_delta; Pi 3 shows sdram_freq), live temp/clock/throttle readout, a
+  "reboot to apply" prompt, and Reset.
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

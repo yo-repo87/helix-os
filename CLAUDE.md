@@ -824,4 +824,31 @@ Fixes:
   `import fastapi, uvicorn`) as **fatal** — the build aborts instead of shipping
   an image whose web UI 502s.
 
-*Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+---
+
+## 21. Web UI 502 (round 2) + HTTPS (2026-11-07)
+
+**Still 502 after the deps fix.** With fastapi/uvicorn installed, the app still
+failed to import: routers use FastAPI Form/upload routes, which require
+`python-multipart` — not in `requirements.txt`. FastAPI raises at route-build
+time, so `uvicorn main:app` crashed and nginx returned 502. The earlier build
+check only imported `fastapi, uvicorn`, not the app, so it missed this.
+
+Fixes:
+- `requirements.txt`: add `python-multipart`.
+- `03-helix-install.sh`: the build-time check now imports the **actual app**
+  (`cd /opt/helix/backend && python -c "import main; assert main.app"`), exactly
+  what the service does — so any missing router dep fails the build, not the boot.
+
+**HTTPS (self-signed).** nginx now serves both **:80 (HTTP)** and **:443 (HTTPS)**;
+no forced redirect, so `http://` still works. `/usr/local/sbin/helix-gen-cert`
+mints a per-machine self-signed cert (RSA-2048, 10 yr, SAN = hostname + current
+IPs) at first boot, run as `nginx.service` `ExecStartPre` so the cert always
+exists before nginx binds 443. It persists to `/boot/config/ssl/` when writable
+and regenerates in RAM on a read-only ISO/CD boot. `openssl` added to
+packages-base; the build validates the config with `nginx -t`. Browsers show a
+one-time self-signed warning; real certs can be managed later via Settings →
+HTTPS/SSL (`routers/ssl.py`). Let's Encrypt is not used (no public domain on a
+LAN-by-IP appliance).
+
+*Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

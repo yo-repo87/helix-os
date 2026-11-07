@@ -30,12 +30,7 @@ if ! "$VENV_DIR/bin/pip" install -r "$BACKEND_SRC/requirements.txt"; then
     echo "  ERROR: backend dependency install failed (check chroot DNS/network)." >&2
     exit 1
 fi
-# Verify the service's entrypoint deps actually import before we trust the image.
-if ! "$VENV_DIR/bin/python" -c "import fastapi, uvicorn" 2>/dev/null; then
-    echo "  ERROR: fastapi/uvicorn not importable after install — aborting." >&2
-    exit 1
-fi
-echo "  backend deps OK (fastapi + uvicorn import cleanly)"
+echo "  backend deps installed"
 
 # ── Copy app files ────────────────────────────────────────────────────────────
 cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"
@@ -43,32 +38,129 @@ cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"
 
 chown -R helix:helix "$HIVE_DIR"
 
-# ── Nginx config: reverse proxy to FastAPI backend ───────────────────────────
+# Verify the ACTUAL app imports — exactly what `uvicorn main:app` does at runtime.
+# This catches a router needing a dependency that isn't in requirements.txt
+# (e.g. python-multipart for Form/upload routes), which otherwise only surfaces
+# as an nginx 502 on the booted machine.
+mkdir -p /tmp/helix-cfg-check
+if ! ( cd "$HIVE_DIR/backend" && HELIX_CONFIG=/tmp/helix-cfg-check "$VENV_DIR/bin/python" -c "import main; assert main.app" ); then
+    echo "  ERROR: helix backend app failed to import — aborting (missing dep or code error)." >&2
+    exit 1
+fi
+echo "  backend app imports cleanly (uvicorn main:app will start)"
+
+# ── Nginx config: reverse proxy to FastAPI backend (HTTP :80 + HTTPS :443) ────
+# Shared proxy block, included by both the HTTP and HTTPS servers.
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/snippets/helix-proxy.conf <<'PROXYEOF'
+# SSE / streaming: disable buffering
+proxy_buffering off;
+proxy_cache off;
+
+location / {
+    proxy_pass         http://127.0.0.1:8082;
+    proxy_http_version 1.1;
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+PROXYEOF
+
 cat > /etc/nginx/sites-available/helix <<'NGINXEOF'
+# HTTP — served as-is (no forced HTTPS redirect, so http:// keeps working).
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    include snippets/helix-proxy.conf;
+}
 
-    # SSE / streaming: disable buffering
-    proxy_buffering off;
-    proxy_cache off;
+# HTTPS — self-signed cert generated per-machine at first boot by helix-gen-cert
+# (nginx.service ExecStartPre), so these files always exist before nginx binds.
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
 
-    location / {
-        proxy_pass         http://127.0.0.1:8082;
-        proxy_http_version 1.1;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
+    ssl_certificate     /etc/helix/ssl/helix.crt;
+    ssl_certificate_key /etc/helix/ssl/helix.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:HelixSSL:1m;
+
+    include snippets/helix-proxy.conf;
 }
 NGINXEOF
 
 # Remove default site, enable ours
 rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/helix /etc/nginx/sites-enabled/helix
+
+# ── Self-signed TLS cert for HTTPS (443) ─────────────────────────────────────
+# Generated per-machine at first boot (persisted on /boot/config when writable;
+# regenerated in RAM for a read-only ISO/CD boot). nginx references the copy in
+# /etc so a cert always exists even when /boot is read-only.
+cat > /usr/local/sbin/helix-gen-cert <<'CERTEOF'
+#!/bin/sh
+# helix-gen-cert — ensure /etc/helix/ssl/helix.{crt,key} exist for nginx HTTPS.
+# Runs as nginx.service ExecStartPre, so it must finish before nginx binds 443.
+set -eu
+ETC_DIR=/etc/helix/ssl
+PERSIST_DIR=/boot/config/ssl
+mkdir -p "$ETC_DIR"
+
+# Reuse a persisted per-machine cert if one exists (survives reboots/updates).
+if [ -s "$PERSIST_DIR/helix.crt" ] && [ -s "$PERSIST_DIR/helix.key" ]; then
+    cp "$PERSIST_DIR/helix.crt" "$ETC_DIR/helix.crt"
+    cp "$PERSIST_DIR/helix.key" "$ETC_DIR/helix.key"
+    chmod 600 "$ETC_DIR/helix.key"; chmod 644 "$ETC_DIR/helix.crt"
+    exit 0
+fi
+
+# Already generated in RAM this boot? keep it.
+[ -s "$ETC_DIR/helix.crt" ] && [ -s "$ETC_DIR/helix.key" ] && exit 0
+
+CN="$(hostname 2>/dev/null || echo helix)"
+SAN="DNS:$CN,DNS:$CN.local,DNS:localhost,IP:127.0.0.1"
+for ip in $(ip -o -4 addr show scope global 2>/dev/null | awk '{split($4,a,"/");print a[1]}'); do
+    SAN="$SAN,IP:$ip"
+done
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "$ETC_DIR/helix.key" -out "$ETC_DIR/helix.crt" \
+    -subj "/CN=$CN" -addext "subjectAltName=$SAN" >/dev/null 2>&1
+chmod 600 "$ETC_DIR/helix.key"; chmod 644 "$ETC_DIR/helix.crt"
+
+# Persist to /boot/config when writable (skipped silently on read-only media).
+if mkdir -p "$PERSIST_DIR" 2>/dev/null && [ -w "$PERSIST_DIR" ]; then
+    cp "$ETC_DIR/helix.crt" "$PERSIST_DIR/helix.crt" 2>/dev/null || true
+    cp "$ETC_DIR/helix.key" "$PERSIST_DIR/helix.key" 2>/dev/null || true
+fi
+CERTEOF
+chmod 0755 /usr/local/sbin/helix-gen-cert
+
+# Make nginx generate/ensure the cert right before it starts, so the 443 block
+# never fails nginx on a fresh machine.
+mkdir -p /etc/systemd/system/nginx.service.d
+cat > /etc/systemd/system/nginx.service.d/helix-ssl.conf <<'DROPEOF'
+[Service]
+ExecStartPre=/usr/local/sbin/helix-gen-cert
+DROPEOF
+
+# ── Validate the HTTPS config at build time ──────────────────────────────────
+# openssl is required for the cert; fail loudly if it's missing from the image.
+command -v openssl >/dev/null || { echo "  ERROR: openssl not installed — add it to packages-base.list" >&2; exit 1; }
+# Generate a throwaway cert so `nginx -t` can validate the ssl server block,
+# then remove it so each machine mints its own at first boot.
+/usr/local/sbin/helix-gen-cert || { echo "  ERROR: helix-gen-cert failed" >&2; exit 1; }
+if ! nginx -t 2>&1; then
+    echo "  ERROR: nginx config invalid — aborting." >&2
+    exit 1
+fi
+rm -f /etc/helix/ssl/helix.crt /etc/helix/ssl/helix.key \
+      /boot/config/ssl/helix.crt /boot/config/ssl/helix.key 2>/dev/null || true
+echo "  HTTPS configured (self-signed cert minted per-machine at first boot)"
 
 # ── systemd service ──────────────────────────────────────────────────────────
 cat > /etc/systemd/system/helix-backend.service <<'SVCEOF'

@@ -6820,8 +6820,11 @@ async function doFormatDrive(name) {
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({fs, label, force: true})
   }).catch(e=>({ok:false, output:String(e)}));
-  if (resEl) resEl.textContent = d.output || (d.ok ? 'Done' : 'Failed');
-  if (d.ok) setTimeout(closeModal, 2000);
+  if (resEl) resEl.textContent = (d.ok ? '✓ Format complete.\n' : '✗ Format failed.\n') + (d.output || '');
+  // Formatting is finished — replace Format/Cancel with a single acknowledge button.
+  const actions = document.getElementById('modal-actions');
+  if (actions) actions.innerHTML =
+    `<button class="settings-btn primary" onclick="closeModal(); refresh();">${d.ok ? 'Done' : 'Close'}</button>`;
 }
 
 async function showPreclearDrive(name) {

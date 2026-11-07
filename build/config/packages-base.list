@@ -27,6 +27,9 @@ dosfstools
 xfsprogs
 e2fsprogs
 btrfs-progs
+mergerfs
+snapraid
+fuse3
 gdisk
 parted
 

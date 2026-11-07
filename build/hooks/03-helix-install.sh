@@ -300,7 +300,12 @@ SVCEOF
 fi
 
 # ── State directory ───────────────────────────────────────────────────────────
-mkdir -p /var/lib/helix
-chown helix:helix /var/lib/helix
+# STATE_DIR is /var/local/helix (config.py): the backend (running as 'helix')
+# writes the SMART cache, array_state and audit log here, and uses
+# /var/local/helix/config as the writable config fallback on read-only boot.
+# /var/local is root-only by default, so create + chown these now or the
+# unprivileged backend can't write them (drive cache stays empty, etc.).
+mkdir -p /var/local/helix/config
+chown -R helix:helix /var/local/helix
 
 echo "==> [hook 03] Helix OS backend installed at $HIVE_DIR"

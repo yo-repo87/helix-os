@@ -945,4 +945,26 @@ as a Proxmox CD-ROM makes `/boot` read-only, so assignments won't survive reboot
 there — boot Helix from a writable USB/disk (or attach the image as a writable
 disk) for a real array.
 
+---
+
+## 25. Assign 500 → writable-config fallback + STATE_DIR fix (2026-11-07)
+
+"Add disks to the array" returned HTTP 500. Three stacked causes, all found by
+the deep-dive:
+
+- **Read-only boot:** booting the ISO as a CD makes `/boot` (hence
+  `/boot/config`) read-only, so `disks.cfg` couldn't be written. `config.py` now
+  detects a non-writable `/boot/config` and falls back to a writable in-RAM dir
+  (`$STATE_DIR/config`), seeded from the boot config. Assignments then work for
+  the session; a writable USB/disk is still needed to persist across reboots
+  (`HELIX_CONFIG_PERSISTENT` flags which mode is active).
+- **STATE_DIR never writable:** `STATE_DIR=/var/local/helix`, but hook 03 created
+  `/var/lib/helix` (wrong path) and `/var/local` is root-only — so the
+  unprivileged backend couldn't write the SMART cache, `array_state`, or audit
+  log (which also kept `/api/drives/` empty). Hook 03 now creates
+  `/var/local/helix` (+ `/config`) owned by `helix`.
+- **Opaque 500:** a raised `HTTPException` surfaced as a generic Starlette
+  "Internal Server Error" through `BaseHTTPMiddleware`. `/api/array/assign` now
+  returns `200 {ok:false,error}` and the UI shows the real message.
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

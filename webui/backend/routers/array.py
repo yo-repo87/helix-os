@@ -160,7 +160,10 @@ def assign_disks(req: AssignReq):
         lines += [f"[disk{i}]", f"device={dev}", f"format={req.fmt}", ""]
     err = _write_disks_cfg("\n".join(lines) + "\n")
     if err:
-        raise HTTPException(500, err)
+        # Return 200 with ok=false (not a 500): BaseHTTPMiddleware can turn a
+        # raised HTTPException into a generic "Internal Server Error", hiding the
+        # real cause from the UI. The frontend shows .error.
+        return {"ok": False, "error": err}
     return {"ok": True, "parity": req.parity, "data": req.data, "fmt": req.fmt}
 
 

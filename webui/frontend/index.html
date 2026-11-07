@@ -3512,10 +3512,14 @@ async function applyDiskAssign() {
   const res = document.getElementById('assign-result');
   if (res) { res.style.color = 'var(--fg-muted)'; res.textContent = 'Saving…'; }
   try {
-    await fetchJSON('/api/array/assign', {
+    const d = await fetchJSON('/api/array/assign', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({parity, data, fmt: 'xfs'}),
     });
+    if (d && d.ok === false) {
+      if (res) { res.style.color = 'var(--warn)'; res.textContent = d.error || 'Could not save assignment.'; }
+      return;
+    }
     if (res) { res.style.color = 'var(--ok)'; res.innerHTML =
       `✓ Saved: ${parity.length} parity, ${data.length} data. Click <strong>Start Array</strong> to bring it online.`; }
     setTimeout(refresh, 800);

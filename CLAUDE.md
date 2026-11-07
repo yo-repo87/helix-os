@@ -912,4 +912,37 @@ helix-backend all **active**, listeners on :80/:443/:8082, and `curl` returned
 also runs `nginx -t` with the cert present and again with it removed (HTTP-only
 fallback), and imports the real app, so a broken web UI fails the build.
 
+---
+
+## 24. Drive discovery/assignment + the "helper scripts never installed" class (2026-11-07)
+
+Deep-dive after "drives can't be seen/selected." Two findings:
+
+**Systemic: helper scripts exist in the repo but the build never installed them.**
+Audit of every `/usr/local/sbin/helix-*` the backend calls vs what the hooks
+install showed only `helix-osupdate`/`helix-gen-cert`/`helix-apply-network`/
+`helix-console-banner` were installed. Missing (so their routers errored at
+runtime): `helix-array-{start,stop,status}`, `helix-parity-{check,rebuild}`,
+`helix-array-lib.sh`, and `helix-shares-apply`/`helix-samba-apply`/
+`helix-nfs-apply`. `shares.py` also pointed `SHARES_SBIN` at a relative path that
+resolved to a non-existent `/shares` in the image. Fixes: hook 03 installs all
+array/share/gpu helpers to `/usr/local/sbin`; `SHARES_SBIN` is now
+`/usr/local/sbin` (env-overridable).
+
+**Missing feature: no physical-disk discovery.** `/api/drives/` and
+`/api/array/drives` only listed disks already written into `disks.cfg`, so a
+fresh system showed nothing to assign. Added:
+- `GET /api/drives/available` — `lsblk -J -b` enumeration of every physical disk
+  (size/model/serial/HDD-SSD/transport), flagged assigned-vs-free and marking the
+  boot medium so it's never offered to the array.
+- `POST /api/array/assign` — writes `disks.cfg` from selected parity/data devices
+  (sudo fallback; clear error when the boot medium is read-only, e.g. ISO/CD).
+- Frontend "⊹ Assign Disks" button + modal (lists all disks, role per disk, Save),
+  then the existing Start Array works.
+
+Note: persisting the assignment needs a **writable** boot medium. Booting the ISO
+as a Proxmox CD-ROM makes `/boot` read-only, so assignments won't survive reboot
+there — boot Helix from a writable USB/disk (or attach the image as a writable
+disk) for a real array.
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

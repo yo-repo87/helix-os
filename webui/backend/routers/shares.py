@@ -4,7 +4,10 @@ from typing import Optional
 import os, re, subprocess
 from config import SHARES_CFG, HELIX_CONFIG, USER_SHARE
 
-SHARES_SBIN = os.path.join(os.path.dirname(__file__), "../../../../shares")
+# Installed to /usr/local/sbin by the build (hook 03). The old relative path
+# resolved to a non-existent /shares in the built image, so share apply silently
+# no-op'd. Configurable for dev.
+SHARES_SBIN = os.getenv("SHARES_SBIN", "/usr/local/sbin")
 
 def _apply_shares():
     """Regenerate smb.conf + /etc/exports after any config change."""

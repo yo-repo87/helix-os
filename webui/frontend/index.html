@@ -897,6 +897,7 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
   <!-- Array Controls -->
   <div class="section-title" style="margin-top:20px">Array Controls</div>
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;align-items:center">
+    <button class="ctr-btn" onclick="assignDisksModal()">⊹ Assign Disks</button>
     <button class="ctr-btn" onclick="fetchJSON('/api/array/start',{method:'POST'}).then(refresh)">Start Array</button>
     <button class="ctr-btn" onclick="fetchJSON('/api/array/stop',{method:'POST'}).then(refresh)">Stop Array</button>
     <button class="ctr-btn" onclick="startParityStream(false)">Parity Sync</button>
@@ -3458,6 +3459,71 @@ function closeModal(e) {
   if (!e || e.target === document.getElementById('modal-overlay'))
     document.getElementById('modal-overlay').style.display = 'none';
 }
+// ── Disk assignment ─────────────────────────────────────────────
+async function assignDisksModal() {
+  if (!liveMode) { alert('Demo mode — connect the backend to manage disks.'); return; }
+  showModal('Assign Disks', '<div style="color:var(--fg-dim);padding:20px;text-align:center">Scanning disks…</div>');
+  let data;
+  try { data = await fetchJSON('/api/drives/available'); }
+  catch (e) { showModal('Assign Disks', `<div style="color:var(--err);padding:16px">Error scanning disks: ${e}</div>`,
+                        '<button class="settings-btn" onclick="closeModal()">Close</button>'); return; }
+  const disks = (data && data.disks) || [];
+  if (!disks.length) {
+    showModal('Assign Disks',
+      '<div style="color:var(--fg-muted);padding:16px">No physical disks detected. Attach disks (or pass them through to the VM) and try again.</div>',
+      '<button class="settings-btn" onclick="closeModal()">Close</button>');
+    return;
+  }
+  const row = d => {
+    const opts = ['', 'parity', 'data'].map(r =>
+      `<option value="${r}"${d.role === r ? ' selected' : ''}>${r || '— unassigned —'}</option>`).join('');
+    const boot = d.is_boot ? ' <span style="color:var(--warn)">(boot)</span>' : '';
+    const mnt = d.mountpoint ? ` <span style="color:var(--fg-dim)">mounted ${d.mountpoint}</span>` : '';
+    return `<tr>
+      <td style="padding:4px 8px"><span class="mono">${d.device}</span>${boot}${mnt}</td>
+      <td style="padding:4px 8px;white-space:nowrap">${d.size_gb} GB</td>
+      <td style="padding:4px 8px">${d.kind}</td>
+      <td style="padding:4px 8px">${d.model || '—'}</td>
+      <td style="padding:4px 8px"><select data-dev="${d.device}" class="assign-role settings-input" style="font-size:12px"${d.is_boot ? ' disabled' : ''}>${opts}</select></td>
+    </tr>`;
+  };
+  const body = `
+    <div style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">
+      Parity disk(s) must be ≥ the largest data disk. The boot device can't be assigned.
+      Saved to <span class="mono">disks.cfg</span>; use <strong>Start Array</strong> after.</div>
+    <div style="overflow:auto;max-height:50vh"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="text-align:left;color:var(--fg-muted)">
+        <th style="padding:4px 8px">Device</th><th style="padding:4px 8px">Size</th>
+        <th style="padding:4px 8px">Type</th><th style="padding:4px 8px">Model</th><th style="padding:4px 8px">Role</th></tr>
+      ${disks.map(row).join('')}
+    </table></div>
+    <div id="assign-result" style="margin-top:10px;font-size:12px"></div>`;
+  showModal('Assign Disks', body,
+    '<button class="settings-btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="settings-btn primary" onclick="applyDiskAssign()">Save Assignment</button>');
+}
+
+async function applyDiskAssign() {
+  const parity = [], data = [];
+  document.querySelectorAll('.assign-role').forEach(s => {
+    if (s.value === 'parity') parity.push(s.dataset.dev);
+    else if (s.value === 'data') data.push(s.dataset.dev);
+  });
+  const res = document.getElementById('assign-result');
+  if (res) { res.style.color = 'var(--fg-muted)'; res.textContent = 'Saving…'; }
+  try {
+    await fetchJSON('/api/array/assign', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({parity, data, fmt: 'xfs'}),
+    });
+    if (res) { res.style.color = 'var(--ok)'; res.innerHTML =
+      `✓ Saved: ${parity.length} parity, ${data.length} data. Click <strong>Start Array</strong> to bring it online.`; }
+    setTimeout(refresh, 800);
+  } catch (e) {
+    if (res) { res.style.color = 'var(--err)'; res.textContent = `Error: ${e}`; }
+  }
+}
+
 // openModal(title, bodyHtml, [{label, primary, danger, onclick}])
 function openModal(title, bodyHtml, buttons = []) {
   const actionsHtml = buttons.map(b => {

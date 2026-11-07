@@ -246,6 +246,22 @@ if [ -f /build/network/helix-apply-network ]; then
     echo "  installed /usr/local/sbin/helix-apply-network"
 fi
 
+# ── Array + share management helpers (called by the backend, ARRAY_SBIN=/usr/local/sbin) ──
+# These live in the repo but were never installed, so /api/array/* and share
+# apply failed on the real image. Install every runtime helper to /usr/local/sbin.
+for helper in \
+    /build/array/sbin/helix-array-lib.sh \
+    /build/array/sbin/helix-array-start /build/array/sbin/helix-array-stop \
+    /build/array/sbin/helix-array-status \
+    /build/array/sbin/helix-parity-check /build/array/sbin/helix-parity-rebuild \
+    /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
+    /build/gpu/setup-ai-gpu.sh; do
+    if [ -f "$helper" ]; then
+        install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
+        echo "  installed /usr/local/sbin/$(basename "$helper")"
+    fi
+done
+
 # Fallback: DHCP on any wired interface, so the machine is reachable out of the
 # box even if helix-apply-network hasn't run or network.cfg is empty. The
 # config-driven units are written as 10-helix-*.network and take precedence

@@ -149,6 +149,9 @@ echo "Partitioning..."
 parted -s "$IMG_PATH" mklabel msdos
 parted -s "$IMG_PATH" mkpart primary fat32 1MiB "${BOOT_SIZE_MB}MiB"
 parted -s "$IMG_PATH" set 1 boot on
+# ext4 data partition (HELIXDATA) for the rest of the image; helix-firstboot
+# grows it to fill the SD card on first boot.
+parted -s "$IMG_PATH" mkpart primary ext4 "${BOOT_SIZE_MB}MiB" 100%
 
 # ── Loop device ───────────────────────────────────────────────────────────────
 LOOP_DEV=$(losetup -f --show -P "$IMG_PATH")
@@ -171,6 +174,12 @@ sleep 1
 # ── Format FAT32 ──────────────────────────────────────────────────────────────
 echo "Formatting FAT32 (label=HELIXBOOT)..."
 mkfs.fat -F32 -n "HELIXBOOT" "$LOOP_PART"
+# Format the HELIXDATA data partition (helix-firstboot grows it to the SD).
+LOOP_PART2="${LOOP_DEV}p2"
+if [ -b "$LOOP_PART2" ]; then
+    echo "Formatting ext4 (label=HELIXDATA)..."
+    mkfs.ext4 -F -q -L HELIXDATA "$LOOP_PART2"
+fi
 
 # ── Mount and populate ────────────────────────────────────────────────────────
 mount "$LOOP_PART" "$MNT"

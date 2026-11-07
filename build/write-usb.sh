@@ -25,9 +25,9 @@ OUTPUT_DIR="$SCRIPT_DIR/../output"
 }
 
 LABEL="HELIXBOOT"
-PART="${DEVICE}1"
-# Handle nvme naming (nvme0n1 → nvme0n1p1)
-[[ "$DEVICE" =~ nvme ]] && PART="${DEVICE}p1"
+PART="${DEVICE}1"; PART2="${DEVICE}2"
+# Handle nvme/mmc/loop naming (nvme0n1 → nvme0n1p1, mmcblk0 → mmcblk0p1)
+if [[ "$DEVICE" =~ nvme|mmcblk|loop ]]; then PART="${DEVICE}p1"; PART2="${DEVICE}p2"; fi
 
 echo "════════════════════════════════════════════════════════"
 echo " Helix OS USB Writer"
@@ -47,15 +47,20 @@ read -rp "This will WIPE $DEVICE. Type 'yes' to continue: " confirm
 umount "${DEVICE}"* 2>/dev/null || true
 
 # ── Partition: one FAT32 partition spanning the drive ────────────────────────
-echo "Partitioning $DEVICE..."
+echo "Partitioning $DEVICE (2 GiB boot + HELIXDATA for the rest)..."
 parted -s "$DEVICE" mklabel msdos
-parted -s "$DEVICE" mkpart primary fat32 1MiB 100%
+parted -s "$DEVICE" mkpart primary fat32 1MiB 2049MiB
 parted -s "$DEVICE" set 1 boot on
+# Use the leftover space as an ext4 data partition (persistent config + appdata).
+parted -s "$DEVICE" mkpart primary ext4 2049MiB 100%
 
 # ── Format ───────────────────────────────────────────────────────────────────
 echo "Formatting $PART as FAT32 (label=$LABEL)..."
-sleep 1  # wait for kernel to register partition
+sleep 1  # wait for kernel to register partitions
+partprobe "$DEVICE" 2>/dev/null || true
 mkfs.fat -F32 -n "$LABEL" "$PART"
+echo "Formatting $PART2 as ext4 (label=HELIXDATA)..."
+mkfs.ext4 -F -q -L HELIXDATA "$PART2"
 
 # ── Mount + copy files ───────────────────────────────────────────────────────
 MNT="/tmp/helix-usb-write"

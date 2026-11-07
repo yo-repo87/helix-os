@@ -967,4 +967,23 @@ the deep-dive:
   "Internal Server Error" through `BaseHTTPMiddleware`. `/api/array/assign` now
   returns `200 {ok:false,error}` and the UI shows the real message.
 
+---
+
+## 26. HELIXDATA persistent data partition (2026-11-07)
+
+The boot image is ~400 MB vs multi-GB USB/SD media, so the leftover space is now
+a persistent **ext4 partition labelled HELIXDATA** (not swap — swap/cache on flash
+wears it out; use zram or a real SSD for those).
+
+- **write-usb.sh**: FAT32 boot (2 GiB) + ext4 HELIXDATA (rest), done offline (safe).
+- **make-pi-image.sh**: FAT32 boot (512 MiB) + ext4 HELIXDATA (rest of the image).
+- **helix-firstboot.service** (`/usr/local/sbin/helix-firstboot`, `Before=helix-backend`):
+  grows the last partition to fill the disk (`parted resizepart` + `resize2fs` —
+  the standard, lower-risk operation; no live partition *creation*), mounts
+  HELIXDATA at `/mnt/data`, and seeds `/mnt/data/config` + `/mnt/data/appdata`.
+  No-op on a read-only ISO/CD boot.
+- **config.py** now prefers `/mnt/data/config` (persistent) → `/boot/config`
+  (writable boot) → `$STATE_DIR/config` (RAM fallback), so config/array
+  assignments persist on writable media.
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

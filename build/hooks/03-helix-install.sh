@@ -210,7 +210,7 @@ echo "  HTTPS validated (with cert + HTTP-only fallback); cert minted per-machin
 cat > /etc/systemd/system/helix-backend.service <<'SVCEOF'
 [Unit]
 Description=Helix OS Web Backend (FastAPI)
-After=network.target
+After=network.target helix-firstboot.service
 Wants=network.target
 
 [Service]
@@ -261,6 +261,63 @@ for helper in \
         echo "  installed /usr/local/sbin/$(basename "$helper")"
     fi
 done
+
+# ── Persistent data partition (HELIXDATA) setup ───────────────────────────────
+# The boot image is tiny vs a modern USB/SD; write-usb.sh / make-pi-image.sh put
+# the leftover space in an ext4 partition labelled HELIXDATA. This one-shot grows
+# it to fill the device (Pi: SD larger than the image) and mounts it at /mnt/data
+# for persistent config + appdata. No-op on a read-only ISO/CD boot.
+cat > /usr/local/sbin/helix-firstboot <<'FBEOF'
+#!/bin/sh
+set -u
+LABEL=HELIXDATA
+DATA_MNT=/mnt/data
+log() { echo "[helix-firstboot] $*"; }
+
+DATA_PART=$(blkid -L "$LABEL" 2>/dev/null) || DATA_PART=""
+[ -n "$DATA_PART" ] || { log "no $LABEL partition (ISO/CD or legacy layout) — skipping."; exit 0; }
+
+# Grow the partition to fill the disk, then its filesystem (idempotent/safe).
+PK=$(lsblk -no PKNAME "$DATA_PART" 2>/dev/null | head -1)
+PNUM=$(printf '%s' "$DATA_PART" | grep -oE '[0-9]+$')
+if [ -n "$PK" ] && [ -n "$PNUM" ] && command -v parted >/dev/null 2>&1; then
+    parted -s "/dev/$PK" resizepart "$PNUM" 100% >/dev/null 2>&1 || true
+    command -v partprobe >/dev/null 2>&1 && partprobe "/dev/$PK" >/dev/null 2>&1 || true
+fi
+e2fsck -p -f "$DATA_PART" >/dev/null 2>&1 || true
+resize2fs "$DATA_PART" >/dev/null 2>&1 || true
+
+mkdir -p "$DATA_MNT"
+mountpoint -q "$DATA_MNT" || mount "$DATA_PART" "$DATA_MNT" 2>/dev/null \
+    || { log "mount of $DATA_PART failed"; exit 0; }
+
+mkdir -p "$DATA_MNT/config" "$DATA_MNT/appdata"
+# Seed persistent config from the boot medium the first time.
+if [ -d /boot/config ] && [ -z "$(ls -A "$DATA_MNT/config" 2>/dev/null)" ]; then
+    cp -a /boot/config/. "$DATA_MNT/config/" 2>/dev/null || true
+fi
+id helix >/dev/null 2>&1 && chown -R helix:helix "$DATA_MNT/config" "$DATA_MNT/appdata" 2>/dev/null || true
+log "HELIXDATA ready at $DATA_MNT (persistent config + appdata)."
+exit 0
+FBEOF
+chmod 0755 /usr/local/sbin/helix-firstboot
+
+cat > /etc/systemd/system/helix-firstboot.service <<'FBSVC'
+[Unit]
+Description=Helix OS — mount/grow HELIXDATA persistent data partition
+After=local-fs.target
+Before=helix-backend.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-firstboot
+
+[Install]
+WantedBy=multi-user.target
+FBSVC
+systemctl enable helix-firstboot 2>/dev/null || echo "  (helix-firstboot enable deferred)"
+echo "  installed /usr/local/sbin/helix-firstboot + service"
 
 # Fallback: DHCP on any wired interface, so the machine is reachable out of the
 # box even if helix-apply-network hasn't run or network.cfg is empty. The

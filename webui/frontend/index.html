@@ -1830,7 +1830,9 @@ let liveMode = false;
 // which always failed → demo mode.)
 const API = location.protocol === 'file:' ? 'http://localhost:8082' : '';
 async function apiFetch(path) {
-  const r = await fetch(API + path, {signal: AbortSignal.timeout(2000)});
+  // 8s (not 2s): a real SMART/drive scan or docker enumeration can take a few
+  // seconds; too-short a timeout aborted those and forced demo mode.
+  const r = await fetch(API + path, {signal: AbortSignal.timeout(8000)});
   if (!r.ok) throw new Error(r.status);
   return r.json();
 }
@@ -2177,27 +2179,13 @@ async function ctrAction(name, action) {
 
 // ── Data refresh ────────────────────────────────────────────────
 async function refresh() {
+  // liveMode is keyed ONLY on the core stats endpoint. Every secondary endpoint
+  // gets its own fallback, so a missing Docker, an unconfigured array, or a slow
+  // SMART/drive scan can never drag the whole dashboard back into demo mode.
+  let sys;
   try {
-    const [sys, arr, shares, ctrs, driveHealth, netStatus] = await Promise.all([
-      apiFetch('/api/system/stats'),
-      apiFetch('/api/array/status'),
-      apiFetch('/api/shares/'),
-      apiFetch('/api/docker/containers'),
-      apiFetch('/api/drives/').catch(() => []),
-      apiFetch('/api/network/status').catch(() => null),
-    ]);
-    if (!liveMode) {
-      liveMode = true;
-      document.getElementById('demo-banner').hidden = true;
-    }
-    renderSystem(sys);
-    renderArray(arr);
-    renderDrives(driveHealth, arr.disks || []);
-    renderShares(shares);
-    renderContainers(ctrs.containers || []);
-    if (netStatus) renderNetwork(netStatus);
+    sys = await apiFetch('/api/system/stats');
   } catch {
-    // backend not reachable — use mock data
     if (!liveMode) {
       renderSystem(MOCK.system);
       renderArray(MOCK.array);
@@ -2206,7 +2194,26 @@ async function refresh() {
       renderContainers(MOCK.containers);
       renderNetwork({interfaces:{eth0:{ip:'192.168.1.100',up:true,rx_mb:4821,tx_mb:1240}}});
     }
+    return;
   }
+  if (!liveMode) {
+    liveMode = true;
+    const db = document.getElementById('demo-banner');
+    if (db) db.hidden = true;
+  }
+  const [arr, shares, ctrs, driveHealth, netStatus] = await Promise.all([
+    apiFetch('/api/array/status').catch(() => ({})),
+    apiFetch('/api/shares/').catch(() => []),
+    apiFetch('/api/docker/containers').catch(() => ({containers: []})),
+    apiFetch('/api/drives/').catch(() => []),
+    apiFetch('/api/network/status').catch(() => null),
+  ]);
+  try { renderSystem(sys); } catch (e) { console.warn('renderSystem', e); }
+  try { renderArray(arr || {}); } catch (e) { console.warn('renderArray', e); }
+  try { renderDrives(driveHealth || [], (arr && arr.disks) || []); } catch (e) { console.warn('renderDrives', e); }
+  try { renderShares(shares || []); } catch (e) { console.warn('renderShares', e); }
+  try { renderContainers((ctrs && ctrs.containers) || []); } catch (e) { console.warn('renderContainers', e); }
+  if (netStatus) { try { renderNetwork(netStatus); } catch (e) { console.warn('renderNetwork', e); } }
 }
 
 // ── Nav hash routing ────────────────────────────────────────────

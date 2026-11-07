@@ -879,4 +879,37 @@ x86 (see §15 cpu_oc.py/gpu.py), so this is a separate module.
   over_voltage_delta; Pi 3 shows sdram_freq), live temp/clock/throttle readout, a
   "reboot to apply" prompt, and Reset.
 
+---
+
+## 23. HTTPS broke nginx startup — connection refused (2026-11-07)
+
+The §21 HTTPS attempt added `ExecStartPre=/usr/local/sbin/helix-gen-cert` as an
+nginx.service **drop-in**. But Debian's `nginx.service` has its own
+`ExecStartPre=/usr/sbin/nginx -t`, and a drop-in's ExecStartPre runs *after* the
+unit's own — so nginx ran its config test *before* the cert existed, the test
+failed on the missing `ssl_certificate`, and **nginx never started → connection
+refused** (both :80 and :443).
+
+Fixes (all verified by booting the built rootfs under `systemd-nspawn`):
+- Cert generation moved to its own oneshot `helix-gen-cert.service`, ordered
+  `Before=nginx.service`, so the cert exists before nginx's own `nginx -t`.
+- The `:443` server block is no longer inline. `helix-gen-cert` writes it to
+  `/etc/nginx/helix-https.d/https.conf` *only after* a cert exists, and the main
+  config does `include /etc/nginx/helix-https.d/*.conf;` (a wildcard matches zero
+  files without error). So a missing/failed cert degrades to HTTP-only and can
+  **never** stop nginx from starting.
+- `helix-gen-cert` uses `set -u` (not `-e`) and `exit 0`, so an openssl hiccup
+  leaves HTTP serving rather than aborting.
+- `systemd-networkd-wait-online` set to `--any --timeout=30` (nginx orders
+  After=network-online.target; the default waits for *all* links and could stall
+  the UI ~120s if a second NIC is down).
+- Console banner now shows both `http://<ip>/` and `https://<ip>/`.
+
+**Verification:** `systemd-nspawn --network-veth --boot` of the built rootfs →
+DHCP came up, `network-online`/`multi-user` reached, `helix-gen-cert` + nginx +
+helix-backend all **active**, listeners on :80/:443/:8082, and `curl` returned
+**HTTP=200, HTTPS=200, /api/health=200** with no manual intervention. The build
+also runs `nginx -t` with the cert present and again with it removed (HTTP-only
+fallback), and imports the real app, so a broken web UI fails the build.
+
 *Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

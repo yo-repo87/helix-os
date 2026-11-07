@@ -78,21 +78,12 @@ server {
     include snippets/helix-proxy.conf;
 }
 
-# HTTPS — self-signed cert generated per-machine at first boot by helix-gen-cert
-# (nginx.service ExecStartPre), so these files always exist before nginx binds.
-server {
-    listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
-    server_name _;
-
-    ssl_certificate     /etc/helix/ssl/helix.crt;
-    ssl_certificate_key /etc/helix/ssl/helix.key;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_session_cache   shared:HelixSSL:1m;
-
-    include snippets/helix-proxy.conf;
-}
+# HTTPS (:443) is dropped into helix-https.d by helix-gen-cert once a cert
+# exists. The wildcard matches zero files without error, so a missing or failed
+# cert can NEVER stop nginx (and the HTTP UI) from starting.
+include /etc/nginx/helix-https.d/*.conf;
 NGINXEOF
+mkdir -p /etc/nginx/helix-https.d
 
 # Remove default site, enable ours
 rm -f /etc/nginx/sites-enabled/default
@@ -104,63 +95,116 @@ ln -sf /etc/nginx/sites-available/helix /etc/nginx/sites-enabled/helix
 # /etc so a cert always exists even when /boot is read-only.
 cat > /usr/local/sbin/helix-gen-cert <<'CERTEOF'
 #!/bin/sh
-# helix-gen-cert — ensure /etc/helix/ssl/helix.{crt,key} exist for nginx HTTPS.
-# Runs as nginx.service ExecStartPre, so it must finish before nginx binds 443.
-set -eu
+# helix-gen-cert — ensure a self-signed cert exists and, only then, enable the
+# nginx :443 server block. Ordered Before=nginx.service so it runs before nginx's
+# own `nginx -t`. No `set -e`: a cert failure must leave nginx serving HTTP, not
+# abort and take the whole web UI down.
+set -u
 ETC_DIR=/etc/helix/ssl
 PERSIST_DIR=/boot/config/ssl
-mkdir -p "$ETC_DIR"
+HTTPS_DIR=/etc/nginx/helix-https.d
+mkdir -p "$ETC_DIR" "$HTTPS_DIR" 2>/dev/null || true
 
-# Reuse a persisted per-machine cert if one exists (survives reboots/updates).
-if [ -s "$PERSIST_DIR/helix.crt" ] && [ -s "$PERSIST_DIR/helix.key" ]; then
-    cp "$PERSIST_DIR/helix.crt" "$ETC_DIR/helix.crt"
-    cp "$PERSIST_DIR/helix.key" "$ETC_DIR/helix.key"
-    chmod 600 "$ETC_DIR/helix.key"; chmod 644 "$ETC_DIR/helix.crt"
-    exit 0
+have_cert() { [ -s "$ETC_DIR/helix.crt" ] && [ -s "$ETC_DIR/helix.key" ]; }
+
+if ! have_cert; then
+    if [ -s "$PERSIST_DIR/helix.crt" ] && [ -s "$PERSIST_DIR/helix.key" ]; then
+        # Reuse a persisted per-machine cert (survives reboots / updates).
+        cp "$PERSIST_DIR/helix.crt" "$ETC_DIR/helix.crt" 2>/dev/null || true
+        cp "$PERSIST_DIR/helix.key" "$ETC_DIR/helix.key" 2>/dev/null || true
+    else
+        CN="$(hostname 2>/dev/null || echo helix)"
+        SAN="DNS:$CN,DNS:$CN.local,DNS:localhost,IP:127.0.0.1"
+        for ip in $(ip -o -4 addr show scope global 2>/dev/null | awk '{split($4,a,"/");print a[1]}'); do
+            SAN="$SAN,IP:$ip"
+        done
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -keyout "$ETC_DIR/helix.key" -out "$ETC_DIR/helix.crt" \
+            -subj "/CN=$CN" -addext "subjectAltName=$SAN" >/dev/null 2>&1 || true
+        # Persist to /boot/config when writable (skipped on read-only media).
+        if have_cert && mkdir -p "$PERSIST_DIR" 2>/dev/null && [ -w "$PERSIST_DIR" ]; then
+            cp "$ETC_DIR/helix.crt" "$PERSIST_DIR/helix.crt" 2>/dev/null || true
+            cp "$ETC_DIR/helix.key" "$PERSIST_DIR/helix.key" 2>/dev/null || true
+        fi
+    fi
 fi
+chmod 600 "$ETC_DIR/helix.key" 2>/dev/null || true
+chmod 644 "$ETC_DIR/helix.crt" 2>/dev/null || true
 
-# Already generated in RAM this boot? keep it.
-[ -s "$ETC_DIR/helix.crt" ] && [ -s "$ETC_DIR/helix.key" ] && exit 0
-
-CN="$(hostname 2>/dev/null || echo helix)"
-SAN="DNS:$CN,DNS:$CN.local,DNS:localhost,IP:127.0.0.1"
-for ip in $(ip -o -4 addr show scope global 2>/dev/null | awk '{split($4,a,"/");print a[1]}'); do
-    SAN="$SAN,IP:$ip"
-done
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -keyout "$ETC_DIR/helix.key" -out "$ETC_DIR/helix.crt" \
-    -subj "/CN=$CN" -addext "subjectAltName=$SAN" >/dev/null 2>&1
-chmod 600 "$ETC_DIR/helix.key"; chmod 644 "$ETC_DIR/helix.crt"
-
-# Persist to /boot/config when writable (skipped silently on read-only media).
-if mkdir -p "$PERSIST_DIR" 2>/dev/null && [ -w "$PERSIST_DIR" ]; then
-    cp "$ETC_DIR/helix.crt" "$PERSIST_DIR/helix.crt" 2>/dev/null || true
-    cp "$ETC_DIR/helix.key" "$PERSIST_DIR/helix.key" 2>/dev/null || true
+# Enable the HTTPS server block ONLY if we actually have a cert.
+if have_cert; then
+    cat > "$HTTPS_DIR/https.conf" <<HTTPSCONF
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_certificate     $ETC_DIR/helix.crt;
+    ssl_certificate_key $ETC_DIR/helix.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:HelixSSL:1m;
+    include snippets/helix-proxy.conf;
+}
+HTTPSCONF
+else
+    rm -f "$HTTPS_DIR/https.conf" 2>/dev/null || true
 fi
+exit 0
 CERTEOF
 chmod 0755 /usr/local/sbin/helix-gen-cert
 
-# Make nginx generate/ensure the cert right before it starts, so the 443 block
-# never fails nginx on a fresh machine.
+# Generate the cert in its OWN oneshot service ordered Before=nginx.service, so
+# the cert exists before nginx runs its built-in `ExecStartPre=nginx -t` config
+# test. (A drop-in ExecStartPre would run AFTER nginx's own test and so fail it,
+# leaving nginx down → connection refused.)
+cat > /etc/systemd/system/helix-gen-cert.service <<'GCEOF'
+[Unit]
+Description=Helix OS — generate self-signed TLS cert for nginx HTTPS
+After=local-fs.target
+Before=nginx.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-gen-cert
+
+[Install]
+WantedBy=multi-user.target
+GCEOF
+
+# Make nginx explicitly wait for the cert service too (belt and suspenders).
 mkdir -p /etc/systemd/system/nginx.service.d
 cat > /etc/systemd/system/nginx.service.d/helix-ssl.conf <<'DROPEOF'
-[Service]
-ExecStartPre=/usr/local/sbin/helix-gen-cert
+[Unit]
+Wants=helix-gen-cert.service
+After=helix-gen-cert.service
 DROPEOF
+
+systemctl enable helix-gen-cert 2>/dev/null || echo "  (helix-gen-cert enable deferred)"
 
 # ── Validate the HTTPS config at build time ──────────────────────────────────
 # openssl is required for the cert; fail loudly if it's missing from the image.
 command -v openssl >/dev/null || { echo "  ERROR: openssl not installed — add it to packages-base.list" >&2; exit 1; }
-# Generate a throwaway cert so `nginx -t` can validate the ssl server block,
-# then remove it so each machine mints its own at first boot.
-/usr/local/sbin/helix-gen-cert || { echo "  ERROR: helix-gen-cert failed" >&2; exit 1; }
+# Mint a throwaway cert (this also writes helix-https.d/https.conf), validate the
+# full config with nginx -t, then remove the cert + https drop-in so each machine
+# mints its own at first boot (via helix-gen-cert.service, ordered before nginx).
+/usr/local/sbin/helix-gen-cert
+if [ ! -s /etc/nginx/helix-https.d/https.conf ]; then
+    echo "  ERROR: helix-gen-cert did not produce the HTTPS server block (openssl failure?)." >&2
+    exit 1
+fi
 if ! nginx -t 2>&1; then
     echo "  ERROR: nginx config invalid — aborting." >&2
     exit 1
 fi
-rm -f /etc/helix/ssl/helix.crt /etc/helix/ssl/helix.key \
+# Also confirm nginx -t still passes with NO cert present (HTTP-only fallback).
+rm -f /etc/nginx/helix-https.d/https.conf \
+      /etc/helix/ssl/helix.crt /etc/helix/ssl/helix.key \
       /boot/config/ssl/helix.crt /boot/config/ssl/helix.key 2>/dev/null || true
-echo "  HTTPS configured (self-signed cert minted per-machine at first boot)"
+if ! nginx -t 2>&1; then
+    echo "  ERROR: nginx config invalid without the HTTPS drop-in — aborting." >&2
+    exit 1
+fi
+echo "  HTTPS validated (with cert + HTTP-only fallback); cert minted per-machine at first boot"
 
 # ── systemd service ──────────────────────────────────────────────────────────
 cat > /etc/systemd/system/helix-backend.service <<'SVCEOF'

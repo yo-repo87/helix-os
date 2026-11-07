@@ -24,7 +24,8 @@ ips=$(ip -o -4 addr show scope global 2>/dev/null \
   if [ -n "$ips" ]; then
     printf '  Web UI (open in a browser):\n'
     echo "$ips" | while read -r ifn ip; do
-      printf '      http://%s/        [%s]\n' "$ip" "$ifn"
+      printf '      http://%s/         [%s]\n' "$ip" "$ifn"
+      printf '      https://%s/        [%s, self-signed cert]\n' "$ip" "$ifn"
     done
   else
     printf '  Web UI:  no network link yet — check cabling / DHCP\n'

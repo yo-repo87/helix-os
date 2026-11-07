@@ -1821,11 +1821,33 @@ const MOCK = {
 
 // ── API helpers ─────────────────────────────────────────────────
 let liveMode = false;
-const API = window.location.port === '8082' ? '' : 'http://localhost:8082';
+// Use same-origin relative URLs whenever the page is served over http(s): in
+// production nginx proxies /api/ to the backend on :8082, and in dev the page is
+// served by uvicorn on :8082 directly — both same-origin. Only fall back to an
+// absolute localhost URL when the file is opened directly (file://), which has
+// no usable origin. (The old `port===8082 ? '' : 'http://localhost:8082'` check
+// forced every nginx-served browser to hit localhost:8082 on the *client* PC,
+// which always failed → demo mode.)
+const API = location.protocol === 'file:' ? 'http://localhost:8082' : '';
 async function apiFetch(path) {
   const r = await fetch(API + path, {signal: AbortSignal.timeout(2000)});
   if (!r.ok) throw new Error(r.status);
   return r.json();
+}
+
+// General same-origin JSON helper used across the UI (array, shares, settings,
+// OC tabs, OS update, …). Supports fetch options and tolerates empty bodies.
+// Was referenced 100+ times but never defined, so every interactive action
+// threw ReferenceError; defining it here (hoisted) fixes them all.
+async function fetchJSON(path, opts) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.text()).slice(0, 300); } catch (_) {}
+    throw new Error('HTTP ' + r.status + (detail ? ': ' + detail : '') + ' for ' + path);
+  }
+  const body = await r.text();
+  return body ? JSON.parse(body) : {};
 }
 
 // ── Render functions ────────────────────────────────────────────

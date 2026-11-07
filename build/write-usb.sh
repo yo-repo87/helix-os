@@ -17,7 +17,9 @@ DEVICE="${1:-}"
 [ -b "$DEVICE" ] || { echo "Not a block device: $DEVICE"; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/../output"
+# OUTPUT_DIR defaults to ../output but can be overridden (e.g. to build an amd64
+# disk image from boot files extracted elsewhere): HELIX_OUTPUT=/path write-usb.sh …
+OUTPUT_DIR="${HELIX_OUTPUT:-$SCRIPT_DIR/../output}"
 
 [ -f "$OUTPUT_DIR/boot/filesystem.squashfs" ] || {
     echo "Output not found. Run build.sh first."

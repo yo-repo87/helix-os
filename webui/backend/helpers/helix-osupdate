@@ -59,11 +59,21 @@ cmd_stage() {
     for f in "${FILES[@]}"; do
         [ -f "$src/$f" ] || die "stage: missing $f in $src"
     done
+    # A read-only boot medium (ISO booted as a CD) can't be updated in place.
+    if ! touch "$IMGDIR/.helix-write-test" 2>/dev/null; then
+        die "stage: boot device $BOOT is read-only — you booted the ISO as a CD/DVD. In-place updates require a WRITABLE boot medium: write Helix to a USB stick or a disk (build/write-usb.sh) and boot from that, then update."
+    fi
+    rm -f "$IMGDIR/.helix-write-test"
     # Check free space: need room for the new set alongside the old.
     local need avail
     need=$(du -cb "${FILES[@]/#/$src/}" 2>/dev/null | awk 'END{print $1}')
     avail=$(df -P -B1 "$BOOT" | awk 'NR==2{print $4}')
-    [ "${avail:-0}" -gt "${need:-0}" ] || die "stage: not enough free space on $BOOT (need $need, have $avail)"
+    if [ "${avail:-0}" -le "${need:-0}" ]; then
+        if [ "${avail:-0}" = "0" ]; then
+            die "stage: boot device $BOOT has no writable space (read-only CD/ISO boot). Write Helix to a USB/disk (build/write-usb.sh) and boot from that to enable updates."
+        fi
+        die "stage: not enough free space on $BOOT (need $need, have $avail)"
+    fi
     for f in "${FILES[@]}"; do
         cp -f "$src/$f" "$IMGDIR/$f.new"
     done

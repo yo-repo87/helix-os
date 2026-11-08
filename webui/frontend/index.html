@@ -2304,15 +2304,36 @@ async function installApp(name, btn) {
   if (!liveMode) { alert('Demo mode — connect backend for live install.'); return; }
   btn.disabled = true; btn.textContent = 'Installing…';
   try {
-    await fetch(API + '/api/apps/install', {
+    const r = await fetch(API + '/api/apps/install', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name, vars: {}})
     });
-    btn.textContent = '✓ Installing'; btn.classList.add('installed');
-    setTimeout(loadApps, 3000);
-  } catch {
+    if (!r.ok) { throw new Error(await r.text()); }
+    // Poll install-status until done or error
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      try {
+        const s = await apiFetch(`/api/apps/${name}/install-status`);
+        if (s.state === 'installed') {
+          clearInterval(poll);
+          btn.textContent = 'Installed'; btn.classList.add('installed');
+          setTimeout(loadApps, 1000);
+        } else if (s.state === 'error') {
+          clearInterval(poll);
+          btn.disabled = false; btn.textContent = 'Install';
+          alert(`Install failed:\n${s.error || 'Unknown error'}`);
+        } else if (attempts > 120) {
+          clearInterval(poll);
+          btn.disabled = false; btn.textContent = 'Install';
+          alert('Install timed out — check container logs.');
+        }
+      } catch { /* status not ready yet, keep polling */ }
+    }, 2500);
+  } catch(e) {
     btn.disabled = false; btn.textContent = 'Install';
+    alert(`Install failed: ${e.message}`);
   }
 }
 

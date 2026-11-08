@@ -226,28 +226,42 @@ def _docker_compose(app_dir: str | Path, *args, timeout: int = 60) -> tuple[int,
     return r.returncode, r.stdout, r.stderr
 
 
+def _set_install_status(name: str, state: str, error: str = "") -> None:
+    status_file = Path(APPS_STATE_DIR) / name / "install_status.json"
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    status_file.write_text(json.dumps({"state": state, "error": error}))
+
+
 def _do_install(name: str, vars_map: dict) -> None:
-    templates = {t["name"]: t for t in load_all_templates()}
-    t = templates.get(name)
-    if not t:
-        return
-
-    final_vars = {v["key"]: v["default"] for v in t.get("vars", [])}
-    final_vars.update(vars_map)
-
     app_dir = Path(APPS_STATE_DIR) / name
     app_dir.mkdir(parents=True, exist_ok=True)
-    (app_dir / "vars.json").write_text(json.dumps(final_vars, indent=2))
+    _set_install_status(name, "installing")
+    try:
+        templates = {t["name"]: t for t in load_all_templates()}
+        t = templates.get(name)
+        if not t:
+            _set_install_status(name, "error", "Template not found")
+            return
 
-    # Ensure required host dirs
-    for v_def in t.get("vars", []):
-        if v_def.get("type") == "path":
-            val = final_vars.get(v_def["key"], "")
-            if val:
-                Path(val).mkdir(parents=True, exist_ok=True)
+        final_vars = {v["key"]: v["default"] for v in t.get("vars", [])}
+        final_vars.update(vars_map)
+        (app_dir / "vars.json").write_text(json.dumps(final_vars, indent=2))
 
-    _write_compose(app_dir, t, final_vars)
-    _docker_compose(app_dir, "up", "-d", "--pull", "always", timeout=300)
+        # Ensure required host dirs
+        for v_def in t.get("vars", []):
+            if v_def.get("type") == "path":
+                val = final_vars.get(v_def["key"], "")
+                if val:
+                    Path(val).mkdir(parents=True, exist_ok=True)
+
+        _write_compose(app_dir, t, final_vars)
+        rc, out, err = _docker_compose(app_dir, "up", "-d", "--pull", "always", timeout=300)
+        if rc != 0:
+            _set_install_status(name, "error", err.strip()[-500:] or out.strip()[-500:])
+        else:
+            _set_install_status(name, "installed")
+    except Exception as exc:
+        _set_install_status(name, "error", str(exc))
 
 
 # ── Install / lifecycle endpoints ─────────────────────────────────────────────
@@ -266,6 +280,14 @@ def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
         raise HTTPException(409, f"'{req.name}' is already installed")
     background_tasks.add_task(_do_install, req.name, req.vars)
     return {"ok": True, "message": f"Installing {templates[req.name]['title']}…"}
+
+
+@router.get("/{name}/install-status")
+def install_status(name: str):
+    status_file = Path(APPS_STATE_DIR) / name / "install_status.json"
+    if not status_file.exists():
+        raise HTTPException(404)
+    return json.loads(status_file.read_text())
 
 
 @router.post("/{name}/start")

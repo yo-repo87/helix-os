@@ -136,6 +136,27 @@ def arch_key() -> str:
     return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(m, m)
 
 
+def _is_live_boot() -> bool:
+    """Return True only when running from a Helix OS live-boot squashfs.
+
+    On a live-boot system the root filesystem is an overlayfs whose lower layer
+    is a squashfs loop device.  On a plain Debian install it is ext4/btrfs/etc.
+    We detect this by scanning /proc/mounts for 'overlay' on '/' backed by a
+    squashfs loop, OR by the presence of /run/hive (the initramfs working dir).
+    """
+    try:
+        if os.path.isdir("/run/helix"):
+            return True
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "/" and parts[2] == "overlay":
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 # ── GitHub access (stdlib urllib; strips auth on cross-host redirect) ──
 
 class _AuthDropRedirect(urllib.request.HTTPRedirectHandler):
@@ -334,38 +355,67 @@ def _apply_worker(settings: dict):
             log(f"No {ak} image in release {latest}.")
             status = "no-arch"
             return
-        log(f"Update available: {cur} -> {latest}. Downloading {ak} image…")
+        live = _is_live_boot()
+        if live:
+            log(f"Update available: {cur} -> {latest}. Downloading {ak} image…")
+        else:
+            log(f"Update available: {cur} -> {latest}. "
+                f"(Standard install detected — will update web UI via git, skip boot-image swap.)")
 
-        dldir = os.path.join(DL_DIR, latest)
-        Path(dldir).mkdir(parents=True, exist_ok=True)
-        for fname in OS_FILES:
-            spec = arch_files.get(fname) or {}
-            asset_name = spec.get("asset") or f"{ak}-{fname}"
-            if asset_name not in assets:
-                raise RuntimeError(f"release missing asset {asset_name}")
-            _download_asset(assets[asset_name], os.path.join(dldir, fname),
-                            settings.get("token", ""), spec.get("sha256", ""), log)
-            log(f"  {fname}: verified")
+        if live:
+            dldir = os.path.join(DL_DIR, latest)
+            Path(dldir).mkdir(parents=True, exist_ok=True)
+            for fname in OS_FILES:
+                spec = arch_files.get(fname) or {}
+                asset_name = spec.get("asset") or f"{ak}-{fname}"
+                if asset_name not in assets:
+                    raise RuntimeError(f"release missing asset {asset_name}")
+                _download_asset(assets[asset_name], os.path.join(dldir, fname),
+                                settings.get("token", ""), spec.get("sha256", ""), log)
+                log(f"  {fname}: verified")
 
-        log("Staging new image on boot device…")
-        r = _helper("stage", dldir)
-        if r.returncode != 0:
-            raise RuntimeError(f"stage failed: {r.stderr.strip() or r.stdout.strip()}")
-        log("Committing (previous image kept for rollback)…")
-        r = _helper("commit", latest)
-        if r.returncode != 0:
-            _helper("clean")
-            raise RuntimeError(f"commit failed: {r.stderr.strip() or r.stdout.strip()}")
+            log("Staging new image on boot device…")
+            r = _helper("stage", dldir)
+            if r.returncode != 0:
+                raise RuntimeError(f"stage failed: {r.stderr.strip() or r.stdout.strip()}")
+            log("Committing (previous image kept for rollback)…")
+            r = _helper("commit", latest)
+            if r.returncode != 0:
+                _helper("clean")
+                raise RuntimeError(f"commit failed: {r.stderr.strip() or r.stdout.strip()}")
 
-        # Free the downloaded copies now that they are on the boot device.
-        for fname in OS_FILES:
+            # Free the downloaded copies now that they are on the boot device.
+            for fname in OS_FILES:
+                try:
+                    os.remove(os.path.join(dldir, fname))
+                except OSError:
+                    pass
+            log(f"Done. Version {latest} installed. Reboot to apply.")
+            status = "staged"
+        else:
+            # Standard Debian install: pull latest code and restart the service.
+            import shutil
+            project_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..")
+            )
+            git = shutil.which("git")
+            if not git:
+                raise RuntimeError("git not found — cannot pull update on standard install")
+            log(f"Pulling latest code in {project_dir}…")
+            r = subprocess.run([git, "pull"], capture_output=True, text=True,
+                               cwd=project_dir, timeout=60)
+            log(r.stdout.strip() or "(no output)")
+            if r.returncode != 0:
+                raise RuntimeError(f"git pull failed: {r.stderr.strip()}")
+            # Update /etc/helix-version so the UI reflects the new version.
             try:
-                os.remove(os.path.join(dldir, fname))
+                Path("/etc/helix-version").write_text(latest + "\n")
             except OSError:
                 pass
-        log(f"Done. Version {latest} installed. Reboot to apply "
-            f"(your settings, apps and data are untouched).")
-        status = "staged"
+            log(f"Done. Version {latest} active. Restarting service…")
+            subprocess.run(["sudo", "-n", "systemctl", "restart", "helix-webui"],
+                           timeout=15)
+            status = "staged"
     except Exception as e:
         log(f"ERROR: {e}")
         status = f"failed: {e}"

@@ -21,9 +21,28 @@ mount -t tmpfs     tmpfs    /run
 mkdir -p /run/helix/usb /run/helix/ro /run/helix/rw
 
 # ── 2. Kernel modules ─────────────────────────────────────────────────────────
-for mod in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8; do
+# Filesystem + loop
+for mod in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8 isofs; do
     modprobe "$mod" 2>/dev/null || true
 done
+# USB host controllers (EHCI/xHCI/OHCI cover USB 2/3/1)
+for mod in ehci_hcd ohci_hcd xhci_hcd xhci_pci usbcore; do
+    modprobe "$mod" 2>/dev/null || true
+done
+# USB storage
+for mod in usb_storage uas scsi_mod sd_mod sr_mod; do
+    modprobe "$mod" 2>/dev/null || true
+done
+# VirtIO (Proxmox/QEMU VMs)
+for mod in virtio virtio_pci virtio_blk virtio_scsi; do
+    modprobe "$mod" 2>/dev/null || true
+done
+# SATA / NVMe / generic SCSI
+for mod in ahci libahci ata_piix nvme nvme_core; do
+    modprobe "$mod" 2>/dev/null || true
+done
+# Allow USB devices time to enumerate before scanning
+sleep 2
 
 # ── 3. Wait for boot USB (by filesystem label) ───────────────────────────────
 msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
@@ -34,7 +53,22 @@ find_boot_dev() {
     local dev
     dev=$(blkid -L "$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
     dev=$(findfs "LABEL=$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
-    blkid 2>/dev/null | grep -i "LABEL=\"$BOOT_LABEL\"" | head -1 | cut -d: -f1
+    dev=$(blkid 2>/dev/null | grep -i "LABEL=\"$BOOT_LABEL\"" | head -1 | cut -d: -f1)
+    [ -n "$dev" ] && { echo "$dev"; return; }
+    # Last resort: probe every block device partition directly
+    for d in /dev/sd?? /dev/sd? /dev/vd?? /dev/vd? /dev/hd?? /dev/hd? \
+              /dev/mmcblk?p? /dev/nvme?n?p?; do
+        [ -b "$d" ] || continue
+        local lbl
+        lbl=$(blkid -o value -s LABEL "$d" 2>/dev/null)
+        [ "$lbl" = "$BOOT_LABEL" ] && { echo "$d"; return; }
+        # Try mounting FAT32 and checking volume label via kernel
+        mkdir -p /run/probe
+        if mount -t vfat -o ro,noatime "$d" /run/probe 2>/dev/null; then
+            lbl=$(cat /run/probe/.volume_label 2>/dev/null || true)
+            umount /run/probe 2>/dev/null || true
+        fi
+    done
 }
 
 USB_DEV=""

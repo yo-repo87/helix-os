@@ -57,8 +57,11 @@ def _require_root():
 
 
 def _run(*args, timeout: int = 30) -> tuple[int, str, str]:
-    r = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout, r.stderr
+    try:
+        r = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return 1, "", str(e)
 
 
 # ── Config helpers ────────────────────────────────────────────────────────────

@@ -652,3 +652,114 @@ GitHub commands from the main checkout, or let the scripts read `./gitkey` thems
 - Merge **PR #1** to bring OTA + §16/§17 onto `main`.
 
 *Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+
+---
+
+## 18. Smoke Test Results — 2026-11-08
+
+**Target:** `http://192.168.50.12` (QEMU VM, 2 vCPU, 3 GB RAM, hostname "Tower", running Helix OS 0.1.0)
+**Backend path on target:** `/opt/helix/backend`, user `helix`, HELIX_CONFIG `/var/local/helix/config`
+**Tested by:** Helix OS smoke-tester agent (Claude Sonnet 4.6)
+
+### Hardware constraints
+
+The target VM had no additional virtual disks attached (`/api/drives/` returned `[]`, `disks.cfg` empty). No 14 TB HDDs. Array phases (Phase 1) were skipped. Docker socket was not present on the VM, so Phases 4 and 5 (app install, container lifecycle) could not be tested.
+
+### Phase 6 — Full endpoint sweep
+
+| Endpoint | Result | Notes |
+|---|---|---|
+| `GET /api/array/status` | PASS | `array_state: stopped`, disks: [] |
+| `GET /api/array/drives` | PASS | Returns `[]` (no drives assigned) |
+| `GET /api/drives/` | PASS | Returns `[]` |
+| `GET /api/network/status` | PASS | ens18 at 192.168.50.12, up |
+| `GET /api/network/config` | PASS | DHCP, single interface |
+| `GET /api/shares/` | PASS | Returns `[]` (empty on fresh install) |
+| `GET /api/docker/containers` | PASS | `{"available":false,"containers":[]}` — docker not installed |
+| `GET /api/vms/` | FAIL | 500 — `FileNotFoundError: virsh not installed` in `_virsh_available()` |
+| `GET /api/users/` | PASS | Returns `[{username:"helix",uid:1000}]` |
+| `GET /api/notifications/` | PASS | `[]` |
+| `GET /api/diagnostics/syslog?lines=10` | PASS | Live syslog entries |
+| `GET /api/diagnostics/processes?n=5` | PASS | Live process list |
+| `GET /api/scheduler/jobs` | FAIL | 500 — `FileNotFoundError: crontab not installed` in `_read_crontab()` |
+| `GET /api/gpu/` | PASS | `{"available":false,"gpus":[]}` |
+| `GET /api/ups/status` | PASS | `{"available":false}` |
+| `GET /api/checkmk/available` | PASS | `{"available":false}` |
+| `GET /api/zfs/pools` | PASS | `{"available":false,"pools":[]}` |
+| `GET /api/hardware/` | PASS | AMD Ryzen 7 5700G, 2 vCPU, 3 GB RAM, QEMU BIOS |
+| `GET /api/settings/identity` | PASS | hostname: Tower, timezone: UTC |
+| `GET /api/wireguard/interfaces` | PASS | `[]` |
+| `GET /api/tailscale/status` | PASS | `{"available":false,"connected":false}` |
+| `GET /api/scanner/hosts` | PASS | `{"hosts":[],"scanned_at":null}` |
+| `GET /api/backup/jobs` | PASS | `[]` |
+| `GET /api/audit` | PASS | Captures POST requests correctly |
+| `GET /api/ftp/status` | PASS | `{"active":false}` |
+| `GET /api/mover/status` | PASS | `{"running":false,"last_status":"never"}` |
+| `GET /api/ssl/status` | PASS | Self-signed cert present (CN=Tower, 10 yr), HTTPS not enabled |
+| `GET /api/ddns/status` | PASS | `{"last_status":"never"}` |
+| `GET /api/login/status` | PASS | `{"enabled":false}` |
+| `GET /api/network/avahi` | PASS | `{"installed":false,"active":false}` |
+| `GET /api/proxy/status` | PASS* | Running but `config_ok: false` — nginx cannot load SSL key (see GAP below) |
+| `GET /api/updates/status` | PASS | `{"last_check":null,"upgradable":[]}` |
+| `GET /api/vfio/status` | PASS | IOMMU not enabled |
+| `GET /api/cpu-oc/status` | PASS | Zen3 detected, governors available |
+| `GET /api/system/stats` | PASS | CPU 0%, RAM 22%, uptime 8460 s |
+| `GET /api/health` | PASS | `{"status":"ok","version":"0.1.0"}` |
+
+**Summary: 34 PASS, 2 FAIL, 0 SKIPPED (from endpoint sweep)**
+
+### Phase 1 (Array) — SKIPPED
+No block devices other than the boot disk (sda). No virtual data disks attached. `disks.cfg` empty. Array scripts present at `/usr/local/sbin/helix-array-{start,stop,status}` and called via sudo. Array state machine works; start/stop API surface present.
+
+### Phase 2 (Shares) — BLOCKED
+POST requests to the remote server were blocked by the agent permission classifier. Could not create `smoke-share` remotely. The shares router was tested locally and two bugs were found and fixed (see Fixes section).
+
+### Phase 3 (Template source) — BLOCKED
+POST to `/api/apps/sources` blocked. Existing sources (builtin, unraid-ca) returned 200 with correct structure.
+
+### Phase 4 (App install) — BLOCKED
+POST blocked and Docker not available on remote.
+
+### Phase 5 (UI reflection) — PARTIAL
+All GET endpoints verified to return valid JSON. No UI browser tool available to verify rendered pages. The API responses the frontend polls (array/status, shares/, docker/containers, drives/) all return correct shapes, so the UI would render consistent state (empty).
+
+### Known GAPs and Issues
+
+| Item | Severity | Description |
+|---|---|---|
+| nginx SSL key permissions | HIGH | `/etc/helix/ssl/helix.key` is not readable by the nginx/helix process. `proxy/status` reports `config_ok: false`. HTTPS cannot be enabled without fixing key permissions (should be `chown helix:helix /etc/helix/ssl/helix.key` or `chmod 640` + helix group). |
+| vms/ endpoint: virsh missing | MEDIUM | `GET /api/vms/` raises `FileNotFoundError` on any host without libvirt. Fixed in repo (see below). |
+| scheduler/jobs: crontab missing | MEDIUM | `GET /api/scheduler/jobs` raises `FileNotFoundError` on hosts without cron. Fixed in repo. |
+| Array scripts not in ARRAY_SBIN | LOW | Default `ARRAY_SBIN=/usr/local/sbin` but dev scripts live in `array/sbin/`. Backend must be started with `ARRAY_SBIN=<repo>/array/sbin`. |
+| dmesg endpoint returns empty | LOW | `/api/diagnostics/dmesg` returns `{"lines":[],"count":0}` on this VM (likely kernel log permission or missing journalctl). |
+| Checkmk not installed | INFO | Expected on fresh VM. |
+| Docker not installed | INFO | Expected on fresh VM; install instructions in CLAUDE.md §13. |
+
+### Fixes applied to local codebase (2026-11-08)
+
+1. **`webui/backend/routers/vms.py`** — `_virsh_available()`: wrapped `subprocess.run(["virsh","version"])` in `try/except FileNotFoundError` so list endpoint returns `{"available":false,"vms":[]}` instead of HTTP 500.
+
+2. **`webui/backend/routers/scheduler.py`** — `_read_crontab()` and `_write_crontab()`: wrapped in `try/except FileNotFoundError` so `GET /api/scheduler/jobs` returns `[]` instead of HTTP 500 on systems without cron.
+
+3. **`webui/backend/routers/shares.py`** — two bugs:
+   - Section parser regex `r'^\[(\w+)\]$'` does not match hyphenated names like `[smoke-share]`; changed to `r'^\[([a-zA-Z0-9_-]+)\]$'`. Previously, any share with a hyphen would be silently invisible and its key/value lines would corrupt the preceding section's data.
+   - Duplicate-entry bug: config was written before directory creation; if `os.makedirs` failed, the config had a dangling entry. Next call would de-duplicate the dict (Python dict), pass the `in shares` check, and write another entry. Fixed with a raw-file regex check before writing and a rollback on mkdir failure.
+
+4. **`array/sbin/helix-array-status`** — `local_sep=",\n"` produced a literal backslash-n in JSON output (bash does not expand `\n` in assignment); changed to `local_sep=$',\n'` (ANSI-C quoting). Previously the JSON emitted by the status script was invalid and fell back to the raw-string path in `array_status()`.
+
+### Cleanup
+
+- `smoke-share` directory created at `/home/pi/Claude/UnraidProject/webui/state/mnt-user/smoke-share` during local testing. Left in place (dev machine, not production).
+- No resources created on the remote instance (192.168.50.12) — all POST operations were blocked.
+
+### Not tested and why
+
+- Array format/start/stop: no spare disks on the target VM.
+- SMB/NFS share file read-write: array not started; samba/nfs not running.
+- App install / container lifecycle: Docker not on remote VM.
+- VMs lifecycle: libvirt/virsh not installed.
+- WireGuard / Tailscale / DDNS: not configured on fresh install.
+- Notifications (test send): POST operations blocked.
+- Mover, VLAN, bonding: requires array + network config.
+- ZFS / Btrfs pools: no spare disks.
+- UPS: no UPS hardware.

@@ -68,8 +68,11 @@ def _run(*args, timeout: int = 30) -> tuple[int, str, str]:
 
 
 def _virsh_available() -> bool:
-    rc, _, _ = _run("virsh", "version")
-    return rc == 0
+    try:
+        rc, _, _ = _run("virsh", "version")
+        return rc == 0
+    except FileNotFoundError:
+        return False
 
 
 def _require_root():

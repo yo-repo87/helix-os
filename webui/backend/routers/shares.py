@@ -29,7 +29,7 @@ def _parse_shares():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        m = re.match(r'^\[(\w+)\]$', line)
+        m = re.match(r'^\[([a-zA-Z0-9_-]+)\]$', line)
         if m:
             section = m.group(1)
             shares[section] = {}
@@ -63,19 +63,33 @@ def list_shares():
 def create_share(name: str, comment: str = "", smb: bool = True, nfs: bool = False):
     if not re.match(r'^[a-zA-Z0-9_-]+$', name):
         raise HTTPException(400, "Invalid share name")
-    shares = _parse_shares()
-    if name in shares:
+    # Read raw config to detect duplicates that survive parse de-duplication
+    try:
+        raw = open(SHARES_CFG).read()
+    except FileNotFoundError:
+        raw = ""
+    if re.search(rf'^\[{re.escape(name)}\]', raw, re.MULTILINE):
         raise HTTPException(409, f"Share '{name}' already exists")
-    # Append to shares.cfg
+    new_entry = (
+        f"\n[{name}]\n"
+        f"comment={comment}\n"
+        f"included_disks=all\n"
+        f"allocation=most_free\n"
+        f"split_level=1\n"
+        f"smb={'yes' if smb else 'no'}\n"
+        f"nfs={'yes' if nfs else 'no'}\n"
+    )
     with open(SHARES_CFG, "a") as f:
-        f.write(f"\n[{name}]\n")
-        f.write(f"comment={comment}\n")
-        f.write(f"included_disks=all\n")
-        f.write(f"allocation=most_free\n")
-        f.write(f"split_level=1\n")
-        f.write(f"smb={'yes' if smb else 'no'}\n")
-        f.write(f"nfs={'yes' if nfs else 'no'}\n")
-    os.makedirs(os.path.join(USER_SHARE, name), exist_ok=True)
+        f.write(new_entry)
+    try:
+        os.makedirs(os.path.join(USER_SHARE, name), exist_ok=True)
+    except OSError as exc:
+        # Roll back the config write on directory creation failure
+        with open(SHARES_CFG, "r") as f:
+            content = f.read()
+        with open(SHARES_CFG, "w") as f:
+            f.write(content.replace(new_entry, ""))
+        raise HTTPException(500, f"Share config written but directory creation failed: {exc}")
     _apply_shares()
     return {"ok": True, "name": name}
 

@@ -27,14 +27,20 @@ HELIX_TAG = "# helix-scheduler"
 # ── Crontab helpers ───────────────────────────────────────────────
 
 def _read_crontab() -> str:
-    r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else ""
+    try:
+        r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+    except FileNotFoundError:
+        return ""
 
 
 def _write_crontab(content: str):
-    p = subprocess.run(["crontab", "-"], input=content, capture_output=True, text=True)
-    if p.returncode != 0:
-        raise RuntimeError(f"crontab write failed: {p.stderr.strip()}")
+    try:
+        p = subprocess.run(["crontab", "-"], input=content, capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"crontab write failed: {p.stderr.strip()}")
+    except FileNotFoundError:
+        raise HTTPException(503, "crontab not available on this system")
 
 
 def _job_id(schedule: str, command: str) -> str:

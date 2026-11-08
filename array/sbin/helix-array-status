@@ -55,7 +55,7 @@ if [ "$JSON" = "--json" ]; then
             "$([ "$present" = "yes" ] && echo true || echo false)" \
             "$([ "$mounted" = "yes" ] && echo true || echo false)" \
             "$fstype" "$size" "$used" "$avail" "$pct" "$temp"
-        local_sep=",\n"
+        local_sep=$',\n'
     done
     printf '\n  ]\n}\n'
 else

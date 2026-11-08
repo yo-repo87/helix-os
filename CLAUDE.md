@@ -747,6 +747,38 @@ All GET endpoints verified to return valid JSON. No UI browser tool available to
 
 4. **`array/sbin/helix-array-status`** — `local_sep=",\n"` produced a literal backslash-n in JSON output (bash does not expand `\n` in assignment); changed to `local_sep=$',\n'` (ANSI-C quoting). Previously the JSON emitted by the status script was invalid and fell back to the raw-string path in `array_status()`.
 
+5. **`webui/backend/routers/diagnostics.py`** — `_run("nvidia-smi", label="nvidia-smi")` passed an unsupported `label=` kwarg to `_run()` (which only accepts `*args, timeout`); removed the kwarg. `GET /api/diagnostics/bundle` returned 500 with `TypeError: _run() got an unexpected keyword argument 'label'`. (Commit `00f7080`)
+
+6. **`webui/backend/routers/pia.py`** — `_run()` called `subprocess.run()` without `try/except`; if `wg` was not installed `GET /api/pia/status` raised `FileNotFoundError` → 500. Added `try/except (FileNotFoundError, subprocess.TimeoutExpired)` matching the same pattern used in vms.py, scheduler.py, etc. (Commit `226d3e7`)
+
+### Second smoke test run (2026-11-08) — after fixes deployed
+
+Ran against http://192.168.50.12 after `helix-webui.service` reinstalled from git repo:
+
+| Metric | Count |
+|--------|-------|
+| PASS | 32/36 endpoints |
+| FAIL (pending deploy) | 4 — vms/, scheduler/jobs, diagnostics/bundle, pia/status |
+| Root cause | Server at 192.168.50.12 running old `/opt/helix/backend/` before `helix-webui.service` reinstall; all fixes are in `main` and deployed via service pointing to git repo path |
+
+**After `git pull && sudo systemctl restart helix-webui` on 192.168.50.12, all 4 should pass.**
+
+Broader retest (76 endpoints, same session):
+
+| Result | Count |
+|--------|-------|
+| PASS | 68 |
+| FAIL (old deploy) | 4 |
+| WARN (200 but degraded) | 2 |
+| SKIPPED (expected non-200) | 1 |
+| INFRA (not code) | 1 |
+
+New findings from broader test (not in first run):
+- `diagnostics/bundle` 500 (label kwarg — fixed, commit `00f7080`)
+- `pia/status` 500 (FileNotFoundError wg — fixed, commit `226d3e7`)
+- Share POST: regex fix confirmed working; fails only on `/mnt/user` PermissionError (infra — helix user lacks write to /mnt/user)
+- SSL key: nginx cannot read `/etc/helix/ssl/helix.key` → `proxy/status` config_ok=false (infra — fix: `chmod 640 /etc/helix/ssl/helix.key && chown root:helix /etc/helix/ssl/helix.key`)
+
 ### Cleanup
 
 - `smoke-share` directory created at `/home/pi/Claude/UnraidProject/webui/state/mnt-user/smoke-share` during local testing. Left in place (dev machine, not production).

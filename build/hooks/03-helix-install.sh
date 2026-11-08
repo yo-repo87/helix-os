@@ -274,6 +274,27 @@ LABEL=HELIXDATA
 DATA_MNT=/mnt/data
 log() { echo "[helix-firstboot] $*"; }
 
+# ── SSH authorized keys ───────────────────────────────────────────────────────
+# Load *.pub from /boot/config/ssh/ into the helix user's authorized_keys (login
+# is key-only; root login is disabled). Runs before the HELIXDATA early-exit so
+# keys work on a read-only ISO/CD boot too. On a writable boot medium /boot/config
+# persists, so keys survive reboots.
+HELIX_HOME=$(getent passwd helix 2>/dev/null | cut -d: -f6)
+[ -n "$HELIX_HOME" ] || HELIX_HOME=/home/helix
+if ls /boot/config/ssh/*.pub >/dev/null 2>&1; then
+    mkdir -p "$HELIX_HOME/.ssh"
+    AK="$HELIX_HOME/.ssh/authorized_keys"; touch "$AK"
+    for pub in /boot/config/ssh/*.pub; do
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in \#*) continue ;; esac
+            grep -qxF "$line" "$AK" 2>/dev/null || { echo "$line" >> "$AK"; log "added SSH key from $(basename "$pub")"; }
+        done < "$pub"
+    done
+    chmod 700 "$HELIX_HOME/.ssh"; chmod 600 "$AK" 2>/dev/null || true
+    id helix >/dev/null 2>&1 && chown -R helix:helix "$HELIX_HOME/.ssh" 2>/dev/null || true
+fi
+
 DATA_PART=$(blkid -L "$LABEL" 2>/dev/null) || DATA_PART=""
 [ -n "$DATA_PART" ] || { log "no $LABEL partition (ISO/CD or legacy layout) — skipping."; exit 0; }
 

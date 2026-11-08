@@ -159,7 +159,7 @@ def download_bundle():
                 zf.writestr(f"smart/{parts[0]}.txt", smart)
 
         # GPU info
-        rc, nvout, _ = _run("nvidia-smi", label="nvidia-smi")
+        rc, nvout, _ = _run("nvidia-smi")
         zf.writestr("gpu/nvidia-smi.txt",
             nvout if rc == 0 else "[nvidia-smi not available]\n")
 

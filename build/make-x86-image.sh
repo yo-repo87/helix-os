@@ -143,22 +143,18 @@ menuentry "Helix OS (safe mode)" {
 }
 EOF
 
-# UEFI GRUB binary
+# UEFI GRUB binary — only include modules that actually exist in this GRUB build
+GRUB_MODS=""
+for mod in part_gpt part_msdos fat normal linux search search_label \
+           echo all_video gfxterm configfile ls reboot halt; do
+    [ -f "/usr/lib/grub/x86_64-efi/${mod}.mod" ] && GRUB_MODS="$GRUB_MODS $mod"
+done
+# shellcheck disable=SC2086
 grub-mkimage \
     -O x86_64-efi \
     -o "$MNT/EFI/BOOT/BOOTX64.EFI" \
     -p "/grub" \
-    part_gpt part_msdos fat ext2 squash4 \
-    normal linux initrd search search_label \
-    echo all_video gfxterm gfxterm_background \
-    configfile ls reboot halt 2>/dev/null || \
-grub-mkimage \
-    -O x86_64-efi \
-    -o "$MNT/EFI/BOOT/BOOTX64.EFI" \
-    -p "/grub" \
-    part_gpt part_msdos fat \
-    normal linux initrd search search_label \
-    configfile ls reboot halt
+    $GRUB_MODS
 
 # BIOS GRUB — install to the disk MBR and BIOS boot partition
 grub-install \

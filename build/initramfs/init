@@ -55,8 +55,9 @@ find_boot_dev() {
     dev=$(findfs "LABEL=$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
     dev=$(blkid 2>/dev/null | grep -i "LABEL=\"$BOOT_LABEL\"" | head -1 | cut -d: -f1)
     [ -n "$dev" ] && { echo "$dev"; return; }
-    # Last resort: probe every block device partition directly
-    for d in /dev/sd?? /dev/sd? /dev/vd?? /dev/vd? /dev/hd?? /dev/hd? \
+    # Last resort: probe every block device partition directly (including CD-ROM)
+    for d in /dev/sr? /dev/sr?? \
+              /dev/sd?? /dev/sd? /dev/vd?? /dev/vd? /dev/hd?? /dev/hd? \
               /dev/mmcblk?p? /dev/nvme?n?p?; do
         [ -b "$d" ] || continue
         local lbl
@@ -84,9 +85,18 @@ done
 [ -n "$USB_DEV" ] || die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
 msg "Found boot device: $USB_DEV"
 
-# ── 4. Mount USB read-only initially ─────────────────────────────────────────
-mount -t vfat -o ro,noatime "$USB_DEV" /run/helix/usb \
-    || die "Cannot mount $USB_DEV"
+# ── 4. Mount boot device read-only (vfat for USB/disk, iso9660 for ISO/CD) ───
+BOOT_FS_READONLY=false
+MOUNTED=false
+for fstype in vfat iso9660 auto; do
+    if mount -t "$fstype" -o ro,noatime "$USB_DEV" /run/helix/usb 2>/dev/null; then
+        MOUNTED=true
+        [ "$fstype" = "iso9660" ] && BOOT_FS_READONLY=true
+        break
+    fi
+done
+$MOUNTED || die "Cannot mount $USB_DEV (tried vfat, iso9660, auto)"
+msg "Mounted $USB_DEV (readonly=$BOOT_FS_READONLY)"
 
 # ── 5. Pick squashfs (fall back to previous image if an update was interrupted) ─
 # The GitHub updater keeps the prior image as *.prev and sets an inflight flag
@@ -130,8 +140,12 @@ mount -t overlay overlay \
     /root \
     || die "Cannot mount overlay filesystem."
 
-# ── 8. Mount USB read-write, bind as /boot (config lives here) ───────────────
-mount -o remount,rw "$USB_DEV" /run/helix/usb
+# ── 8. Mount boot device read-write, bind as /boot (config lives here) ───────
+# ISO 9660 is inherently read-only; skip the remount (config writes will fail
+# gracefully — live ISO sessions run without persistent config).
+if [ "$BOOT_FS_READONLY" = "false" ]; then
+    mount -o remount,rw "$USB_DEV" /run/helix/usb
+fi
 mkdir -p /root/boot
 mount --bind /run/helix/usb /root/boot
 

@@ -3475,7 +3475,7 @@ async function assignDisksModal() {
     return;
   }
   const row = d => {
-    const opts = ['', 'parity', 'data'].map(r =>
+    const opts = ['', 'parity', 'data', 'cache'].map(r =>
       `<option value="${r}"${d.role === r ? ' selected' : ''}>${r || '— unassigned —'}</option>`).join('');
     const boot = d.is_boot ? ' <span style="color:var(--warn)">(boot)</span>' : '';
     const mnt = d.mountpoint ? ` <span style="color:var(--fg-dim)">mounted ${d.mountpoint}</span>` : '';
@@ -3489,7 +3489,9 @@ async function assignDisksModal() {
   };
   const body = `
     <div style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">
-      Parity disk(s) must be ≥ the largest data disk. The boot device can't be assigned.
+      Parity disk(s) must be ≥ the largest data disk. <strong>Cache</strong> drives (SSD/NVMe)
+      are a fast write pool — shares set to "use cache" land here first, then the mover
+      moves them to the array. The boot device can't be assigned.
       Saved to <span class="mono">disks.cfg</span>; use <strong>Start Array</strong> after.</div>
     <div style="overflow:auto;max-height:50vh"><table style="width:100%;border-collapse:collapse;font-size:12px">
       <tr style="text-align:left;color:var(--fg-muted)">
@@ -3504,24 +3506,25 @@ async function assignDisksModal() {
 }
 
 async function applyDiskAssign() {
-  const parity = [], data = [];
+  const parity = [], data = [], cache = [];
   document.querySelectorAll('.assign-role').forEach(s => {
     if (s.value === 'parity') parity.push(s.dataset.dev);
     else if (s.value === 'data') data.push(s.dataset.dev);
+    else if (s.value === 'cache') cache.push(s.dataset.dev);
   });
   const res = document.getElementById('assign-result');
   if (res) { res.style.color = 'var(--fg-muted)'; res.textContent = 'Saving…'; }
   try {
     const d = await fetchJSON('/api/array/assign', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({parity, data, fmt: 'xfs'}),
+      body: JSON.stringify({parity, data, cache, fmt: 'xfs', cache_fmt: 'btrfs'}),
     });
     if (d && d.ok === false) {
       if (res) { res.style.color = 'var(--warn)'; res.textContent = d.error || 'Could not save assignment.'; }
       return;
     }
     if (res) { res.style.color = 'var(--ok)'; res.innerHTML =
-      `✓ Saved: ${parity.length} parity, ${data.length} data. Click <strong>Start Array</strong> to bring it online.`; }
+      `✓ Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache. Click <strong>Start Array</strong> to bring it online.`; }
     setTimeout(refresh, 800);
   } catch (e) {
     if (res) { res.style.color = 'var(--err)'; res.textContent = `Error: ${e}`; }

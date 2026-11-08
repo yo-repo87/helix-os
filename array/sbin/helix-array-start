@@ -87,6 +87,27 @@ else
     helix_log "mergerfs started: $BRANCHES → $USER_SHARE"
 fi
 
+# ── Mount cache drives ────────────────────────────────────────────────────────
+# Cache/pool drives are mounted separately (not mergerfs branches). Shares set to
+# "use cache" write here first; helix-mover later moves data to the array.
+for i in "${!CACHE_DISKS[@]}"; do
+    dev="${CACHE_DEVS[$i]}"
+    mnt="${CACHE_MNTS[$i]}"
+    name="${CACHE_DISKS[$i]}"
+    if [ ! -b "$dev" ]; then
+        helix_log "WARN: cache $name device $dev not found — skipping."
+        continue
+    fi
+    if mountpoint -q "$mnt"; then
+        helix_log "cache $name already mounted at $mnt"
+    else
+        fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+        [ -n "$fstype" ] || { helix_log "WARN: cache $name ($dev) has no filesystem — skipping. Format it first."; continue; }
+        mount -t "$fstype" -o defaults,noatime "$dev" "$mnt"
+        helix_log "Mounted cache $name: $dev → $mnt ($fstype)"
+    fi
+done
+
 # ── Record state ──────────────────────────────────────────────────────────────
 echo "started" > "$ARRAY_STATE"
 date -Iseconds >> "$ARRAY_STATE"

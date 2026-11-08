@@ -124,7 +124,9 @@ def drives():
 class AssignReq(BaseModel):
     parity: list[str] = []   # device paths, e.g. ["/dev/sdb"]
     data:   list[str] = []   # device paths for data disks
+    cache:  list[str] = []   # device paths for cache/pool drives (fast write cache)
     fmt:    str = "xfs"      # filesystem for data disks
+    cache_fmt: str = "btrfs" # filesystem for cache drives (btrfs supports pools)
 
 
 def _write_disks_cfg(content: str) -> str:
@@ -157,7 +159,7 @@ def _write_disks_cfg(content: str) -> str:
 def assign_disks(req: AssignReq):
     """Persist a parity/data disk assignment to disks.cfg (reboot-safe on a
     writable boot medium). Does not start the array — call /start after."""
-    all_devs = req.parity + req.data
+    all_devs = req.parity + req.data + req.cache
     if len(set(all_devs)) != len(all_devs):
         raise HTTPException(400, "A device was assigned to more than one slot.")
     lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
@@ -165,13 +167,16 @@ def assign_disks(req: AssignReq):
         lines += [f"[parity{i}]", f"device={dev}", ""]
     for i, dev in enumerate(req.data, 1):
         lines += [f"[disk{i}]", f"device={dev}", f"format={req.fmt}", ""]
+    for i, dev in enumerate(req.cache, 1):
+        lines += [f"[cache{i}]", f"device={dev}", f"format={req.cache_fmt}", ""]
     err = _write_disks_cfg("\n".join(lines) + "\n")
     if err:
         # Return 200 with ok=false (not a 500): BaseHTTPMiddleware can turn a
         # raised HTTPException into a generic "Internal Server Error", hiding the
         # real cause from the UI. The frontend shows .error.
         return {"ok": False, "error": err}
-    return {"ok": True, "parity": req.parity, "data": req.data, "fmt": req.fmt}
+    return {"ok": True, "parity": req.parity, "data": req.data,
+            "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
 
 
 # ── Parity check SSE streaming ────────────────────────────────────────────────

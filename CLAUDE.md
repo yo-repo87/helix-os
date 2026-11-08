@@ -1007,4 +1007,37 @@ every shipped update** so builds are distinguishable and the OTA updater flags n
 versions. Now **0.1.1** (the first patched revision over the initial 0.1.0 — all of
 today's boot/network/HTTPS/web-UI/drive/array fixes).
 
-*Last updated: 2026-11-07. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+---
+
+## 28. Release 0.1.2 + 0.1.3 — cache drive, SSH keys, writable disk, MCP (2026-11-08)
+
+Consolidated since 0.1.1:
+
+- **Cache/pool drive role (0.1.2).** Assign Disks modal gains a `cache` role;
+  `POST /api/array/assign` takes `cache[]`+`cache_fmt` and writes `[cacheN]`
+  sections; `helix-array-start` mounts them at `/mnt/cacheN` (separate from the
+  mergerfs array); `helix-array-status` reports a `cache` array. Shares set to
+  "use cache" land there first; the mover moves them to the array. Fixed a latent
+  `helix-array-status` bug (literal `,\n` separator → invalid JSON for 2+ entries).
+- **SSH keys actually load (0.1.2).** The banner promised `/boot/config/ssh/` but
+  nothing read it. `helix-firstboot` now loads `*.pub` from there into the `helix`
+  user's `authorized_keys` (login is key-only, root disabled), before the HELIXDATA
+  early-exit so it works on CD boot too. On a writable medium the keys persist.
+- **Writable disk image for Proxmox.** `helix-os-disk-YYYYMMDD.qcow2` (built with
+  `HELIX_OUTPUT=<dir> write-usb.sh` → raw → `qemu-img convert -c`). Boots via its
+  own GRUB and has ~1.7 GB free on `/boot`, so OTA applies (the ISO-as-CD can't —
+  `/boot` is read-only). `build/grub/grub.cfg` now uses serial+console terminals
+  and `console=ttyS0 console=tty0` for reliable headless auto-boot.
+- **OTA read-only message.** `helix-osupdate stage` detects a read-only/zero-free
+  boot medium and says to write Helix to a USB/disk, instead of "have 0".
+- **MCP server (0.1.3).** `webui/backend/routers/mcp.py` — dependency-free
+  Streamable-HTTP JSON-RPC at `POST /mcp` (proxied by nginx on :80/:443). Tools:
+  `system_stats, array_status, list_disks, list_shares, list_docker,
+  hardware_info, array_start, array_stop` — each a loopback call to the local API,
+  run via `run_in_threadpool` to avoid deadlocking the single-worker event loop.
+  **Auth fails closed**: every call needs `Authorization: Bearer <token>` where the
+  token is a Helix API key (Settings → API Keys); with no keys configured it refuses
+  all calls. Point an MCP client at `http(s)://<helix-ip>/mcp` with that bearer token.
+  See [[helix-ota-release-process]] for publishing. Now **0.1.3**.
+
+*Last updated: 2026-11-08. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*

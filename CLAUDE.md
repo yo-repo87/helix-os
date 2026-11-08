@@ -795,3 +795,65 @@ New findings from broader test (not in first run):
 - Mover, VLAN, bonding: requires array + network config.
 - ZFS / Btrfs pools: no spare disks.
 - UPS: no UPS hardware.
+
+---
+
+## 19. Known Issues, Lessons Learned & Design Constraints (2026-11-08)
+
+This section documents bugs that caused production incidents. **Read before modifying the initramfs, OTA update system, or build pipeline.**
+
+---
+
+### 19.1 initramfs MUST load storage bus drivers before scanning for HELIXBOOT
+
+**Incident:** Every boot attempt failed with `[helix] FATAL: Boot device (label=HELIXBOOT) not found after 30s` on real USB sticks, Proxmox VMs, and bare-metal hardware. `/dev/` was empty in the emergency shell — `blkid`, `ls /dev/sd*`, and `cat /proc/partitions` all returned nothing.
+
+**Root cause:** `build/initramfs/init` only loaded filesystem modules (`squashfs`, `vfat`, `overlay`, etc.) but **not** the storage bus drivers needed to enumerate hardware. Without them the kernel never creates block device nodes in `/dev/`.
+
+**Fix (commit `4f2dea4`):** Added explicit `modprobe` calls in the kernel modules section plus a 2-second enumeration delay:
+```sh
+# USB host controllers
+ehci_hcd  ohci_hcd  xhci_hcd  xhci_pci  usbcore
+# USB storage
+usb_storage  uas  scsi_mod  sd_mod  sr_mod
+# VirtIO (Proxmox / QEMU / KVM)
+virtio  virtio_pci  virtio_blk  virtio_scsi
+# SATA / NVMe
+ahci  libahci  ata_piix  nvme  nvme_core
+sleep 2   # USB enumeration delay
+```
+
+Also added a `/dev/sd*` / `/dev/vd*` / `/dev/mmcblk*` brute-force fallback loop in `find_boot_dev()` so HELIXBOOT is located even if `blkid`/`findfs` are absent in the minimal initramfs environment.
+
+**Rule:** Any change to `build/initramfs/init` must preserve all driver groups above. If new hardware targets are added (e.g. USB4, Thunderbolt, e.MMC), add their modules to this list too. The initramfs must be self-contained — it cannot rely on udev or a full module tree.
+
+---
+
+### 19.2 OTA update MUST NOT swap kernel/initrd on standard Debian installs
+
+**Incident:** User applied the OTA update (v0.1.4) on a server running as a standard Debian install with `helix-webui.service`. On reboot the new `initrd.img` ran (which expects a live-boot squashfs on a HELIXBOOT USB) and failed to find HELIXBOOT, leaving the system unbootable.
+
+**Root cause:** `routers/osupdate.py` unconditionally staged and committed `vmlinuz`, `initrd.img`, and `filesystem.squashfs` to `/boot/boot/` regardless of whether the system was actually live-booting from a Helix squashfs.
+
+**Fix (commit `80d52f3`):** Added `_is_live_boot()` which checks for `/run/helix/` directory (created by the initramfs) and an overlay root mount. `_apply_worker()` now branches:
+- **Live-boot system** → download + stage + commit boot images as before
+- **Standard Debian install** → `git pull` in the project directory + `systemctl restart helix-webui` only; never touches vmlinuz/initrd
+
+**Rule:** Never call `helix-osupdate stage/commit` without first confirming `_is_live_boot() == True`. The OTA helper writes to the boot partition — on a standard install that partition is managed by GRUB and replacing its initrd is destructive.
+
+---
+
+### 19.3 initramfs working directory is /run/helix (not /run/hive)
+
+The initramfs previously used `/run/hive/` as its working directory. All paths were renamed to `/run/helix/` in commit `80d52f3`. The `_is_live_boot()` detection in `osupdate.py` relies on the presence of `/run/helix/` — if this path is ever renamed again, update `_is_live_boot()` to match.
+
+---
+
+### 19.4 App install failures were silently swallowed
+
+**Incident:** Clicking Install on any app showed "Installing…" then reverted to "Install" with no error message. Docker socket permission errors, missing images, and all other failures were invisible.
+
+**Root cause:** `_do_install()` ran as a FastAPI `BackgroundTask` with no try/except. Any exception was discarded.
+
+**Fix (commit `48a5a75`):** `_do_install()` now writes `install_status.json` to `STATE_DIR/apps/{name}/` with `state: installing / installed / error` and the error message. Frontend polls `GET /api/apps/{name}/install-status` every 2.5s and shows an alert with the actual error on failure.
+

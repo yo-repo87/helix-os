@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from config import STATE_DIR, HELIX_CONFIG
+from services import pathmap
 
 log = logging.getLogger(__name__)
 
@@ -195,14 +196,10 @@ def _extract_port_number(port_str: str) -> int | None:
 
 
 def _localize_host_path(host: str) -> str:
-    """Pi-Hosted templates bind to '/portainer/Files/AppData/Config/<app>/...',
-    a root-level path the unprivileged backend can't create. Map it under the
-    appdata share ('/mnt/user/appdata/<app>/...'); other paths pass through."""
-    if not host:
-        return host
-    m = re.match(r"^/portainer/Files/AppData/Config/(.*)$", host) or \
-        re.match(r"^/portainer/(.*)$", host)
-    return f"/mnt/user/appdata/{m.group(1)}" if m else host
+    """Pi-Hosted templates bind to '/portainer/...' (a Raspberry Pi layout). Map those onto Helix
+    shares (appdata / downloads / media); every other path, including system paths, is unchanged.
+    The bundled catalog is already converted; this covers Pi-Hosted-style catalogs added later."""
+    return pathmap.map_path(host) if host else host
 
 
 def _portainer_to_unified(item: dict, source_id: str) -> dict | None:

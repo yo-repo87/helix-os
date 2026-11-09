@@ -13,6 +13,7 @@ exception: an app that mounts a folder at the SAME path inside and outside the c
   /portainer/Files/AppData/<x>          -> /mnt/user/appdata/<x>
   /portainer/Files/Config/<x>           -> /mnt/user/appdata/<x>
   /portainer/Files/<x>                  -> /mnt/user/appdata/<x>
+  /portainer/Files/Downloads[/<x>]      -> /mnt/user/downloads[/<x>]
   /portainer/Downloads[/<x>]            -> /mnt/user/downloads[/<x>]
   /portainer/{TV,Movies,Music,Podcasts,Books,Comics,Pictures}[/<x>]
                                         -> /mnt/user/media/<Name>[/<x>]
@@ -20,41 +21,11 @@ exception: an app that mounts a folder at the SAME path inside and outside the c
 
 Usage: convert-portainer-catalog.py [--url URL | --in FILE] --out FILE
 """
-import argparse, json, re, sys, urllib.request
+import argparse, json, os, re, sys, urllib.request
 
 DEFAULT_URL = "https://raw.githubusercontent.com/yo-repo87/pi-hosted/master/template/portainer-v3-amd64.json"
-MEDIA = {"tv": "TV", "movies": "Movies", "music": "Music", "podcasts": "Podcasts",
-         "books": "Books", "comics": "Comics", "pictures": "Pictures"}
-APPDATA, MEDIA_SHARE, DOWNLOADS = "/mnt/user/appdata", "/mnt/user/media", "/mnt/user/downloads"
-
-
-def map_path(p: str) -> str:
-    """Map one host path. Anything that is not a Pi-Hosted path is returned unchanged."""
-    suffix = ""
-    if p.endswith(":ro") or p.endswith(":rw"):
-        p, suffix = p[:-3], p[-3:]
-    if p == "/mnt/Books" or p.startswith("/mnt/Books/"):
-        return MEDIA_SHARE + "/Books" + p[len("/mnt/Books"):] + suffix
-    if not p.startswith("/portainer"):
-        return p + suffix
-    rest = p[len("/portainer"):].lstrip("/")
-    parts = rest.split("/") if rest else []
-    if not parts:
-        return APPDATA + suffix
-    head = parts[0].lower()
-    if head == "files":
-        sub = parts[1:]
-        if sub[:2] == ["AppData", "Config"]:
-            sub = sub[2:]
-        elif sub[:1] == ["AppData"] or sub[:1] == ["Config"]:
-            sub = sub[1:]
-        return "/".join([APPDATA] + sub) + suffix
-    if head == "downloads":
-        return "/".join([DOWNLOADS] + parts[1:]) + suffix
-    if head in MEDIA:
-        return "/".join([MEDIA_SHARE, MEDIA[head]] + parts[1:]) + suffix
-    return "/".join([APPDATA] + parts) + suffix           # unknown /portainer/<x>: keep it, under appdata
-
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "webui", "backend"))
+from services.pathmap import map_path        # noqa: E402  (shared with the runtime template loader)
 
 _TEXT_PATH = re.compile(r"/portainer(?:/[^\s\"'<>),;]*)?")
 

@@ -11827,7 +11827,7 @@
      "container": "/config"
     },
     {
-     "bind": "/mnt/user/appdata/Downloads",
+     "bind": "/mnt/user/downloads",
      "container": "/downloads"
     },
     {

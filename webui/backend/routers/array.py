@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import asyncio, glob, subprocess, os, json, re, tempfile
-from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE
+import asyncio, glob, subprocess, os, json, re, tempfile, time
+from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE, STATE_DIR
+from services import array_state
 
 router = APIRouter(prefix="/api/array", tags=["array"])
 
@@ -28,6 +29,30 @@ def _array_state() -> str:
     except FileNotFoundError:
         return "stopped"
 
+def _usage(path: str) -> dict | None:
+    """Numeric capacity of a mount (what `df` reports), for gauges. The status script only
+    emits human strings like '91G' / '13T', which cannot be turned into a percentage."""
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    size = st.f_frsize * st.f_blocks
+    used = size - st.f_frsize * st.f_bfree
+    return {"size_bytes": size, "used_bytes": used, "free_bytes": st.f_frsize * st.f_bavail,
+            "pct": round(100 * used / size, 1) if size else 0.0}
+
+
+def _add_usage(d: dict) -> dict:
+    us = d.get("user_share") or {}
+    if us.get("mounted"):
+        us.update(_usage(USER_SHARE) or {})
+    for key in ("disks", "parity", "cache"):
+        for e in d.get(key, []) or []:
+            if e.get("mounted"):
+                e.update(_usage(os.path.join(MNT_BASE, e["name"])) or {})
+    return d
+
+
 @router.get("/status")
 def array_status():
     rc, out, err = _run_sbin("helix-array-status", "--json")
@@ -35,22 +60,135 @@ def array_status():
         # Fallback: basic state only
         return {"array_state": _array_state(), "user_share": {}, "disks": [], "error": err}
     try:
-        return json.loads(out)
+        return _add_usage(json.loads(out))
     except json.JSONDecodeError:
         return {"array_state": _array_state(), "raw": out}
 
+# ── Array Operation: what the panel shows, and what start/stop enforce ───────────────
+TRANSITION_FILE = os.path.join(STATE_DIR, "array_transition")       # "starting" | "stopping"
+
+
+def _transition() -> str | None:
+    try:
+        if time.time() - os.path.getmtime(TRANSITION_FILE) > 600:    # stale: a job that died
+            return None
+        return open(TRANSITION_FILE).read().strip() or None
+    except OSError:
+        return None
+
+
+def _run_job(kind: str, script: str) -> None:
+    """Run a start/stop script, keeping the 'starting'/'stopping' marker for its duration."""
+    try:
+        os.makedirs(os.path.dirname(TRANSITION_FILE), exist_ok=True)
+        open(TRANSITION_FILE, "w").write(kind)
+        _run_sbin(script)
+    finally:
+        try:
+            os.unlink(TRANSITION_FILE)
+        except OSError:
+            pass
+
+
+def _disk_roles() -> dict:
+    """parity/data/cache entries from disks.cfg with their size and whether the device exists."""
+    out = {"parity": [], "data": [], "cache": []}
+    try:
+        cfg = open(DISKS_CFG).read()
+    except OSError:
+        return out
+    section = None
+    for line in cfg.splitlines():
+        line = line.strip()
+        m = re.match(r'^\[(\w+)\]$', line)
+        if m:
+            section = m.group(1)
+            continue
+        if section and line.startswith("device="):
+            dev = line.split("=", 1)[1].strip()
+            role = "parity" if section.startswith("parity") else "cache" if section.startswith(("cache", "pool")) else "data"
+            present = os.path.exists(dev)
+            size_gb = 0.0
+            if present:
+                try:
+                    with open(f"/sys/class/block/{os.path.basename(os.path.realpath(dev))}/size") as f:
+                        size_gb = int(f.read()) * 512 / 1e9
+                except (OSError, ValueError):
+                    pass
+            out[role].append({"name": section, "device": dev, "size_gb": size_gb, "present": present})
+    return out
+
+
+def _parity_elapsed() -> str | None:
+    try:
+        pid = subprocess.run(["pgrep", "-ox", "snapraid"], capture_output=True, text=True, timeout=3).stdout.split()
+        if not pid:
+            return None
+        et = subprocess.run(["ps", "-o", "etimes=", "-p", pid[0]], capture_output=True, text=True, timeout=3).stdout.strip()
+        n = int(et)
+        return f"{n // 3600}:{n % 3600 // 60:02d}:{n % 60:02d}"
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _mover_running() -> bool:
+    try:
+        return bool(json.load(open(os.path.join(STATE_DIR, "mover_state.json"))).get("running"))
+    except (OSError, ValueError):
+        return False
+
+
+def _parity_synced() -> bool:
+    """True once a Parity Sync has completed at least once (SnapRAID leaves a content file on each data disk)."""
+    import glob
+    return any(os.path.exists(p) for p in glob.glob(os.path.join(MNT_BASE, "disk*", ".snapraid.content")))
+
+
+def _containers_running() -> int:
+    try:
+        r = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, timeout=4)
+        return len(r.stdout.split()) if r.returncode == 0 else 0
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+
+
+def _operation() -> dict:
+    roles = _disk_roles()
+    state = _array_state()
+    return array_state.compute({
+        "state": state, "transition": _transition(), **roles,
+        "parity_running": _snapraid_running(), "parity_elapsed": _parity_elapsed(),
+        "mover_running": _mover_running(), "synced": _parity_synced(),
+        "containers_running": _containers_running() if state == "started" else 0,
+    })
+
+
+@router.get("/operation")
+def array_operation():
+    """Which array controls are valid right now, what each will do, and why any is unavailable."""
+    return _operation()
+
+
 @router.post("/start")
-def array_start(background_tasks: BackgroundTasks):
+def array_start(background_tasks: BackgroundTasks, confirm: bool = False):
     if _array_state() == "started":
         return {"ok": True, "message": "Array already started"}
-    background_tasks.add_task(_run_sbin, "helix-array-start")
+    row = _operation()["rows"][0]
+    if row["button"] and not row["button"]["enabled"]:
+        raise HTTPException(409, row["explain"])
+    if row.get("confirm") and not confirm:
+        raise HTTPException(409, f"Confirmation required: {row['confirm']}")
+    background_tasks.add_task(_run_job, "starting", "helix-array-start")
     return {"ok": True, "message": "Array start initiated"}
 
 @router.post("/stop")
 def array_stop(background_tasks: BackgroundTasks):
     if _array_state() == "stopped":
         return {"ok": True, "message": "Array already stopped"}
-    background_tasks.add_task(_run_sbin, "helix-array-stop")
+    row = _operation()["rows"][0]
+    if row["button"] and not row["button"]["enabled"]:
+        raise HTTPException(409, row["explain"])
+    background_tasks.add_task(_run_job, "stopping", "helix-array-stop")
     return {"ok": True, "message": "Array stop initiated"}
 
 def _snapraid_running() -> bool:

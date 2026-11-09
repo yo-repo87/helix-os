@@ -588,6 +588,26 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
   pointer-events: none; display: none;
 }
 
+/* ── Array operation panel + global footer ─────────────────────────── */
+.array-op { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.aop-row { display: grid; grid-template-columns: minmax(170px, 230px) minmax(110px, auto) 1fr; gap: 6px 14px; align-items: center;
+           padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; }
+.aop-row.aop-ok { border-left-color: var(--ok); } .aop-row.aop-warn { border-left-color: var(--warn); }
+.aop-row.aop-error { border-left-color: var(--err); } .aop-row.aop-busy { border-left-color: var(--accent); }
+.aop-status { font-size: 13px; font-weight: 600; }
+.aop-ctl { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.aop-ctl label { font-size: 11px; color: var(--fg-muted); display: flex; gap: 5px; align-items: flex-start; max-width: 230px; }
+.aop-explain { font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
+.aop-explain .aop-warn-line { display: block; margin-top: 3px; color: var(--warn); }
+.aop-empty { font-size: 12px; color: var(--fg-dim); padding: 8px 2px; }
+@media (max-width: 760px) { .aop-row { grid-template-columns: 1fr; } }
+#helix-footer { position: fixed; bottom: 0; left: var(--nav-w); right: 0; z-index: 40; height: 26px; display: flex; align-items: center; gap: 8px;
+                padding: 0 14px; font-size: 12px; background: var(--surface-hi); border-top: 1px solid var(--border-str); color: var(--fg-muted); }
+.footer-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); }
+.footer-dot.ok { background: var(--ok); } .footer-dot.err { background: var(--err); } .footer-dot.busy { background: var(--accent); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+main { padding-bottom: 44px; }
+
 /* ── Demo banner ───────────────────────────────────────────────── */
 .demo-banner {
   background: var(--accent-dim); border: 1px solid var(--accent);
@@ -912,14 +932,11 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
     <!-- populated by JS -->
   </div>
 
-  <!-- Array Controls -->
-  <div class="section-title" style="margin-top:20px">Array Controls</div>
+  <!-- Array Controls: rendered from GET /api/array/operation (state machine; see §30.5) -->
+  <div class="section-title" style="margin-top:20px">Array Operation</div>
+  <div id="array-op" class="array-op"><div class="aop-empty">Loading array state…</div></div>
   <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;align-items:center">
-    <button class="ctr-btn" onclick="assignDisksModal()">⊹ Assign Disks</button>
-    <button class="ctr-btn" onclick="fetchJSON('/api/array/start',{method:'POST'}).then(refresh)">Start Array</button>
-    <button class="ctr-btn" onclick="fetchJSON('/api/array/stop',{method:'POST'}).then(refresh)">Stop Array</button>
-    <button class="ctr-btn" onclick="startParityStream(false)">Parity Sync</button>
-    <button class="ctr-btn" onclick="startParityStream(true)">Parity Scrub</button>
+    <button class="ctr-btn" onclick="assignDisksModal()" title="Choose which disks are parity, data and cache. Only possible while the array is stopped.">⊹ Assign Disks</button>
     <button class="ctr-btn" id="parity-stop-btn" onclick="stopParity()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-muted);margin-left:6px">
       <input type="checkbox" id="array-autostart" onchange="setArrayAutostart(this.checked)"> Start array on boot
@@ -1785,6 +1802,7 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
     <div id="cmk-services-list" style="display:none;margin-top:10px"></div>
   </div>
 </main>
+<div id="helix-footer" role="status" aria-live="polite"><span id="footer-dot" class="footer-dot"></span><span id="footer-text">Array …</span></div>
 
 <!-- ── MODAL ─────────────────────────────────────────────────── -->
 <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal(event)">
@@ -2129,10 +2147,28 @@ function renderArray(d) {
   document.getElementById('status-text').textContent =
     d.array_state === 'started' ? 'Array started' : 'Array stopped';
 
-  if (d.user_share?.used) {
+  const us = d.user_share || {};
+  const bar = document.getElementById('array-bar');
+  if (us.pct != null) {
+    // The bar used to keep the mock-up's hard-coded 76% / amber whatever the real usage was.
+    bar.style.width = Math.min(100, us.pct) + '%';
+    bar.className = 'stat-bar-fill ' + (us.pct >= 90 ? 'err' : us.pct >= 70 ? 'warn' : 'ok');
+    bar.title = `${fmtBytesBin(us.used_bytes)} of ${fmtBytesBin(us.size_bytes)} used (${us.pct}%)`;
     document.getElementById('array-sub').textContent =
-      `${d.user_share.used} used of ${d.user_share.size}`;
+      `${fmtBytesBin(us.used_bytes)} used of ${fmtBytesBin(us.size_bytes)} (${us.pct}%)`;
+  } else if (!us.mounted) {                       // stopped: nothing to measure
+    bar.style.width = '0%'; bar.className = 'stat-bar-fill ok'; bar.title = '';
+    document.getElementById('array-sub').textContent = d.array_state === 'started' ? '—' : 'Array stopped';
+  } else if (us.used) {
+    document.getElementById('array-sub').textContent = `${us.used} used of ${us.size}`;
   }
+}
+
+function fmtBytesBin(n) {
+  if (n == null) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }       // decimal, like df -H and disk labels
+  return (n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
 }
 
 function driveColor(pct) {
@@ -2474,6 +2510,7 @@ async function openContainerManager(keepOpen) {
 
 // ── Data refresh ────────────────────────────────────────────────
 async function refresh() {
+  loadArrayOperation();      // footer + Array Operation panel (independent of the stats call below)
   // liveMode is keyed ONLY on the core stats endpoint. Every secondary endpoint
   // gets its own fallback, so a missing Docker, an unconfigured array, or a slow
   // SMART/drive scan can never drag the whole dashboard back into demo mode.
@@ -3889,6 +3926,58 @@ function closeModal(e) {
   if (!e || e.target === document.getElementById('modal-overlay'))
     document.getElementById('modal-overlay').style.display = 'none';
 }
+// ── Array Operation panel (rendered from the server's state machine) ─────────────
+let _aopConfirmed = false;
+
+async function loadArrayOperation() {
+  try { renderArrayOperation(await apiFetch('/api/array/operation')); }
+  catch (e) { /* backend unreachable: leave the last view; liveMode handling shows demo banner */ }
+}
+
+function renderArrayOperation(op) {
+  // footer on every page
+  const ft = document.getElementById('footer-text'), fd = document.getElementById('footer-dot');
+  if (ft) {
+    ft.textContent = op.footer;
+    const busy = op.transition || op.busy.parity || op.busy.mover;
+    fd.className = 'footer-dot ' + (busy ? 'busy' : op.state === 'started' ? 'ok' : 'err');
+  }
+  const host = document.getElementById('array-op');
+  if (!host) return;
+  const confirmRow = op.rows.find(r => r.confirm);
+  if (!confirmRow) _aopConfirmed = false;
+  host.innerHTML = op.rows.map(r => {
+    const b = r.button;
+    const needsTick = !!r.confirm;
+    const enabled = b && b.enabled && (!needsTick || _aopConfirmed);
+    return `<div class="aop-row aop-${_esc(r.level)}">
+      <div class="aop-status">${_esc(r.status) || '&nbsp;'}</div>
+      <div class="aop-ctl">
+        ${b ? `<button class="ctr-btn" ${enabled ? '' : 'disabled'} onclick="aopAct('${b.action}')">${_esc(b.label)}</button>` : ''}
+        ${needsTick ? `<label><input type="checkbox" ${_aopConfirmed ? 'checked' : ''} onchange="_aopConfirmed=this.checked;loadArrayOperation()"> ${_esc(r.confirm)}</label>` : ''}
+      </div>
+      <div class="aop-explain">${_esc(r.explain)}${r.warn ? `<span class="aop-warn-line">⚠ ${_esc(r.warn)}</span>` : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+async function aopAct(action) {
+  if (!liveMode) { alert('Demo mode — connect backend.'); return; }
+  try {
+    if (action === 'start') {
+      await fetchJSON('/api/array/start?confirm=' + _aopConfirmed, {method: 'POST'});
+    } else if (action === 'stop') {
+      const row = (await apiFetch('/api/array/operation')).rows[0];
+      if (!confirm(row.explain + '\n\nStop the array?')) return;
+      await fetchJSON('/api/array/stop', {method: 'POST'});
+    } else if (action === 'parity_sync') { startParityStream(false); return; }
+    else if (action === 'parity_scrub') { startParityStream(true); return; }
+    else if (action === 'parity_cancel') { stopParity(); }
+  } catch (e) { alert(errText(e)); }       // the server says exactly why (e.g. "a parity operation is running")
+  _aopConfirmed = false;
+  loadArrayOperation(); refresh();
+}
+
 // ── Start array on boot ─────────────────────────────────────────
 async function loadArrayAutostart() {
   try { document.getElementById('array-autostart').checked = (await fetchJSON('/api/array/autostart')).enabled; } catch (_) {}

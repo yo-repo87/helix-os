@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.14)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.15)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1279,6 +1279,8 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Files deleted over SMB never appeared in the Recycle Bin page | Samba used `recycle:repository = .Recycle.Bin`; the UI scans `.recycle/<user>/…`; scan list also had `/mnt/cache` (real: `cache1…`) | Samba now `.recycle/%U`; roots cover `disk1-28`, `cache1-4`. (The web file manager's delete is permanent by design.) |
 | Dashboard "Manage" link did nothing; containers could not be removed; Start/Stop in that panel never worked | `Manage` was a `<span>` with no handler; no DELETE endpoint; `ctrAction` called `apiFetch(url, {method:'POST'})` but **`apiFetch(path)` ignores options → a GET to a POST-only route**, error swallowed; also `docker stop` > 10 s timeout and `docker logs` dropped stderr | `DELETE /api/docker/containers/{name}` (Helix apps go through `remove_app(purge=True)` so compose + settings go too), `GET /containers/{name}` details (env *names* only), longer timeouts, merged stderr; UI: per-row Start/Stop/Restart/Logs/⚙Configure/Remove, Manage dialog, `ctrAction` uses `fetchJSON` |
 | Share names `global`/`homes`/`printers` (Samba special sections), `user`, `disk1`, `flash`… accepted; digit-first, 41-char, case-duplicate names, long comments accepted; dotted names rejected; hostname > 15 chars / `_` / leading `-` accepted; uppercase and digit-first usernames, long descriptions/passwords accepted; `os_version` always "0.1.0"; Save always said "saved"; failed user create silently closed the form | no shared input rules; `saveIdentity` swallowed errors; `createUser` never checked the response | `services/validation.py` (Unraid's §30.14 limits) used by shares/identity/users; mirrored in the UI as `VALID` + `bindValidator()` (live inline message, submit blocked, server reason shown via `errText`); `/etc/helix-version` for `os_version`. Checked with `/var/tmp/hx/conform.py`-style probes (27 share cases, 4 hostname, 9 user) |
+| Array tile gauge always showed 76 % amber ("91 GB of 13 TB" with a nearly full bar) | `renderArray` set the text but never the bar, so the mock-up's hard-coded `width:76%` stayed; the status script only emits `df -h` strings ("91G"/"13T"), which can't give a percentage | `/api/array/status` adds `size_bytes/used_bytes/free_bytes/pct` from `os.statvfs` for the user share and every mounted disk (`_add_usage`); the tile sets width and colour from it with Unraid's rule (≥90 red, ≥70 orange, else green; §30.4) and shows "(stopped)" when off. Audit: `cpu-bar`, `ram-bar`, `ups-bar` were already driven by data. |
+| Array had only Start/Stop with no explanation, no guarding, no live status | — | `services/array_state.py` is a pure state machine (§30.5): `GET /api/array/operation` returns rows of status + button + sentence (+ warning/confirm). `POST /api/array/start|stop` **enforce** it (409 with the reason; `confirm=true` for a missing disk); an `array_transition` marker makes "Starting…/Stopping…" visible. UI: Array Operation panel + global footer (`#helix-footer`, array state + running parity/mover). 15 scenarios unit-tested; panel, gate and footer browser-tested. |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)
@@ -1954,8 +1956,8 @@ Numbers refer to the adoption list in §30.13. Verified = exercised on the test 
 |---|---|---|
 | 17 | Refuse rather than fail | **Partly done (2.0.14):** the §30.14 input limits (share/host/user/description/password) are enforced server-side and shown live in the forms. Still to do: render config forms disabled with "Array must be Stopped" for identity/SMB/global-share changes; check whether a VM/container uses something before changing it. |
 | 5 | Apply disabled until a form changes; Done returns to parent | not started (Helix saves per button) |
-| 1 | Array panel as a state machine | not started — the array has only Start/Stop/Assign today |
-| 2 | Global footer with live array/operation status | not started |
+| 1 | Array panel as a state machine | **Done (2.0.15), partly:** valid/invalid Start (no devices, no data disk, parity too small, missing disk + confirm, unprotected warning), Stop gated by parity/mover, transitions, parity Sync/Scrub/Cancel rows. Not yet: unclean-shutdown check, maintenance mode, spin up/down, reboot/shutdown rows, real % progress/ETA for parity |
+| 2 | Global footer with live array/operation status | **Done (2.0.15):** "Array Started · Parity operation 0:12:33 · Mover running" with a colour dot, on every page |
 | 3 | Long jobs in a live-log modal that survives closing | not started (parity uses an inline progress bar) |
 | 4 | One container context menu shared by Dashboard and list pages | **Partly done (2.0.13):** Manage dialog + per-row Start/Stop/Restart/Logs/Configure/Remove; no "Edit before touching running container", no update/Update All yet |
 | 6 | Shape+colour status orbs, click to spin | not started |

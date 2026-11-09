@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.7)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.10)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1266,6 +1266,9 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Updater offered the wrong release | sorted by `published_at`; all releases from one commit share a timestamp. Then sorting by version picked tag `images-2026.11.06` (= 2026.11.6) | only `vX.Y.Z` tags that carry `helix-release.json` |
 | PIA "needs root"; connect 403; locations "loading…" | router ran privileged commands unprivileged; `pia.py`/`vms.py` had their own `/etc/helix` + `/var/lib/helix`; Cloudflare 403s Python's TLS fingerprint on the token endpoint; default region `us_east` no longer exists (US East = `us-newjersey`) | `sudo` for wg-quick/iptables/sysctl/`/etc/wireguard`; shared config dirs; token via `curl -K -` (creds on stdin); valid default; locations grouped by country with Retry |
 | PIA would have hijacked the whole host | wg config had `AllowedIPs 0.0.0.0/0` + `DNS=` | `Table = off` + policy rule: only the `helix_pia` bridge subnet (172.28.0.0/16) is routed via the tunnel |
+| PIA-routed container still exited through the host | (1) the table id 51821 was reused as the `ip rule` **priority** — priorities above `main`'s 32766 are never consulted; (2) a container attached to two networks keeps its *original* default route; (3) the `helix_pia` Docker bridge had MTU 1500 vs the WireGuard tunnel's 1420, so full-size replies were black-holed (ping worked, TCP data stalled) | rule priorities 5182 (PIA) / 5181 (LAN bypass); `route` moves the container onto `helix_pia` **only** and remembers its old networks in `HELIX_CONFIG/pia_routes.json` (restored on unroute and on disconnect; host/none-network containers are refused); network created with `com.docker.network.driver.mtu=1420` (a stale one is recreated when empty); `/api/pia/status` uses `ip link` (no root) |
+| Unraid template variables crashed apps (`ACTUAL_LOGIN_METHOD=password\|header\|openid`) | in Unraid templates a pipe-separated `Default` is a **dropdown of choices** (first/current selected), not a literal; Portainer has the same idea as `select` | parser emits `choices`; UI renders a `<select>` (empty entry shown as "(none)"); prose like `a \| b` (with spaces around the pipe) stays free text |
+| A custom template source's apps were invisible if the CA catalog had the same name | `load_all_templates()` dropped later duplicates; the CA source loads first | keep both: the later one becomes `<name>-<source-id>` titled `<title> (<source name>)` |
 | vnstat history 500 | `vnstat --json -d` prints text; `vnstat -d --json` prints JSON | argument order; `vnstat` added to the image |
 | **Unraid CA catalog empty** | feed URL `applicationFeed.json.gz` now 404 (file is `applicationFeed.json`, 21 MB); parser assumed `applist` was a dict (it is a list), used `Category` (real: `CategoryList`), mapped ports `Target:Target` (real: host=`Default`, container=`Target`), ignored `Device` | rewritten against the real feed: 4 809 container apps, host ports from `Default`, devices, `required`/`description`, secrets masked; list endpoint is slim and the UI pages 60 at a time |
 | IOMMU: `amd_iommu=on` "Unknown option" | not a valid option; AMD's IOMMU is on by default (BIOS) | flags are `intel_iommu=on iommu=pt`; GRUB reads `/boot/config/boot-params.cfg` (`helix_iommu=auto|off`); UI toggle `GET/POST /api/vfio/iommu`; real state from `/sys/kernel/iommu_groups` |
@@ -1285,6 +1288,11 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **Debian bookworm facts:** no `docker-compose-plugin`/v2; `docker.io` 20.10; `samba` 4.17; `wireguard-tools` ok. Containers need `apparmor` + `iptables`.
 - **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
 - **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
+- **`ip rule` priorities must be < 32766** (`main`). Never reuse a routing-table id as a priority. Check with `ip route get <dst> from <src> iif <bridge>`.
+- **A Docker bridge routed into a tunnel must use the tunnel's MTU** (`com.docker.network.driver.mtu`). Symptom of a mismatch: ping works, TCP connects, data stalls / TLS "unexpected eof".
+- **A container on two networks keeps its first default route** — to force egress via a network, detach the others.
+- **Never silently dedupe across user-added sources.** And never judge a multi-source feature by the total (see the CA lesson above).
+- **Unraid `Default="a|b|c"` is a choice list.** Config items also carry `Required`, `Description`, `Mode` (ro/rw), `Mask`; Port `Target`=container port, `Default`=host port; `Device` items map hardware nodes.
 - **Releases:** the updater only accepts `vX.Y.Z` tags with a manifest asset; other releases (e.g. `images-*`) must not look like updates. The updater on the *running* VM is the old one — if it mis-picks, hot-patch `routers/osupdate.py` in RAM over SSH (reverts on reboot) to get the next version on.
 - **A boot-critical file change (initrd, grub.cfg) ships with a `.prev` copy.** `grub.cfg` is **not** updated by OTA — copy it by hand (back up as `grub.cfg.bak-<ver>`, checksum, atomic `mv`).
 - **Boot-test after any partition/boot change** before applying the next update, so a failure can be pinned on the right change.
@@ -1293,10 +1301,9 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 
 ### 29.4 State at time of writing, open items, ideas
 
-Released and verified on the VM: **2.0.6** (OTA 2.0.0 → … → 2.0.6 each applied, rebooted and re-tested). Committed but **not yet released (2.0.7)**:
-CA catalog rewrite + slim/paged catalog, persistence of sources/app definitions, secret masking. Verified locally with the real feed and a real browser.
+Released and verified on the VM: **2.0.10** (every version 2.0.1 → 2.0.10 was applied by the VM's own updater, rebooted into, and re-tested; last full sweep: 21 UI pages with no JS errors or failed API calls, 94/95 parameterless GET endpoints 200 — the 95th, `/api/files/download`, needs a path).
 
-Verified working end to end on the VM: array (data+parity+cache by serial), parity sync with data, SMB + NFS read/write interchange, Docker app install/logs/stop/start/remove with image data on the cache disk, settings persistence across reboots, IOMMU boot flags, all 21 UI pages without JS errors.
+Verified working end to end on the VM: Unraid CA catalog (4 809 apps) + a custom Pi-Hosted source (261) in one catalog, both persisting across reboots, PIA connect + container routing (exit IP differs from the host; host route/DNS/IP untouched; routed app still reachable from the LAN), app install/Configure/extras/Remove, array (data+parity+cache by serial), parity sync with data, SMB + NFS read/write interchange, Docker app install/logs/stop/start/remove with image data on the cache disk, settings persistence across reboots, IOMMU boot flags, all 21 UI pages without JS errors.
 
 Open items:
 - **REST API is unauthenticated** (only `/mcp` checks the bearer). The UI sends no token. Needs login/session + first-boot password decision.
@@ -1306,7 +1313,8 @@ Open items:
 - arm64 images/releases are stale (2.0.1+ are amd64-only).
 - OTA does not carry `grub.cfg`; consider adding it (with `.prev`) to the helper.
 - PIA `addKey` is called with TLS verification off (PIA ships a CA cert; pin it). PIA password and other secrets are plain text on `/boot`.
+- **PIA:** DNS for routed containers still goes through Docker's embedded resolver to the host's upstream (a DNS leak); there is no kill-switch (disconnect restores the containers' normal networks instead).
 - `apps` update/`up --pull` on compose v1 is emulated; moving to Docker's own apt repo would give v2.
 - Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI, split level, array autostart, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing.
 
-*Last updated: 2026-11-09.*
+*Last updated: 2026-11-09 (2.0.10).*

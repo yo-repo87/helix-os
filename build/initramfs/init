@@ -50,25 +50,42 @@ msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
 # `-L`, so try several methods: util-linux blkid -L, busybox findfs, then a
 # parse of plain `blkid` output.
 find_boot_dev() {
-    local dev
+    local dev lbl
+
+    # Method 1: util-linux blkid -L (not supported by busybox blkid)
     dev=$(blkid -L "$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
+
+    # Method 2: findfs (busybox applet, works reliably)
     dev=$(findfs "LABEL=$BOOT_LABEL" 2>/dev/null) && [ -n "$dev" ] && { echo "$dev"; return; }
-    dev=$(blkid 2>/dev/null | grep -i "LABEL=\"$BOOT_LABEL\"" | head -1 | cut -d: -f1)
+
+    # Method 3: plain blkid scan — busybox outputs LABEL=X (no quotes),
+    # util-linux outputs LABEL="X" — match both forms.
+    dev=$(blkid 2>/dev/null | grep -i "LABEL=" | grep -i "$BOOT_LABEL" | head -1 | cut -d: -f1)
     [ -n "$dev" ] && { echo "$dev"; return; }
-    # Last resort: probe every block device partition directly (including CD-ROM)
-    for d in /dev/sr? /dev/sr?? \
-              /dev/sd?? /dev/sd? /dev/vd?? /dev/vd? /dev/hd?? /dev/hd? \
-              /dev/mmcblk?p? /dev/nvme?n?p?; do
+
+    # Method 4: brute-force — try mounting every partition as vfat/iso9660
+    # and check for the squashfs file. Covers any device type.
+    mkdir -p /run/probe
+    for d in /dev/sr[0-9] \
+              /dev/sd[a-z][0-9] /dev/sd[a-z] \
+              /dev/vd[a-z][0-9] /dev/vd[a-z] \
+              /dev/hd[a-z][0-9] /dev/hd[a-z] \
+              /dev/mmcblk[0-9]p[0-9] \
+              /dev/nvme[0-9]n[0-9]p[0-9]; do
         [ -b "$d" ] || continue
-        local lbl
-        lbl=$(blkid -o value -s LABEL "$d" 2>/dev/null)
-        [ "$lbl" = "$BOOT_LABEL" ] && { echo "$d"; return; }
-        # Try mounting FAT32 and checking volume label via kernel
-        mkdir -p /run/probe
-        if mount -t vfat -o ro,noatime "$d" /run/probe 2>/dev/null; then
-            lbl=$(cat /run/probe/.volume_label 2>/dev/null || true)
-            umount /run/probe 2>/dev/null || true
-        fi
+        # Try blkid on the specific device (handles both busybox and util-linux output)
+        lbl=$(blkid "$d" 2>/dev/null | grep -i "LABEL=" | grep -i "$BOOT_LABEL")
+        [ -n "$lbl" ] && { echo "$d"; return; }
+        # Last resort: mount it and look for the squashfs
+        for fstype in vfat iso9660 auto; do
+            if mount -t "$fstype" -o ro,noatime "$d" /run/probe 2>/dev/null; then
+                if [ -f "/run/probe/$SQUASHFS_PATH" ]; then
+                    umount /run/probe 2>/dev/null || true
+                    echo "$d"; return
+                fi
+                umount /run/probe 2>/dev/null || true
+            fi
+        done
     done
 }
 

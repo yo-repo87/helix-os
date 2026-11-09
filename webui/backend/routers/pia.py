@@ -208,6 +208,17 @@ def _genkey() -> tuple[str, str]:
     return privkey, result.stdout.strip()
 
 
+def _lan_prefixes() -> list[str]:
+    """The host's directly-connected LAN subnet(s), e.g. ['192.168.50.0/24']."""
+    rc, out, _ = _run("ip", "-4", "-o", "route", "show", "default")
+    dev = next((out.split()[i + 1] for i in range(len(out.split()) - 1) if out.split()[i] == "dev"), "")
+    prefixes = []
+    if dev:
+        rc, out, _ = _run("ip", "-4", "-o", "route", "show", "dev", dev, "scope", "link")
+        prefixes = [l.split()[0] for l in out.splitlines() if l.split() and "/" in l.split()[0]]
+    return prefixes or ["192.168.0.0/16"]
+
+
 def _build_wg_conf(privkey: str, peer_ip: str, dns: str,
                    server_key: str, server_ip: str, server_port: int) -> str:
     return (
@@ -217,10 +228,16 @@ def _build_wg_conf(privkey: str, peer_ip: str, dns: str,
         # Do NOT take over the host: no default-route hijack and no DNS rewrite.
         # Only traffic from the PIA Docker bridge subnet is routed through the tunnel.
         f"Table = off\n"
+        # Replies to the LAN (e.g. a routed app's web UI) must not enter the tunnel:
+        # LAN destinations use the main table (priority just before the PIA rule).
+        + "".join(f"PostUp = ip rule add from {PIA_SUBNET} to {lan} lookup main priority {PIA_TABLE - 1}\n"
+                  for lan in _lan_prefixes()) +
         f"PostUp = ip route replace default dev {PIA_IFACE} table {PIA_TABLE}; "
         f"ip rule add from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}\n"
         f"PostDown = ip rule del from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}; "
-        f"ip route flush table {PIA_TABLE}\n\n"
+        f"ip route flush table {PIA_TABLE}\n"
+        + "".join(f"PostDown = ip rule del from {PIA_SUBNET} to {lan} lookup main priority {PIA_TABLE - 1}\n"
+                  for lan in _lan_prefixes()) + "\n"
         f"[Peer]\n"
         f"PublicKey = {server_key}\n"
         f"AllowedIPs = 0.0.0.0/0, ::/0\n"
@@ -311,7 +328,8 @@ def get_status():
     state = _load_state()
     configured = bool(cfg.get("USERNAME") and cfg.get("PASSWORD"))
 
-    rc, out, _ = _run("wg", "show", PIA_IFACE)
+    # `wg show` needs root; the interface existing is what "connected" means.
+    rc, out, _ = _run("ip", "-o", "link", "show", PIA_IFACE)
     connected = rc == 0 and bool(out.strip())
 
     return {
@@ -422,6 +440,11 @@ def pia_connect(req: ConnectRequest):
 
 @router.post("/disconnect")
 def pia_disconnect():
+    for c in _routed_containers():
+        try:
+            _unroute(c["id"])
+        except HTTPException:
+            pass
     _teardown_iptables()
     _prun("wg-quick", "down", PIA_IFACE)
     _save_state({})
@@ -439,21 +462,78 @@ def available_containers():
     return [c for c in _all_containers() if c["id"] not in routed_ids]
 
 
+ROUTES_FILE = os.path.join(HELIX_CONFIG, "pia_routes.json")
+
+
+def _load_routes() -> dict:
+    try:
+        return json.loads(Path(ROUTES_FILE).read_text())
+    except Exception:
+        return {}
+
+
+def _save_routes(routes: dict) -> None:
+    Path(ROUTES_FILE).parent.mkdir(parents=True, exist_ok=True)
+    Path(ROUTES_FILE).write_text(json.dumps(routes, indent=2))
+
+
+def _inspect(container_id: str) -> tuple[str, list[str]]:
+    """(name, attached networks) of a container."""
+    rc, out, err = _run("docker", "inspect", "-f",
+                        "{{.Name}}|{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}", container_id)
+    if rc != 0:
+        raise HTTPException(404, err.strip() or "container not found")
+    name, _, nets = out.strip().partition("|")
+    return name.lstrip("/"), nets.split()
+
+
 @router.post("/containers/{container_id}/route")
 def route_container(container_id: str):
     state = _load_state()
     if not state.get("region_id"):
         raise HTTPException(409, "Connect to PIA first before routing containers.")
+    name, nets = _inspect(container_id)
+    if "host" in nets or "none" in nets:
+        raise HTTPException(409, f"{name} uses the '{'host' if 'host' in nets else 'none'}' network and cannot be routed through PIA.")
     _ensure_docker_net()
+    if PIA_DOCKER_NET in nets and len(nets) == 1:
+        return {"ok": True, "message": "already routed"}
+
+    previous = [n for n in nets if n != PIA_DOCKER_NET]
     rc, _, err = _run("docker", "network", "connect", PIA_DOCKER_NET, container_id)
     if rc != 0:
         raise HTTPException(500, err.strip())
+    # A container with two networks keeps its ORIGINAL default route, so its traffic
+    # would still leave through the normal connection. Leave the other networks so the
+    # PIA bridge is the only way out; they are restored on unroute/disconnect.
+    for n in previous:
+        rc, _, err = _run("docker", "network", "disconnect", n, container_id)
+        if rc != 0:
+            for done in previous:
+                _run("docker", "network", "connect", done, container_id)
+            _run("docker", "network", "disconnect", PIA_DOCKER_NET, container_id)
+            raise HTTPException(500, f"could not detach {n}: {err.strip()}")
+    routes = _load_routes()
+    routes[name] = previous or routes.get(name, [])
+    _save_routes(routes)
     return {"ok": True}
+
+
+def _unroute(container_id: str) -> None:
+    name, nets = _inspect(container_id)
+    routes = _load_routes()
+    restore = routes.pop(name, None) or ["bridge"]
+    for n in restore:
+        if n not in nets:
+            _run("docker", "network", "connect", n, container_id)
+    if PIA_DOCKER_NET in nets:
+        rc, _, err = _run("docker", "network", "disconnect", PIA_DOCKER_NET, container_id)
+        if rc != 0:
+            raise HTTPException(500, err.strip())
+    _save_routes(routes)
 
 
 @router.delete("/containers/{container_id}/route")
 def unroute_container(container_id: str):
-    rc, _, err = _run("docker", "network", "disconnect", PIA_DOCKER_NET, container_id)
-    if rc != 0:
-        raise HTTPException(500, err.strip())
+    _unroute(container_id)
     return {"ok": True}

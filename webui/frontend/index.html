@@ -7316,7 +7316,7 @@ async function _loadHwCpu() {
 
 // ── VFIO GPU Passthrough ─────────────────────────────────────────
 // Boot-time IOMMU toggle: GRUB reads /boot/config/boot-params.cfg and adds both
-// vendors' flags (intel_iommu=on amd_iommu=on iommu=pt) when enabled.
+// intel_iommu=on iommu=pt (AMD enables its IOMMU itself once it is on in the BIOS) when enabled.
 function vfioBootControl(b) {
   if (!b || b.pi) return '';
   if (!b.supported) {

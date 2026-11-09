@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.19)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.20)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1287,6 +1287,9 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | App folder fields were free-text boxes; a value with `:` could rewrite a volume mapping; Docker would create missing folders as root | no validation; `_do_install` created any path | UI: share drop-down + folder box (suggests existing folders, a new name = "created on install", "Other path…" for anything else, warning when the share doesn't exist yet); server: `_validate_path_vars` (absolute, no `..`, no `:`/newlines) → 400, `_ensure_dirs` creates folders as the Helix user and only under `/mnt` |
 | Catalog search box did nothing (typing "plex" left the list unchanged) | 4 Pi-Hosted entries (Headphones, SmokePing, SyncThing, UniFi Controller) have `"description": null`; the loader used `item.get("description", "")`, which only defaults a *missing* key, so `None` reached the browser, where `t.description.toLowerCase()` threw inside `filterApps` — the exception silently aborted the filter | loader uses `item.get(k) or ""`; `GET /api/apps/templates` always returns strings; `filterApps`/`renderCatalog` are null-safe (`String(v ?? '')`, `_esc`). Browser-tested with null/all-null entries, clearing, paging. |
 | Adding an extra folder to Emby failed with "Folder paths must be absolute: '/mnt/user/smoke-share/Anime' -> 'Anime'" | the container-side box needs an absolute path, but the message printed both and read as if the (valid) host path was wrong; the boxes were unlabeled | `_clean_extras` now says which side is wrong, treats a bare container name as `/Anime`, rejects `..`; placeholders say "Folder on the server" / "Path inside the app"; host box suggests `/mnt/user/<share>/` |
+| File browser could not browse the shares | the page started at `/home/pi` (a dev-box path); on a Helix box it does not exist, so `list_dir` silently fell back to `/tmp`. The allowed-roots check also used `/mnt/disk` and `/mnt/cache` as path-component prefixes, so `/mnt/disk1` and `/mnt/cache1` were refused | roots are now `/mnt` and `/boot` (Unraid's); the page starts at `/mnt/user`; a missing folder is a 404 (no silent fallback); `/api/files/roots` gives quick links (Shares, each disk/pool, Flash) |
+| Any web upload over 1 MB failed (HTTP 413) | nginx had no `client_max_body_size`, default 1 MB | `client_max_body_size 0; proxy_request_buffering off;` in `/etc/nginx/snippets/helix-proxy.conf` (hook 03); the UI also uploads in 20 MB chunks |
+| Terminal page: "[WebSocket error — is the backend running?]" | the nginx proxy block did not pass `Upgrade`/`Connection` headers, so `/api/terminal/ws` reached the backend as a plain GET and got 404 (the backend itself was fine) | `map $http_upgrade $connection_upgrade` at the top of `sites-available/helix` + `proxy_set_header Upgrade/Connection` in the proxy snippet |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)
@@ -1303,6 +1306,9 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **Debian bookworm facts:** no `docker-compose-plugin`/v2; `docker.io` 20.10; `samba` 4.17; `wireguard-tools` ok. Containers need `apparmor` + `iptables`.
 - **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
 - **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
+- **File manager internals:** files are copied by the backend process (as `helix`) so everything it creates has the same owner as SMB/NFS/apps; only Owner/Permission jobs use `sudo`. Test knobs: `FILES_MNT`/`FILES_BOOT` move the browsable roots, `HELIX_FILEJOBS_DELAY` (seconds per 4 MB chunk) slows copies because RAM disks finish instantly. Backend checks used a throwaway tree + `uvicorn` on port 8099, UI checks used Playwright against it.
+- **`pkill -f <pattern>` kills your own shell if the pattern is in its command line.** Write it as `pkill -f '[u]vicorn …'`.
+- **nginx in front of FastAPI needs three things the default lacks:** `client_max_body_size`, the WebSocket upgrade headers, and (for streaming) `proxy_request_buffering off`. After changing the proxy, test a >1 MB upload and a WebSocket through port 80, not just port 8082.
 - **`dict.get(key, default)` does NOT replace a JSON `null`** — it only covers a missing key. For third-party data use `item.get(key) or default`, and never call string methods on a field you didn't validate. A single bad row in a list that a UI filters can silently kill the whole feature (the exception aborts the handler).
 - **`apiFetch(path)` is GET-only (it ignores a second argument). Use `fetchJSON(path, {method, body})` for POST/PUT/DELETE** — misuse fails silently.
 - **RAM-root state checklist:** `/etc/passwd|shadow|group`, Samba passdb, crontab, `/etc/wireguard`, `/etc/docker/daemon.json`, anything under `/var`. If a feature writes there, it needs a copy in `HELIX_CONFIG` and a restore step (`helix-restore-state`).
@@ -1972,6 +1978,7 @@ Numbers refer to the adoption list in §30.13. Verified = exercised on the test 
 | 8 | Share editor (Primary/Secondary/Mover wording, on-demand size) | not started |
 | 9 | Hide/explain features that cannot work now | not started |
 | — | App folder picker (not in §30.13) | **Done (2.0.16):** share drop-down + folder box, new-folder creation, validation (see §29.2) |
+| §30.7 | File manager | **Done (2.0.20):** table with checkbox/type/name/owner/permission/size/modified(or age)/location(disks); sortable (remembered), type filter, quick links; row menu + bottom buttons with Unraid's enable rules; Copy/Move/Delete/Owner/Permission as server jobs (`services/filejobs.py`: progress, ETA, queue, start/cancel, survive closing the dialog, footer indicator `#footer-job`); Calculate (per-disk breakdown); Search (name or `*` `?`); text editor (conflict check, unsaved-changes guard; plain textarea, not Ace); image/PDF/audio/video viewer; 20 MB chunked resumable upload with progress/cancel and drag-and-drop. Rules enforced server-side (`services/fileutil.py`): nothing created/renamed/deleted at `/mnt`, `/mnt/user`, disk roots or share folders; user-share and disk paths cannot be mixed. Not done: Ace editor, `editor.cfg` extension list, zipped-folder download, right-click on crumbs |
 | 10 | Save a container's definition before touching the running one | Done for apps (compose + settings written before `up`); not for plain containers |
 | 11 | Group the sidebar (Settings/Tools grids, Favorites) | not started (21 flat items) |
 | 12 | Dashboard drag-sortable tiles, tile manager, padlock | tiles are draggable; no manager/padlock/server-side layout |

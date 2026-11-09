@@ -59,6 +59,10 @@ cat > /etc/nginx/snippets/helix-proxy.conf <<'PROXYEOF'
 # SSE / streaming: disable buffering
 proxy_buffering off;
 proxy_cache off;
+# Uploads: nginx's default 1 MB cap made every larger file upload fail with HTTP 413, and
+# buffering the body to disk first would double the I/O. Stream it straight to the backend.
+client_max_body_size 0;
+proxy_request_buffering off;
 
 location / {
     proxy_pass         http://127.0.0.1:8082;
@@ -67,12 +71,22 @@ location / {
     proxy_set_header   X-Real-IP $remote_addr;
     proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $scheme;
+    # WebSockets (the Terminal page): without these two headers nginx forwards a plain GET,
+    # the backend answers 404 and the browser reports "WebSocket error".
+    proxy_set_header   Upgrade $http_upgrade;
+    proxy_set_header   Connection $connection_upgrade;
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
 }
 PROXYEOF
 
 cat > /etc/nginx/sites-available/helix <<'NGINXEOF'
+# "Connection: upgrade" only for WebSocket requests, "close" otherwise (standard nginx recipe).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 # HTTP — served as-is (no forced HTTPS redirect, so http:// keeps working).
 server {
     listen 80 default_server;

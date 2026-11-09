@@ -1207,3 +1207,106 @@ Consolidated since 0.1.1:
 - Boot-test in QEMU before publishing (real image over emulated USB, then check `/api/health`).
 - For troubleshooting, compare with Unraid's equivalent in `bzroot-fs/` or `unraid-extracted/bzmodules`.
 
+
+---
+
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.7)
+
+> **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
+> in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
+> **Never put passwords, tokens or API keys in this file** (it is committed; the GitHub repo is public). The test VM
+> login, a Helix API key and a PIA test account were supplied by the user in chat only.
+
+### 29.1 Runbook: how a fix reaches the test VM
+
+Test VM: `http://192.168.50.12` (QEMU, 3 GB RAM, SSH as root). Disks: 2 × 14 TB (serials `QM00005`, `QM00007`), one 32 GB
+(`drive-scsi0`), and the 248 GB USB boot disk (partition 1 = BIOS boot, partition 2 = `HELIXBOOT`, **now 4 GiB**).
+
+1. Edit → `git commit` on a branch (currently `fix/smoke-round-1`, not merged to `main`). Bump `build/config/VERSION`.
+2. `sudo build/build.sh --arch amd64 > build-amd64.log 2>&1` (~3 min, reuses the cached rootfs in `/tmp/helix-build`).
+   **Never pipe it into `tail`** — SIGPIPE kills the build (exit 141, nothing built).
+3. **Verify the image, not the source** (§19.5): `unsquashfs -cat output/boot/filesystem.squashfs opt/helix/backend/routers/X.py | grep marker`.
+   Runtime code is at `opt/helix/backend` + `opt/helix/frontend`; helper scripts at `usr/local/sbin/helix-*`. Check new packages with `unsquashfs -l`.
+4. `sudo build/make-update-bundle.sh --arch amd64 --from output/boot --version X`, then drop the stale `arm64` entry from
+   `dist/update/helix-release.json` (arm64 images are old; shipping them under a new version would be a lie) and set `notes`.
+5. `build/publish-update.sh --repo yo-repo87/helix-os` (reads `./gitkey` itself; run with `GH_TOKEN=""`).
+6. VM: `GET /api/osupdate/check` → `POST /api/osupdate/apply` → poll `/api/osupdate/status` → compare `sha256sum /boot/boot/*` with the manifest → `POST /api/osupdate/reboot` → poll `/api/health`.
+7. Re-test with real data (browser via Playwright, SSH for `smbclient`/`mount -t nfs`/`docker`). A mock-only pass is not a pass.
+
+Playwright here: Chromium is at `~/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome` (pass `executable_path`, `--no-sandbox`);
+run test scripts with plain `python3` (the `-I` flag hides the user site-packages where playwright lives).
+The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list is cached ~1 min, so a fresh release can take a minute to appear.
+
+### 29.2 Fix log (symptom → root cause → fix)
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| "Demo mode" banner stuck | `.demo-banner{display:flex}` beat the `[hidden]` attribute; then stale cached `index.html` | `.demo-banner[hidden]{display:none}`; `/` now sent with `Cache-Control: no-cache` (`main.py`) |
+| New code missing from every image built on a reused rootfs | `cp -r src existing_dir` **nested** the new tree inside the old one (`backend/backend`), old code kept running | `rm -rf` the targets first in `build.sh` and hook 03 |
+| `/boot` could not be resized or fsck'd | initramfs used `mount --bind` → original mount stranded in the discarded initramfs tree, unreachable | `build/initramfs/init`: `mount --move /run/helix/usb /root/boot` |
+| Backend could not write `/boot/config` → every setting silently lived in RAM | `/boot` is FAT (everything root-owned); `config.py` fell back to `/var/local/helix/config`. A `remount,uid=` is **silently ignored** by FAT | initramfs mounts vfat with `uid=1000,gid=1000` from the start; firstboot only verifies/falls back to umount+mount |
+| Sources + installed-app definitions lost on reboot | stored under `STATE_DIR` (RAM) | `template_sources.json` and `apps/` now under `HELIX_CONFIG` |
+| Shares/uploads failed (500) | fresh XFS mount roots are `root:root 0755`; backend runs as `helix` | `helix-array-start` chowns each mount root to `helix:helix 0775` |
+| SMB/NFS/Docker/Avahi/WireGuard/cron absent from the image | they sat only in `packages-full.list`; images build without `--full` | added to `packages-base.list` |
+| SMB: shares invisible, `NT_STATUS_BAD_NETWORK_NAME` | `samba-vfs-modules` is only a *Recommends*; we install `--no-install-recommends` | added `samba-vfs-modules` |
+| Docker start failed: `apparmor_parser` not found | `apparmor` also only a Recommends | added `apparmor` |
+| Share created but not exported | `_apply_shares()` ran the apply scripts as unprivileged `helix`, output hidden | run via `sudo -n env …`; return `apply_error` |
+| NFS export refused | exporting a FUSE (mergerfs) path needs `fsid=` | `helix-nfs-apply` adds a stable `fsid` derived from the share name |
+| SMB guest could not write; NFS files root-owned and unwritable over SMB | guest → `nobody`; `no_root_squash` | SMB `force user/group = helix`; NFS `all_squash,anonuid/anongid=<helix>` |
+| smbd/nfs never started after the first share | apply scripts only *reloaded* if already running | start the service when a share needs it; `helix-array-start` runs `helix-shares-apply` |
+| Docker data would live in RAM | `/var/lib/docker` is on the RAM overlay | docker disabled at boot; `helix-array-start` writes `daemon.json` `data-root` on the cache (else first data) disk and starts it; `helix-array-stop` stops it first |
+| `docker compose` missing | compose v2 plugin is **not in Debian bookworm** | install `docker-compose` (v1); `_docker_compose()` translates `up --pull always` |
+| Apps reported "started" with no Docker | endpoints queued work blindly | `_require_docker()` → 503 with a clear message |
+| App install failed silently / no way to set tokens, media paths | UI posted `vars: {}`; no edit screen | `GET/PUT /api/apps/{name}/config`, install-time `extras`, UI form (install + ⚙ Configure + Remove): template vars, extra env vars, extra folders |
+| Parity sync started twice | each SSE connect launched `snapraid` | `_snapraid_running()` guard |
+| **Disk roles swapped after a reboot** | `disks.cfg` stored `/dev/sdX`; letters change between boots | assign stores `/dev/disk/by-id/…` (`_stable_path`); readers `realpath()` for display/health |
+| Drive list empty after assign | cache only refreshed on demand | assign triggers a background refresh |
+| Parity disk missing from `/api/array/status` | status script ignored `PARITY_DEVS` | added `parity[]` |
+| `proxy/status` always `config_ok:false` | `nginx -t` as `helix` can't open `/run/nginx.pid` (and key was root-only) | run nginx through `sudo`; key is `root:helix 640` |
+| Updater offered the wrong release | sorted by `published_at`; all releases from one commit share a timestamp. Then sorting by version picked tag `images-2026.11.06` (= 2026.11.6) | only `vX.Y.Z` tags that carry `helix-release.json` |
+| PIA "needs root"; connect 403; locations "loading…" | router ran privileged commands unprivileged; `pia.py`/`vms.py` had their own `/etc/helix` + `/var/lib/helix`; Cloudflare 403s Python's TLS fingerprint on the token endpoint; default region `us_east` no longer exists (US East = `us-newjersey`) | `sudo` for wg-quick/iptables/sysctl/`/etc/wireguard`; shared config dirs; token via `curl -K -` (creds on stdin); valid default; locations grouped by country with Retry |
+| PIA would have hijacked the whole host | wg config had `AllowedIPs 0.0.0.0/0` + `DNS=` | `Table = off` + policy rule: only the `helix_pia` bridge subnet (172.28.0.0/16) is routed via the tunnel |
+| vnstat history 500 | `vnstat --json -d` prints text; `vnstat -d --json` prints JSON | argument order; `vnstat` added to the image |
+| **Unraid CA catalog empty** | feed URL `applicationFeed.json.gz` now 404 (file is `applicationFeed.json`, 21 MB); parser assumed `applist` was a dict (it is a list), used `Category` (real: `CategoryList`), mapped ports `Target:Target` (real: host=`Default`, container=`Target`), ignored `Device` | rewritten against the real feed: 4 809 container apps, host ports from `Default`, devices, `required`/`description`, secrets masked; list endpoint is slim and the UI pages 60 at a time |
+| IOMMU: `amd_iommu=on` "Unknown option" | not a valid option; AMD's IOMMU is on by default (BIOS) | flags are `intel_iommu=on iommu=pt`; GRUB reads `/boot/config/boot-params.cfg` (`helix_iommu=auto|off`); UI toggle `GET/POST /api/vfio/iommu`; real state from `/sys/kernel/iommu_groups` |
+| 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
+
+### 29.3 Rules learned (read before changing these areas)
+
+- **Test the whole thing, not just the new thing.** The CA catalog was empty for the entire campaign because I only inspected the source I had just added
+  (`total all sources: 261` == the one source's count). When a total should include N sources, check *each* source's count.
+- **`--no-install-recommends` removes things you silently depend on** (`samba-vfs-modules`, `apparmor`). After adding a service package, start the service and use it.
+- **Anything user-configured belongs in `HELIX_CONFIG` (`/boot/config`), never `STATE_DIR`** (RAM). `STATE_DIR` is for caches/job status only. Routers must `from config import HELIX_CONFIG, STATE_DIR`, never define their own defaults.
+- **Never trust `/dev/sdX`.** Persist `by-id` names; resolve with `os.path.realpath` at read time.
+- **FAT ignores `uid=/gid=` on remount.** Set ownership at the first mount (initramfs). `mount --move`, not `--bind`, for the boot device.
+- **Device-name fragile / privilege-fragile checks run as root in tests lie.** A `persistent=True` check run as root proved nothing; run backend-side checks `sudo -u helix`.
+- **`cp -r` onto an existing directory nests.** Always remove the destination first.
+- **Cloudflare-fronted APIs may 403 Python (urllib/requests) even with valid credentials** — use `curl`, and pass secrets on stdin (`curl -K -`), never argv.
+- **Debian bookworm facts:** no `docker-compose-plugin`/v2; `docker.io` 20.10; `samba` 4.17; `wireguard-tools` ok. Containers need `apparmor` + `iptables`.
+- **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
+- **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
+- **Releases:** the updater only accepts `vX.Y.Z` tags with a manifest asset; other releases (e.g. `images-*`) must not look like updates. The updater on the *running* VM is the old one — if it mis-picks, hot-patch `routers/osupdate.py` in RAM over SSH (reverts on reboot) to get the next version on.
+- **A boot-critical file change (initrd, grub.cfg) ships with a `.prev` copy.** `grub.cfg` is **not** updated by OTA — copy it by hand (back up as `grub.cfg.bak-<ver>`, checksum, atomic `mv`).
+- **Boot-test after any partition/boot change** before applying the next update, so a failure can be pinned on the right change.
+- A rootfs change in the image needs an actual image rebuild+OTA to take effect on the VM; hot-patching the VM is for unblocking only.
+- Unraid parity: its `/boot` is FAT too and its templates hold tokens on the flash — our `/boot/config` holds secrets (API keys, PIA, app env) in plain text on a world-readable FAT volume. Acceptable for now; see 29.4.
+
+### 29.4 State at time of writing, open items, ideas
+
+Released and verified on the VM: **2.0.6** (OTA 2.0.0 → … → 2.0.6 each applied, rebooted and re-tested). Committed but **not yet released (2.0.7)**:
+CA catalog rewrite + slim/paged catalog, persistence of sources/app definitions, secret masking. Verified locally with the real feed and a real browser.
+
+Verified working end to end on the VM: array (data+parity+cache by serial), parity sync with data, SMB + NFS read/write interchange, Docker app install/logs/stop/start/remove with image data on the cache disk, settings persistence across reboots, IOMMU boot flags, all 21 UI pages without JS errors.
+
+Open items:
+- **REST API is unauthenticated** (only `/mcp` checks the bearer). The UI sends no token. Needs login/session + first-boot password decision.
+- Array does not **auto-start** after a reboot (Unraid has "start array on boot").
+- **VMs:** libvirt/qemu are not in the image (`/api/vms/` returns `available:false`); GPU passthrough UI is untested on hardware.
+- Portainer **stack templates (type 3)** — 36 of 297 Pi-Hosted entries — are skipped (no single image).
+- arm64 images/releases are stale (2.0.1+ are amd64-only).
+- OTA does not carry `grub.cfg`; consider adding it (with `.prev`) to the helper.
+- PIA `addKey` is called with TLS verification off (PIA ships a CA cert; pin it). PIA password and other secrets are plain text on `/boot`.
+- `apps` update/`up --pull` on compose v1 is emulated; moving to Docker's own apt repo would give v2.
+- Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI, split level, array autostart, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing.
+
+*Last updated: 2026-11-09.*

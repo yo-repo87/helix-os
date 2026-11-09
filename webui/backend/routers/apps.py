@@ -21,7 +21,7 @@ import yaml
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from config import STATE_DIR
+from config import STATE_DIR, HELIX_CONFIG
 from services.template_loader import (
     add_source,
     invalidate_cache,
@@ -32,7 +32,8 @@ from services.template_loader import (
     _slugify,
 )
 
-APPS_STATE_DIR = os.path.join(STATE_DIR, "apps")
+# Persistent: an app's compose file, variables (tokens!) and extras must survive a reboot.
+APPS_STATE_DIR = os.path.join(HELIX_CONFIG, "apps")
 
 router = APIRouter(prefix="/api/apps", tags=["apps"])
 
@@ -121,7 +122,10 @@ def list_templates(
             or ql in t.get("category", "").lower()
         ]
 
-    return templates
+    # The CA catalog has thousands of apps: send only what a card shows. The full
+    # template (compose + variables) comes from /templates/{name} when one is opened.
+    return [{k: t.get(k) for k in ("name", "title", "description", "category", "icon", "port", "source_id")}
+            for t in templates]
 
 
 @router.get("/templates/{name}")

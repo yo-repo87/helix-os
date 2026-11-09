@@ -2438,13 +2438,25 @@ async function loadApps() {
   } catch { /* backend not available */ }
 }
 
-function renderCatalog(templates) {
+let _catalogLimit = 60;
+function showMoreApps() { _catalogLimit += 60; renderCatalog(_catalogShown); }
+let _catalogShown = [];
+function renderCatalog(templates, resetLimit = false) {
   const grid = document.getElementById('apps-catalog-grid');
+  if (resetLimit) _catalogLimit = 60;
+  _catalogShown = templates;
   if (!templates.length) {
     grid.innerHTML = '<span style="font-size:12px;color:var(--fg-dim)">No matching apps</span>';
     return;
   }
-  grid.innerHTML = templates.map(t => {
+  // Thousands of cards (the Unraid catalog has ~4,800) would freeze the page: draw a page at a time.
+  const shown = templates.slice(0, _catalogLimit);
+  const more = templates.length > shown.length
+    ? `<div style="grid-column:1/-1;text-align:center;padding:10px">
+         <span style="font-size:12px;color:var(--fg-dim)">Showing ${shown.length} of ${templates.length} apps. </span>
+         <button class="ctr-btn" onclick="showMoreApps()">Show 60 more</button>
+         <span style="font-size:12px;color:var(--fg-dim)"> or use search to narrow it down.</span></div>` : '';
+  grid.innerHTML = shown.map(t => {
     const isInst = !!_installedApps[t.name];
     const icon = APP_ICONS[t.name] || '📦';
     return `<div class="app-card">
@@ -2465,7 +2477,7 @@ function renderCatalog(templates) {
         </button>
       </div>
     </div>`;
-  }).join('');
+  }).join('') + more;
 }
 
 function renderInstalled(installed) {
@@ -2506,7 +2518,7 @@ function filterApps(q) {
     t.description.toLowerCase().includes(lq) ||
     t.category.toLowerCase().includes(lq)
   ) : _allTemplates;
-  renderCatalog(filtered);
+  renderCatalog(filtered, true);
 }
 
 // ── App install / configure form ────────────────────────────────
@@ -2517,7 +2529,8 @@ const _APP_VAR_TIPS = {
   path:     'A folder on this server. It is created if it does not exist. Put data under /mnt/user/<share> so it lives on the array.',
   env:      'Passed to the container as an environment variable.',
   password: 'Passed to the container as an environment variable. It is stored in this app\'s compose file on this server.',
-  port:     'The port published on this server.',
+  port:     'The port published on this server. Pick a free one — Helix itself uses 80, 443 and 8082.',
+  device:   'A device on this server passed through to the container, e.g. /dev/dri for GPU transcoding.',
 };
 function _esc(x) { return String(x ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 
@@ -2554,9 +2567,10 @@ async function openAppForm(mode, name) {
 
   const rows = vars.map(v => {
     const type = v.type === 'password' ? 'password' : v.type === 'port' ? 'number' : 'text';
-    const tip = _APP_VAR_TIPS[v.type] || _APP_VAR_TIPS.env;
+    const tip = v.description || _APP_VAR_TIPS[v.type] || _APP_VAR_TIPS.env;
+    const req = v.required ? '<span style="color:var(--err)" title="Required"> *</span>' : '';
     return `<div class="settings-row">
-        <label class="settings-label">${_esc(v.label || v.key)}${tipHtml(tip)}</label>
+        <label class="settings-label">${_esc(v.label || v.key)}${req}${tipHtml(tip)}</label>
         <input class="settings-input appf-var" data-key="${_esc(v.key)}" type="${type}" value="${_esc(v.value)}"
                placeholder="${_esc(v.default)}" ${v.type === 'password' ? 'autocomplete="new-password"' : ''}>
       </div>`;

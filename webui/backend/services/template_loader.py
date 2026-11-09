@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from config import STATE_DIR
+from config import STATE_DIR, HELIX_CONFIG
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,8 @@ TEMPLATES_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "../../apps/templates")
 )
 CACHE_DIR   = os.path.join(STATE_DIR, "template_cache")
-SOURCES_CFG = os.path.join(STATE_DIR, "template_sources.json")
+# Persistent (/boot/config): custom sources were in RAM and vanished on every reboot.
+SOURCES_CFG = os.path.join(HELIX_CONFIG, "template_sources.json")
 CACHE_TTL   = 86400  # 24 h
 
 DEFAULT_SOURCES = [
@@ -49,7 +50,7 @@ DEFAULT_SOURCES = [
         "id":      "unraid-ca",
         "name":    "Unraid Community Applications",
         "type":    "unraid-ca-feed",
-        "url":     "https://raw.githubusercontent.com/Squidly271/AppFeed/master/applicationFeed.json.gz",
+        "url":     "https://raw.githubusercontent.com/Squidly271/AppFeed/master/applicationFeed.json",
         "enabled": True,
         "description": "Full Unraid CA catalog (fetched + cached on first use)",
     },
@@ -59,7 +60,7 @@ DEFAULT_SOURCES = [
 # ── Source config management ──────────────────────────────────────────────────
 
 def load_sources() -> list[dict]:
-    Path(STATE_DIR).mkdir(parents=True, exist_ok=True)
+    Path(SOURCES_CFG).parent.mkdir(parents=True, exist_ok=True)
     try:
         return json.loads(Path(SOURCES_CFG).read_text())
     except (FileNotFoundError, json.JSONDecodeError):
@@ -410,8 +411,119 @@ def _load_unraid_xml_url(source: dict) -> list[dict]:
     return result
 
 
+_CA_CATEGORY = {
+    "mediaapp": "Media", "mediaserver": "Media", "downloaders": "Downloaders", "cloud": "Cloud",
+    "homeautomation": "Home Automation", "tools": "Tools", "backup": "Backup", "network": "Network",
+    "security": "Security", "productivity": "Productivity", "games": "Games", "gameservers": "Games",
+    "other": "Other", "drivers": "Other", "status": "Monitoring", "management": "Management",
+}
+
+
+def _ca_category(cats) -> str:
+    """CategoryList looks like ['MediaApp-Video', 'Tools:'] — map the first usable prefix."""
+    for c in (cats or []):
+        prefix = re.split(r"[-:]", str(c))[0].strip().lower()
+        if prefix in _CA_CATEGORY:
+            return _CA_CATEGORY[prefix]
+        if prefix:
+            return prefix.title()
+    return "Other"
+
+
+def _plain(text: str, limit: int = 300) -> str:
+    """Strip HTML/whitespace from a feed description."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text or "")).strip()[:limit]
+
+
+def _ca_app_to_template(app: dict, name: str, source_id: str) -> dict | None:
+    """Convert one Unraid CA container entry to our template format.
+
+    Config items are {"@attributes": {Name, Target, Default, Mode, Description,
+    Type: Port|Path|Variable|Device|Label, Required, Mask}}. For a Port, Target is
+    the CONTAINER port and Default the HOST port.
+    """
+    image = app.get("Repository") or ""
+    if not image:
+        return None
+    net = str(app.get("Network") or "bridge").lower()
+
+    cfgs = app.get("Config") or []
+    if isinstance(cfgs, dict):
+        cfgs = [cfgs]
+
+    vars_list, vols, ports, devices, env = [], [], [], [], {}
+    port_num = None
+    pm = re.search(r"\[PORT:(\d+)\]", app.get("WebUI") or "")
+    web_container_port = int(pm.group(1)) if pm else None
+    taken = set()
+
+    def add_var(base: str, v: dict) -> str:
+        key, n = base, 2
+        while key in taken:                       # two config items can share a target
+            key, n = f"{base}_{n}", n + 1
+        taken.add(key); v["key"] = key; vars_list.append(v)
+        return key
+
+    for item in cfgs:
+        if not isinstance(item, dict):
+            continue
+        cfg = item.get("@attributes", item)
+        ctype  = str(cfg.get("Type") or "").lower()
+        label  = cfg.get("Name") or cfg.get("Target") or ""
+        target = str(cfg.get("Target") or "")
+        default = str(cfg.get("Default") or item.get("value") or "")
+        desc   = _plain(cfg.get("Description") or "")
+        req    = str(cfg.get("Required") or "").lower() == "true"
+        mask   = str(cfg.get("Mask") or "").lower() == "true"
+        base   = {"label": label, "default": default, "description": desc, "required": req}
+
+        if ctype == "path" and target.startswith("/"):
+            key = add_var("PATH_" + (re.sub(r"[^A-Z0-9]", "_", target.upper()).strip("_") or "DATA"),
+                          {**base, "type": "path", "default": default or f"/mnt/user/appdata/{name}"})
+            ro = str(cfg.get("Mode") or "").lower().startswith("ro")
+            vols.append(f"{{{{{key}}}}}:{target}" + (":ro" if ro else ""))
+        elif ctype == "port" and target.isdigit():
+            proto = "udp" if str(cfg.get("Mode") or "").lower() == "udp" else "tcp"
+            host = default if default.isdigit() else target
+            key = add_var(f"PORT_{target}_{proto.upper()}", {**base, "type": "port", "default": host})
+            ports.append(f"{{{{{key}}}}}:{target}" + ("/udp" if proto == "udp" else ""))
+            if port_num is None or (web_container_port and int(target) == web_container_port):
+                port_num = int(host)
+        elif ctype == "device" and target.startswith("/"):
+            key = add_var("DEVICE_" + (re.sub(r"[^A-Z0-9]", "_", target.upper()).strip("_") or "DEV"),
+                          {**base, "type": "device", "default": default or target})
+            devices.append(f"{{{{{key}}}}}:{target}")
+        elif ctype in ("variable", "env") and target:
+            # Mask secrets even when the template author forgot to (tokens, keys, passwords).
+            secret = mask or bool(re.search(r"PASS|SECRET|TOKEN|API_?KEY|PRIVATE", target.upper()))
+            key = add_var(target, {**base, "type": "password" if secret else "env"})
+            env[target] = f"{{{{{key}}}}}"
+        # Label / unknown types are Unraid UI metadata only
+
+    svc: dict[str, Any] = {"image": image, "container_name": name, "restart": "unless-stopped"}
+    if net == "host":
+        svc["network_mode"] = "host"
+    elif ports:
+        svc["ports"] = ports
+    if vols:
+        svc["volumes"] = vols
+    if devices:
+        svc["devices"] = devices
+    if env:
+        svc["environment"] = env
+    if str(app.get("Privileged") or "").lower() == "true":
+        svc["privileged"] = True
+
+    return {
+        "name": name, "title": app.get("Name", name), "description": _plain(app.get("Overview", "")),
+        "category": _ca_category(app.get("CategoryList")), "icon": app.get("Icon", ""),
+        "port": port_num, "source_id": source_id, "vars": vars_list,
+        "compose": {"services": {name: svc}},
+    }
+
+
 def _load_unraid_ca_feed(source: dict) -> list[dict]:
-    """Load the full Unraid AppFeed (compressed JSON)."""
+    """Load the Unraid Community Applications feed (container apps only)."""
     cached = _cache_load(source["id"])
     if cached is not None:
         return cached
@@ -419,135 +531,44 @@ def _load_unraid_ca_feed(source: dict) -> list[dict]:
     url = source.get("url", "")
     if not url:
         return []
+    # The feed moved: the old .json.gz URL now 404s, the plain .json is current.
+    url = url.replace("applicationFeed.json.gz", "applicationFeed.json")
 
     log.info("Fetching Unraid CA AppFeed from %s …", url)
     try:
-        raw = _fetch(url, timeout=60)
-        if url.endswith(".gz"):
+        raw = _fetch(url, timeout=120)
+        if raw[:2] == b"\x1f\x8b":
             raw = gzip.decompress(raw)
         feed = json.loads(raw)
     except Exception as e:
         log.warning("Failed to fetch CA AppFeed: %s", e)
         return []
+    del raw
 
-    # Feed structure: {"Apps": [...]} or {"applist": {"apps": [...]}}
-    apps = []
-    if "Apps" in feed:
-        apps = feed["Apps"]
-    elif "applist" in feed:
-        apps = feed["applist"].get("apps", feed["applist"])
-    elif isinstance(feed, list):
+    # {"applist": [ ... ]}, or {"Apps": [...]} / a bare list in older layouts
+    if isinstance(feed, list):
         apps = feed
+    else:
+        apps = feed.get("applist") or feed.get("Apps") or []
+        if isinstance(apps, dict):
+            apps = apps.get("apps", [])
 
-    templates = []
-    seen = set()
+    templates, seen = [], set()
     for app in apps:
-        if not isinstance(app, dict):
+        if not isinstance(app, dict) or not app.get("Repository") or not app.get("Name"):
+            continue                       # plugins/language packs have no Repository
+        name = _slugify(app["Name"])
+        if not name:
             continue
-        # Skip apps without a Repository (can't install)
-        if not app.get("Repository"):
-            continue
-
-        title = app.get("Name", "")
-        if not title:
-            continue
-
-        name = _slugify(title)
-        if name in seen:
-            name = name + "-" + _slugify(app.get("Author", ""))[:8]
-        seen.add(name)
-
-        image   = app.get("Repository", "")
-        desc    = app.get("Overview", "")[:300]
-        cat_raw = app.get("Category", "")
-        icon    = app.get("Icon", "")
-        webui   = app.get("WebUI", "")
-        net     = app.get("Network", "bridge").lower()
-
-        pm = re.search(r"\[PORT:(\d+)\]", webui)
-        port_num = int(pm.group(1)) if pm else None
-
-        cat_map = {
-            "mediaserver": "Media", "downloader": "Downloaders",
-            "cloud": "Cloud", "homeautomation": "Home Automation",
-            "tools": "Tools", "backup": "Backup",
-            "network": "Network", "security": "Security",
-        }
-        cat = "Other"
-        for key, val in cat_map.items():
-            if key in cat_raw.lower().replace(" ", ""):
-                cat = val
-                break
-
-        # Config items — may be list or single dict
-        cfgs = app.get("Config", [])
-        if isinstance(cfgs, dict):
-            cfgs = [cfgs]
-
-        vars_list     = []
-        compose_vols  = []
-        compose_ports = []
-        compose_env   = {}
-
-        for cfg in cfgs:
-            if isinstance(cfg, dict) and "@attributes" in cfg:
-                cfg = cfg["@attributes"]  # some feed formats wrap in @attributes
-
-            cfg_type   = (cfg.get("Type") or cfg.get("@Type") or "").lower()
-            cfg_name   = cfg.get("Name")  or cfg.get("@Name")  or ""
-            cfg_target = cfg.get("Target") or cfg.get("@Target") or ""
-            cfg_def    = cfg.get("Default") or cfg.get("@Default") or ""
-            cfg_mask   = str(cfg.get("Mask") or cfg.get("@Mask") or "false").lower() == "true"
-
-            if cfg_type == "path":
-                key = "PATH_" + re.sub(r"[^A-Z0-9]", "_", cfg_target.upper()).strip("_") or "PATH_DATA"
-                default = cfg_def or f"/mnt/user/appdata/{name}"
-                vars_list.append({"key": key, "label": cfg_name, "default": default, "type": "path"})
-                compose_vols.append(f"{{{{{key}}}}}:{cfg_target}")
-
-            elif cfg_type == "port":
-                try:
-                    p = int(str(cfg_target).split("/")[0])
-                    compose_ports.append(f"{p}:{p}")
-                    if port_num is None:
-                        port_num = p
-                except ValueError:
-                    pass
-
-            elif cfg_type in ("variable", "env"):
-                key = cfg_target or re.sub(r"\s+", "_", cfg_name.upper())
-                if key:
-                    vtype = "password" if cfg_mask else "env"
-                    vars_list.append({"key": key, "label": cfg_name, "default": cfg_def, "type": vtype})
-                    compose_env[key] = f"{{{{{key}}}}}"
-
-        if not image:
-            continue
-
-        svc: dict[str, Any] = {"image": image, "container_name": name}
-        if net == "host":
-            svc["network_mode"] = "host"
-        elif compose_ports:
-            svc["ports"] = compose_ports
-        if compose_vols:
-            svc["volumes"] = compose_vols
-        if compose_env:
-            svc["environment"] = compose_env
-        if str(app.get("Privileged", "false")).lower() == "true":
-            svc["privileged"] = True
-        svc["restart"] = "unless-stopped"
-
-        templates.append({
-            "name":        name,
-            "title":       title,
-            "description": desc,
-            "category":    cat,
-            "icon":        icon,
-            "port":        port_num,
-            "source_id":   source["id"],
-            "vars":        vars_list,
-            "compose":     {"services": {name: svc}},
-        })
+        if name in seen:                   # many authors publish an app with the same name
+            name = f"{name}-{_slugify(app.get('Repo') or app.get('Author') or '')[:16]}".rstrip("-")
+        base, n = name, 2
+        while name in seen:
+            name, n = f"{base}-{n}", n + 1
+        t = _ca_app_to_template(app, name, source["id"])
+        if t:
+            seen.add(name)
+            templates.append(t)
 
     log.info("Loaded %d apps from Unraid CA feed", len(templates))
     _cache_save(source["id"], templates)

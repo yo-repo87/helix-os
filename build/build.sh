@@ -109,6 +109,14 @@ write_resolv_conf() {
 }
 write_resolv_conf
 
+# Tailscale is not in Debian: add its official apt repo (signing key + source list) before the install.
+# Fetched on the build host; a failure is fatal so an image can never ship without the VPN it advertises.
+mkdir -p "$ROOTFS_DIR/usr/share/keyrings" "$ROOTFS_DIR/etc/apt/sources.list.d"
+TS_BASE=https://pkgs.tailscale.com/stable/debian
+curl -fsSL --retry 3 "$TS_BASE/bookworm.noarmor.gpg" -o "$ROOTFS_DIR/usr/share/keyrings/tailscale-archive-keyring.gpg" \
+  && curl -fsSL --retry 3 "$TS_BASE/bookworm.tailscale-keyring.list" -o "$ROOTFS_DIR/etc/apt/sources.list.d/tailscale.list" \
+  || { echo "ERROR: could not fetch the Tailscale apt repository" >&2; exit 1; }
+
 chroot "$ROOTFS_DIR" /bin/bash -c "
     set -e
     export DEBIAN_FRONTEND=noninteractive

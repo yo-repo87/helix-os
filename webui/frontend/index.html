@@ -4585,19 +4585,41 @@ async function loadTailscale() {
   }
 }
 
+function tsShowLogin(url) {
+  const banner = document.getElementById('ts-login-banner');
+  if (!banner) return;
+  banner.textContent = '';
+  banner.appendChild(document.createTextNode('Sign-in required: '));
+  if (url && /^https:\/\//.test(url)) {
+    banner.appendChild(Object.assign(document.createElement('a'), {id: 'ts-login-link', href: url, target: '_blank', rel: 'noopener',
+      textContent: 'Open the Tailscale login page →', style: 'color:var(--accent)'}));
+    banner.appendChild(document.createTextNode(' then come back here; this page updates by itself.'));
+  } else banner.appendChild(document.createTextNode('press Connect to get a login link.'));
+  banner.hidden = false;
+}
+
 function renderTailscale(ts) {
   const dot = document.getElementById('ts-dot');
   const btn = document.getElementById('ts-toggle-btn');
   const ipEl = document.getElementById('ts-ip');
   const tnEl = document.getElementById('ts-tailnet');
+  const devs = document.getElementById('ts-devices');
+  const banner = document.getElementById('ts-login-banner');
 
   if (!ts.available) {
     dot.className = 'ctr-dot stopped';
     ipEl.textContent = 'Not installed';
+    banner.hidden = true;
     btn.textContent = 'Install?';
-    btn.onclick = () => alert('Install tailscale: curl -fsSL https://tailscale.com/install.sh | sh');
-    document.getElementById('ts-devices').innerHTML =
-      '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">Tailscale is not installed on this system.</div>';
+    btn.onclick = () => alert('Tailscale is part of the Helix OS image. If it is missing, update Helix OS (Settings → Helix OS Update); on a development machine install it with: curl -fsSL https://tailscale.com/install.sh | sh');
+    devs.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">Tailscale is not installed on this system.</div>';
+    return;
+  }
+
+  btn.onclick = tailscaleToggle;
+  if (ts.backend_state === 'DaemonDown') {
+    dot.className = 'ctr-dot stopped'; ipEl.textContent = 'Service not running'; tnEl.textContent = ''; btn.textContent = 'Connect'; banner.hidden = true;
+    devs.innerHTML = `<div style="padding:14px 16px;font-size:12px;color:var(--warn)">The Tailscale service (tailscaled) is not running: ${_esc(ts.error || '')}</div>`;
     return;
   }
 
@@ -4607,71 +4629,53 @@ function renderTailscale(ts) {
   tnEl.textContent = ts.tailnet ? ts.tailnet : '';
   btn.textContent = up ? 'Disconnect' : 'Connect';
 
-  const banner = document.getElementById('ts-login-banner');
-  if (ts.backend_state === 'NeedsLogin' && !up) {
-    banner.hidden = false;
-  } else {
-    banner.hidden = true;
-  }
+  if (ts.backend_state === 'NeedsLogin' && !up) tsShowLogin(ts.auth_url); else banner.hidden = true;
 
   const peers = ts.peers || [];
   document.getElementById('ts-peer-count').textContent = peers.length ? `(${peers.length} devices)` : '';
 
   if (!peers.length) {
-    document.getElementById('ts-devices').innerHTML =
-      `<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">${up ? 'No other devices in tailnet.' : 'Connect to see tailnet devices.'}</div>`;
+    devs.innerHTML = `<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">${up ? 'No other devices in tailnet.' : 'Connect to see tailnet devices.'}</div>`;
     return;
   }
 
-  document.getElementById('ts-devices').innerHTML = peers.map(p => `
+  devs.innerHTML = peers.map(p => `
     <div class="wg-peer-row">
       <span class="ctr-dot ${p.online ? 'running' : 'stopped'}"></span>
-      <span class="wg-peer-name">${p.hostname || p.dns_name}</span>
-      <span class="wg-peer-ip">${p.ip}</span>
-      <span class="wg-peer-shake" style="color:var(--fg-dim)">${p.os}</span>
+      <span class="wg-peer-name">${_esc(p.hostname || p.dns_name)}</span>
+      <span class="wg-peer-ip">${_esc(p.ip)}</span>
+      <span class="wg-peer-shake" style="color:var(--fg-dim)">${_esc(p.os)}</span>
       ${p.exit_node ? '<span style="font-size:10px;color:var(--accent);font-weight:600">EXIT NODE</span>' : ''}
-      ${p.exit_node_option ? `<button class="ctr-btn" onclick="setExitNode('${p.ip}')" style="font-size:10px">Use as exit</button>` : ''}
+      ${p.exit_node_option ? `<button class="ctr-btn" onclick="setExitNode('${_esc(p.ip)}')" style="font-size:10px">Use as exit</button>` : ''}
     </div>`).join('');
+}
+
+// POST to a tailscale endpoint and show what happened. Errors used to be swallowed, so a failed
+// Connect looked like nothing happening.
+async function tsCall(path, body) {
+  try {
+    const r = await fetch(API + '/api/tailscale/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { alert('Tailscale: ' + (data.detail || ('HTTP ' + r.status))); return null; }
+    if (data.login_url) tsShowLogin(data.login_url);
+    else if (data.message && !data.ok) alert(data.message);
+    return data;
+  } catch (e) { alert('Tailscale: ' + e.message); return null; }
 }
 
 async function tailscaleToggle() {
   if (!liveMode) { alert('Demo mode'); return; }
   if (!_tsStatus) return;
-  if (_tsStatus.connected) {
-    await fetch(API + '/api/tailscale/down', {method:'POST'}).catch(()=>{});
-  } else {
-    const r = await fetch(API + '/api/tailscale/up', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({accept_routes: true, accept_dns: true}),
-    }).catch(()=>null);
-    if (r) {
-      const data = await r.json().catch(()=>({}));
-      if (data.login_url) {
-        document.getElementById('ts-login-link').href = data.login_url;
-        document.getElementById('ts-login-banner').hidden = false;
-        document.getElementById('ts-login-banner').textContent = '';
-        document.getElementById('ts-login-banner').appendChild(
-          Object.assign(document.createElement('span'), {textContent: 'Authentication required: '})
-        );
-        const a = Object.assign(document.createElement('a'), {
-          href: data.login_url, target: '_blank',
-          textContent: 'Open Tailscale login page →',
-          style: 'color:var(--accent)'
-        });
-        document.getElementById('ts-login-banner').appendChild(a);
-        document.getElementById('ts-login-banner').hidden = false;
-      }
-    }
-  }
+  if (_tsStatus.connected) await tsCall('down');
+  else await tsCall('up', {accept_routes: true, accept_dns: true});
   setTimeout(loadTailscale, 1500);
+  if (!_tsPoll) _tsPoll = setInterval(() => { loadTailscale(); if (_tsStatus && _tsStatus.connected) { clearInterval(_tsPoll); _tsPoll = null; } }, 4000);
 }
+let _tsPoll = null;
 
 async function setExitNode(ip) {
   if (!liveMode) return;
-  await fetch(API + '/api/tailscale/up', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({accept_routes: true, exit_node: ip}),
-  }).catch(()=>{});
+  await tsCall('up', {accept_routes: true, exit_node: ip});
   setTimeout(loadTailscale, 1500);
 }
 
@@ -4721,18 +4725,15 @@ async function tailscaleApplySettings() {
   if (key)      body.auth_key  = key;
   if (hostname) body.hostname  = hostname;
 
-  await fetch(API + '/api/tailscale/up', {
-    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
-  }).catch(()=>{});
-  closeModal();
+  const r = await tsCall('up', body);
+  if (r) closeModal();
   setTimeout(loadTailscale, 1500);
 }
 
 async function tailscaleLogout() {
   if (!liveMode) return;
   if (!confirm('Logout from Tailscale? This removes this node from your tailnet.')) return;
-  await fetch(API + '/api/tailscale/logout', {method:'POST'}).catch(()=>{});
-  closeModal();
+  if (await tsCall('logout')) closeModal();
   setTimeout(loadTailscale, 1000);
 }
 
@@ -6970,7 +6971,7 @@ function fmRenderJobsList() {
 
 let _fmPollT = null;
 async function fmPollNow() {
-  try { const d = await apiFetch('/api/files/jobs'); fm.jobs = d.jobs; fmOnJobs(); } catch (_) {}
+  try { const d = await apiFetch('/api/files/jobs'); fm.jobs = Array.isArray(d && d.jobs) ? d.jobs : []; fmOnJobs(); } catch (_) {}
 }
 async function fmPoll() {
   clearTimeout(_fmPollT);

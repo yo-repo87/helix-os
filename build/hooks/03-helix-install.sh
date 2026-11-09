@@ -106,6 +106,35 @@ mkdir -p /etc/nginx/helix-https.d
 rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/helix /etc/nginx/sites-enabled/helix
 
+# ── Tailscale (installed from the official repo by build.sh) ────────────────────
+# The root filesystem is RAM, so tailscaled's default state dir (/var/lib/tailscale) would give this
+# machine a brand-new identity on every boot. The wrapper keeps the node key on persistent storage,
+# picking the same place the web UI keeps its config (HELIXDATA, then the boot drive).
+cat > /usr/local/sbin/helix-tailscaled <<'TSEOF'
+#!/bin/sh
+dir=/var/lib/tailscale
+for d in /mnt/data/config /boot/config; do
+    if [ -d "$d" ] && [ -w "$d" ]; then dir="$d/tailscale"; break; fi
+done
+mkdir -p "$dir" && chmod 700 "$dir" 2>/dev/null
+exec /usr/sbin/tailscaled --state="$dir/tailscaled.state" --socket=/run/tailscale/tailscaled.sock --port=41641
+TSEOF
+chmod 755 /usr/local/sbin/helix-tailscaled
+mkdir -p /etc/systemd/system/tailscaled.service.d
+cat > /etc/systemd/system/tailscaled.service.d/helix.conf <<'TSEOF'
+[Unit]
+After=helix-firstboot.service network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=
+ExecStart=/usr/local/sbin/helix-tailscaled
+TSEOF
+echo tun > /etc/modules-load.d/helix-tun.conf          # /dev/net/tun for the tailscale0 interface
+printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > /etc/sysctl.d/99-helix-forwarding.conf   # exit node / subnet routing (Docker turns this on anyway)
+systemctl enable tailscaled 2>/dev/null || ln -sf /lib/systemd/system/tailscaled.service /etc/systemd/system/multi-user.target.wants/tailscaled.service
+[ -x /usr/sbin/tailscaled ] && [ -x /usr/bin/tailscale ] || { echo "  ERROR: tailscale binaries missing from the image" >&2; exit 1; }
+echo "  tailscale $(/usr/bin/tailscale version 2>/dev/null | head -1) installed"
+
 # ── Self-signed TLS cert for HTTPS (443) ─────────────────────────────────────
 # Generated per-machine at first boot (persisted on /boot/config when writable;
 # regenerated in RAM for a read-only ISO/CD boot). nginx references the copy in

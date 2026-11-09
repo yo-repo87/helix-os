@@ -107,3 +107,6 @@ vnstat
 
 # ── Web server ────────────────────────────────────────────────────────────────
 nginx
+
+# Tailscale (from pkgs.tailscale.com, repo added by build.sh)
+tailscale

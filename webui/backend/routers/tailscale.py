@@ -1,40 +1,51 @@
 """
 Tailscale integration.
 
-GET  /api/tailscale/status         — full tailscale status (connected, IP, peers)
-POST /api/tailscale/up             — tailscale up (optionally with auth key / flags)
-POST /api/tailscale/down           — tailscale down
-POST /api/tailscale/logout         — tailscale logout (removes node from tailnet)
-GET  /api/tailscale/devices        — peer device list from status JSON
+GET  /api/tailscale/status         — connection state, our tailnet IP, peers, and the login link when sign-in is needed
+POST /api/tailscale/up             — connect (optionally with an auth key / flags); returns login_url when it needs a browser sign-in
+POST /api/tailscale/down           — disconnect
+POST /api/tailscale/logout         — remove this node from the tailnet
+GET  /api/tailscale/devices        — peer list
 
-Tailscale daemon must already be installed (tailscaled running as a systemd service).
-All write ops require root.
+tailscaled ships in the image and is enabled at boot (build/hooks/03-helix-install.sh); its node key lives on
+persistent storage so the machine keeps its identity across reboots. The backend runs as the unprivileged
+`helix` user, so every tailscale command goes through sudo (services/privileged.py).
 """
 
 import json
-import subprocess
+import re
+import shutil
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services import privileged
+
 router = APIRouter(prefix="/api/tailscale", tags=["tailscale"])
 
-_IS_ROOT = __import__("os").geteuid() == 0
-
-
-def _require_root():
-    if not _IS_ROOT:
-        raise HTTPException(503, "Tailscale management requires the backend to run as root")
+_KEY_FILE = "/run/helix-ts-authkey"
+_AUTHKEY_RE = re.compile(r"^tskey-[A-Za-z0-9_-]{8,200}$")
+_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
 def _run(*args, timeout: int = 15) -> tuple[int, str, str]:
-    r = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+    r = privileged.run(list(args), timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
 
 def _tailscale_available() -> bool:
-    rc, _, _ = _run("which", "tailscale")
-    return rc == 0
+    return shutil.which("tailscale") is not None
+
+
+def _status_json() -> tuple[dict, str]:
+    """(parsed `tailscale status --json`, error text). Empty dict when tailscaled is not answering."""
+    rc, out, err = _run("tailscale", "status", "--json")
+    if not out.strip():
+        return {}, (err.strip() or "tailscaled is not running")
+    try:
+        return json.loads(out), ""
+    except json.JSONDecodeError:
+        return {}, "unreadable status from tailscaled"
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -44,19 +55,13 @@ def get_status():
     if not _tailscale_available():
         return {"available": False, "connected": False}
 
-    rc, out, _ = _run("tailscale", "status", "--json")
-    if rc != 0 or not out.strip():
-        return {"available": True, "connected": False}
-
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return {"available": True, "connected": False}
+    data, err = _status_json()
+    if not data:
+        return {"available": True, "connected": False, "backend_state": "DaemonDown", "error": err}
 
     backend = data.get("BackendState", "NoState")
-    self_node = data.get("Self", {})
+    self_node = data.get("Self") or {}
 
-    # Extract device list from Peer map
     peers = []
     for _, peer in (data.get("Peer") or {}).items():
         peers.append({
@@ -70,14 +75,15 @@ def get_status():
         })
 
     return {
-        "available":    True,
-        "connected":    backend in ("Running", "NeedsLogin") and self_node.get("Online", False),
+        "available":     True,
+        "connected":     backend == "Running",
         "backend_state": backend,
-        "hostname":    self_node.get("HostName", ""),
-        "dns_name":    self_node.get("DNSName", ""),
-        "ip":          (self_node.get("TailscaleIPs") or [""])[0],
-        "tailnet":     data.get("MagicDNSSuffix", ""),
-        "peers":       peers,
+        "auth_url":      data.get("AuthURL", "") if backend == "NeedsLogin" else "",
+        "hostname":      self_node.get("HostName", ""),
+        "dns_name":      self_node.get("DNSName", ""),
+        "ip":            (self_node.get("TailscaleIPs") or [""])[0],
+        "tailnet":       (data.get("CurrentTailnet") or {}).get("Name") or data.get("MagicDNSSuffix", ""),
+        "peers":         peers,
     }
 
 
@@ -100,13 +106,17 @@ class TailscaleUpRequest(BaseModel):
 
 @router.post("/up")
 def tailscale_up(req: TailscaleUpRequest):
-    _require_root()
     if not _tailscale_available():
         raise HTTPException(503, "tailscale is not installed")
+    if req.auth_key and not _AUTHKEY_RE.match(req.auth_key):
+        raise HTTPException(400, "That does not look like a Tailscale auth key (it should start with tskey-)")
+    if req.hostname and not _HOST_RE.match(req.hostname):
+        raise HTTPException(400, "Hostname can only contain letters, digits and '-'")
+    if req.exit_node and not re.match(r"^[A-Za-z0-9.:_-]+$", req.exit_node):
+        raise HTTPException(400, "Invalid exit node")
 
-    cmd = ["tailscale", "up", "--reset"]
-    if req.auth_key:
-        cmd += ["--authkey", req.auth_key]
+    # --timeout: without it `tailscale up` waits for the browser sign-in forever
+    cmd = ["tailscale", "up", "--reset", "--timeout=8s"]
     if req.accept_routes:
         cmd.append("--accept-routes")
     if not req.accept_dns:
@@ -114,39 +124,54 @@ def tailscale_up(req: TailscaleUpRequest):
     if req.advertise_exit:
         cmd.append("--advertise-exit-node")
     if req.hostname:
-        cmd += ["--hostname", req.hostname]
+        cmd.append(f"--hostname={req.hostname}")
     if req.exit_node:
-        cmd += ["--exit-node", req.exit_node]
+        cmd.append(f"--exit-node={req.exit_node}")
     if req.shields_up:
         cmd.append("--shields-up")
 
-    rc, out, err = _run(*cmd, timeout=30)
+    wrote_key = False
+    try:
+        if req.auth_key:
+            # a file, never argv: command lines are visible to every local user in `ps`
+            r = privileged.run(["sh", "-c", f"umask 077; cat > {_KEY_FILE}"], input=req.auth_key)
+            if r.returncode != 0:
+                raise HTTPException(500, "Could not stage the auth key")
+            wrote_key = True
+            cmd.append(f"--auth-key=file:{_KEY_FILE}")
+        rc, out, err = _run(*cmd, timeout=45)
+    finally:
+        if wrote_key:
+            privileged.run(["rm", "-f", _KEY_FILE])
+
+    data, _ = _status_json()
+    if data.get("BackendState") == "Running":
+        return {"ok": True, "message": "Tailscale connected"}
+    if data.get("BackendState") == "NeedsLogin" and data.get("AuthURL"):
+        return {"ok": False, "login_url": data["AuthURL"]}
+    for line in (out + err).splitlines():               # older clients only print the URL
+        if "https://" in line:
+            return {"ok": False, "login_url": line.strip()}
     if rc != 0:
-        # tailscale up sometimes returns a login URL — surface it
-        for line in (out + err).splitlines():
-            if "https://" in line:
-                return {"ok": False, "login_url": line.strip()}
-        raise HTTPException(500, err.strip() or "tailscale up failed")
-    return {"ok": True, "message": "Tailscale connected"}
+        raise HTTPException(500, (err.strip() or out.strip() or "tailscale up failed").splitlines()[-1])
+    return {"ok": False, "message": "Tailscale is still starting; check again in a moment"}
 
 
 @router.post("/down")
 def tailscale_down():
-    _require_root()
     if not _tailscale_available():
         raise HTTPException(503, "tailscale is not installed")
     rc, _, err = _run("tailscale", "down")
     if rc != 0:
-        raise HTTPException(500, err.strip())
+        raise HTTPException(500, err.strip() or "tailscale down failed")
     return {"ok": True}
 
 
 @router.post("/logout")
 def tailscale_logout():
-    _require_root()
     if not _tailscale_available():
         raise HTTPException(503, "tailscale is not installed")
     rc, _, err = _run("tailscale", "logout")
     if rc != 0:
-        raise HTTPException(500, err.strip())
+        raise HTTPException(500, err.strip() or "tailscale logout failed")
     return {"ok": True, "message": "Logged out of Tailscale"}

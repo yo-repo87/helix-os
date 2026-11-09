@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.20)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.21)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1290,6 +1290,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | File browser could not browse the shares | the page started at `/home/pi` (a dev-box path); on a Helix box it does not exist, so `list_dir` silently fell back to `/tmp`. The allowed-roots check also used `/mnt/disk` and `/mnt/cache` as path-component prefixes, so `/mnt/disk1` and `/mnt/cache1` were refused | roots are now `/mnt` and `/boot` (Unraid's); the page starts at `/mnt/user`; a missing folder is a 404 (no silent fallback); `/api/files/roots` gives quick links (Shares, each disk/pool, Flash) |
 | Any web upload over 1 MB failed (HTTP 413) | nginx had no `client_max_body_size`, default 1 MB | `client_max_body_size 0; proxy_request_buffering off;` in `/etc/nginx/snippets/helix-proxy.conf` (hook 03); the UI also uploads in 20 MB chunks |
 | Terminal page: "[WebSocket error — is the backend running?]" | the nginx proxy block did not pass `Upgrade`/`Connection` headers, so `/api/terminal/ws` reached the backend as a plain GET and got 404 (the backend itself was fine) | `map $http_upgrade $connection_upgrade` at the top of `sites-available/helix` + `proxy_set_header Upgrade/Connection` in the proxy snippet |
+| VPN tab: "Tailscale is not installed" (it was supposed to ship in the image) | Tailscale is not in Debian, so it was never in `packages-base.list`; the router also demanded root (the backend is `helix`) and the UI swallowed every error | `build.sh` adds the official apt repo (key + list fetched on the build host, fatal if that fails) and installs `tailscale`; hook 03 ships `helix-tailscaled` (keeps the node key in `/mnt/data/config/tailscale` or `/boot/config/tailscale`, else RAM), a `tailscaled.service` drop-in, `tun` in modules-load and IP forwarding in sysctl; `routers/tailscale.py` uses `services/privileged.py`, `up --timeout=8s` (otherwise it waits for the browser sign-in forever), takes the login link from `status --json` `AuthURL`, passes auth keys as `--auth-key=file:` (never argv); the UI shows the login link, "service not running", and real errors |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)

@@ -44,6 +44,20 @@ done
 # Allow USB devices time to enumerate before scanning
 sleep 2
 
+# Run mdev to discover all block devices + partition nodes from /sys/block.
+# Without this, only the base disk devices (sda, sdb) appear in /dev/ — the
+# partition nodes (sda1, sda2) don't exist yet and blkid can't scan them.
+mdev -s 2>/dev/null || true
+
+# Force kernel to re-read partition tables for any disk missing partition nodes.
+for disk in /dev/sd[a-z] /dev/vd[a-z] /dev/hd[a-z] /dev/nvme[0-9]n[0-9]; do
+    [ -b "$disk" ] || continue
+    base=$(basename "$disk")
+    ls /dev/${base}[0-9] >/dev/null 2>&1 && continue   # partitions already exist
+    blockdev --rereadpt "$disk" 2>/dev/null || true
+done
+sleep 1  # give partition nodes a moment to appear
+
 # ── 3. Wait for boot USB (by filesystem label) ───────────────────────────────
 msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
 # Resolve the boot device by filesystem label. busybox blkid does not support

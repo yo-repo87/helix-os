@@ -291,8 +291,10 @@ def get_status():
 def list_regions():
     try:
         return _fetch_regions()
-    except RuntimeError as e:
-        raise HTTPException(503, str(e))
+    except (RuntimeError, OSError, ValueError) as e:
+        # URLError/ssl/timeout (OSError) and bad JSON (ValueError) mean the PIA
+        # server list is unreachable, not that this backend is broken.
+        raise HTTPException(503, f"PIA server list unavailable: {e}")
 
 
 @router.get("/settings")

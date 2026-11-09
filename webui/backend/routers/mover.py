@@ -1,5 +1,5 @@
 """
-Cache mover — moves files from /mnt/cache to the array (/mnt/disk* via /mnt/user).
+Cache mover — moves files from /mnt/cache1 to the array (/mnt/disk* via /mnt/user).
 
 GET  /api/mover/status   — running state, last run time, stats
 POST /api/mover/start    — start mover
@@ -28,7 +28,8 @@ router = APIRouter(prefix="/api/mover", tags=["mover"])
 MOVER_STATE_FILE = os.path.join(STATE_DIR, "mover_state.json")
 MOVER_CFG_FILE   = os.path.join(HELIX_CONFIG, "mover.cfg")
 
-CACHE_PATH   = "/mnt/cache"
+# Cache drives mount at /mnt/cache1, /mnt/cache2, … (see helix-array-start).
+CACHE_PATH   = "/mnt/cache1"
 USER_SHARE   = "/mnt/user"
 DISK_PATTERN = "/mnt/disk"
 

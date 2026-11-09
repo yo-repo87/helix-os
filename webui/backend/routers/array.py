@@ -166,8 +166,16 @@ def _write_disks_cfg(content: str) -> str:
             return f"cannot write {DISKS_CFG}: {e}"
 
 
+def _refresh_drive_cache() -> None:
+    try:
+        from services.drive_health import _poll_all, _write_cache
+        _write_cache(_poll_all())
+    except Exception:
+        pass  # best effort; /api/drives/refresh still works
+
+
 @router.post("/assign")
-def assign_disks(req: AssignReq):
+def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     """Persist a parity/data disk assignment to disks.cfg (reboot-safe on a
     writable boot medium). Does not start the array — call /start after."""
     all_devs = req.parity + req.data + req.cache
@@ -186,6 +194,7 @@ def assign_disks(req: AssignReq):
         # raised HTTPException into a generic "Internal Server Error", hiding the
         # real cause from the UI. The frontend shows .error.
         return {"ok": False, "error": err}
+    background_tasks.add_task(_refresh_drive_cache)
     return {"ok": True, "parity": req.parity, "data": req.data,
             "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
 

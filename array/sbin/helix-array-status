@@ -49,6 +49,23 @@ for i in "${!CACHE_DISKS[@]}"; do
     cache_info+=("$name|$dev|$present|$mounted|$fstype|$size|$used|$avail|$pct|$temp")
 done
 
+# ── Gather per-parity-drive info (parity1, parity2 mount at $MNTBASE/parityN) ──
+declare -a parity_info
+for i in "${!PARITY_DEVS[@]}"; do
+    dev="${PARITY_DEVS[$i]}"
+    name="parity$((i + 1))"
+    mnt="${MNTBASE}/$name"
+    present="no";  [ -b "$dev" ]             && present="yes"
+    mounted="no";  mountpoint -q "$mnt" 2>/dev/null && mounted="yes"
+    size=""; used=""; avail=""; pct=""
+    if [ "$mounted" = "yes" ]; then
+        read -r size used avail pct _ < <(df -h --output=size,used,avail,pcent "$mnt" | tail -1)
+    fi
+    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo "unknown")
+    temp=$(smartctl -A "$dev" 2>/dev/null | grep -i "temperature_celsius" | awk '{print $10}' || echo "")
+    parity_info+=("$name|$dev|$present|$mounted|$fstype|$size|$used|$avail|$pct|$temp")
+done
+
 # ── mergerfs aggregate ────────────────────────────────────────────────────────
 user_mounted="no"; user_size=""; user_used=""; user_avail=""
 if mountpoint -q "$USER_SHARE" 2>/dev/null; then
@@ -73,6 +90,18 @@ if [ "$JSON" = "--json" ]; then
             "$([ "$mounted" = "yes" ] && echo true || echo false)" \
             "$fstype" "$size" "$used" "$avail" "$pct" "$temp"
         cache_sep=$',\n'
+    done
+    printf '\n  ],\n'
+    printf '  "parity": [\n'
+    parity_sep=""
+    for entry in "${parity_info[@]}"; do
+        IFS='|' read -r name dev present mounted fstype size used avail pct temp <<< "$entry"
+        printf '%s    {"name":"%s","device":"%s","present":%s,"mounted":%s,"fstype":"%s","size":"%s","used":"%s","avail":"%s","use_pct":"%s","temp_c":"%s"}' \
+            "$parity_sep" "$name" "$dev" \
+            "$([ "$present" = "yes" ] && echo true || echo false)" \
+            "$([ "$mounted" = "yes" ] && echo true || echo false)" \
+            "$fstype" "$size" "$used" "$avail" "$pct" "$temp"
+        parity_sep=$',\n'
     done
     printf '\n  ],\n'
     printf '  "disks": [\n'

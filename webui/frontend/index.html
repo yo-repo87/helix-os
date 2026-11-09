@@ -7140,6 +7140,32 @@ async function _loadHwCpu() {
 }
 
 // ── VFIO GPU Passthrough ─────────────────────────────────────────
+// Boot-time IOMMU toggle: GRUB reads /boot/config/boot-params.cfg and adds both
+// vendors' flags (intel_iommu=on amd_iommu=on iommu=pt) when enabled.
+function vfioBootControl(b) {
+  if (!b || b.pi) return '';
+  if (!b.supported) {
+    return `<span style="font-size:11px;color:var(--fg-muted);flex:1">Boot-time IOMMU toggle unavailable: this install's boot menu predates it (update the boot partition's grub.cfg).</span>`;
+  }
+  const on = b.boot_mode === 'auto';
+  return `<span style="display:flex;align-items:center;gap:8px;margin-left:auto">
+      <span style="font-size:11px;color:var(--fg-muted)">At boot: <strong>${on ? 'enabled' : 'disabled'}</strong>${b.reboot_needed ? ' · <span style="color:var(--warn)">reboot to apply</span>' : ''}</span>
+      <button class="ctr-btn" style="font-size:11px" onclick="setIommuBoot(${!on})">${on ? 'Disable at boot' : 'Enable at boot'}</button>
+    </span>`;
+}
+
+async function setIommuBoot(enabled) {
+  if (!liveMode) { alert('Demo mode'); return; }
+  try {
+    const d = await fetchJSON('/api/vfio/iommu', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    if (!d.ok) { alert(d.error || 'Could not change the boot setting'); return; }
+  } catch (e) { alert(e.message); return; }
+  loadVfio();
+}
+
 async function loadVfio() {
   const statusBar = document.getElementById('vfio-status-bar');
   const gpuList   = document.getElementById('vfio-gpu-list');
@@ -7164,7 +7190,8 @@ async function loadVfio() {
         <span style="font-size:12px">vfio-pci: ${vfioOk ? 'loaded' : 'not loaded'}</span>
       </span>
       ${status.bound_ids.length ? `<span style="font-size:11px;color:var(--fg-muted)">Bound IDs: ${status.bound_ids.join(', ')}</span>` : ''}
-      ${!iommuOk ? `<span style="font-size:11px;color:var(--warn);flex:1">${status.cmdline_note}</span>` : ''}`;
+      ${!iommuOk ? `<span style="font-size:11px;color:var(--warn);flex:1">${status.cmdline_note}</span>` : ''}
+      ${vfioBootControl(status.boot)}`;
 
     if (!gpus.length) {
       gpuList.innerHTML = '<div style="color:var(--fg-dim);font-size:12px">No PCIe GPUs detected.</div>';

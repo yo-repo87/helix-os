@@ -3,6 +3,8 @@ VFIO GPU passthrough — query eligible GPUs and configure a VM for exclusive GP
 
 GET  /api/vfio/gpus                 — list GPUs with IOMMU group info
 GET  /api/vfio/status               — VFIO kernel module + IOMMU status
+GET  /api/vfio/iommu                — boot-time IOMMU setting (GRUB boot-params.cfg)
+POST /api/vfio/iommu                — enable/disable IOMMU kernel flags for the next boot
 POST /api/vfio/assign               — assign GPU to a VM (write vfio-pci binding + VM XML hostdev)
 POST /api/vfio/unassign             — remove GPU from VM
 GET  /api/vfio/vm/{name}/gpu        — which GPU (if any) is assigned to this VM
@@ -21,6 +23,12 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/vfio", tags=["vfio"])
 
 VFIO_IDS_FILE = "/etc/modprobe.d/vfio.conf"
+# Read by GRUB on the HELIXBOOT partition (build/grub/grub.cfg).
+BOOT_PARAMS_FILE = os.getenv("HELIX_BOOT_PARAMS", "/boot/config/boot-params.cfg")
+GRUB_CFG_FILE    = os.getenv("HELIX_GRUB_CFG", "/boot/grub/grub.cfg")
+# Both vendors' flags: each is ignored on the other vendor's hardware, so no CPU
+# detection is needed.
+IOMMU_KARGS = "intel_iommu=on amd_iommu=on iommu=pt"
 GRUB_DEFAULT  = "/etc/default/grub"
 
 
@@ -116,6 +124,97 @@ def _get_gpus() -> list[dict]:
     return sorted(gpus, key=lambda g: g["addr"])
 
 
+# ── Boot-time IOMMU setting ───────────────────────────────────────
+
+def _boot_params_mode() -> str:
+    """'auto' (flags added) or 'off', per boot-params.cfg. Missing file = auto,
+    matching the GRUB default."""
+    try:
+        for line in Path(BOOT_PARAMS_FILE).read_text().splitlines():
+            m = re.match(r"\s*set\s+helix_iommu=(\S+)", line)
+            if m:
+                return "off" if m.group(1).strip("\"'") == "off" else "auto"
+    except OSError:
+        pass
+    return "auto"
+
+
+def _bootloader_supported() -> bool:
+    """True when the installed GRUB config knows about boot-params.cfg. An image
+    installed before this feature ignores the file, so say so instead of lying."""
+    try:
+        return "boot-params.cfg" in Path(GRUB_CFG_FILE).read_text()
+    except OSError:
+        return False
+
+
+def _is_pi() -> bool:
+    return "raspberry" in _sysfs("/proc/device-tree/model").lower()
+
+
+def _write_boot_params(mode: str) -> str:
+    """Write boot-params.cfg preserving other lines. Returns '' or an error."""
+    try:
+        old = Path(BOOT_PARAMS_FILE).read_text().splitlines()
+    except OSError:
+        old = []
+    keep = [l for l in old if not re.match(r"\s*set\s+helix_iommu=", l)]
+    content = "\n".join(["# Helix OS boot parameters (read by GRUB)",
+                         f"set helix_iommu={mode}"] +
+                        [l for l in keep if not l.startswith("# Helix OS boot parameters")]) + "\n"
+    try:
+        os.makedirs(os.path.dirname(BOOT_PARAMS_FILE), exist_ok=True)
+        Path(BOOT_PARAMS_FILE).write_text(content)
+        return ""
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["sudo", "-n", "tee", BOOT_PARAMS_FILE], input=content,
+                           capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    if r.returncode != 0:
+        return (f"cannot write {BOOT_PARAMS_FILE}: {r.stderr.strip() or 'permission denied'} "
+                "— the boot medium may be read-only (ISO/CD boot).")
+    return ""
+
+
+def _iommu_info() -> dict:
+    cmdline = _sysfs("/proc/cmdline")
+    running = "intel_iommu=on" in cmdline or "amd_iommu=on" in cmdline
+    mode = _boot_params_mode()
+    return {
+        "supported":     (not _is_pi()) and _bootloader_supported(),
+        "pi":            _is_pi(),
+        "boot_mode":     mode,                       # what the NEXT boot will use
+        "running":       running,                    # what THIS boot is using
+        "reboot_needed": running != (mode == "auto"),
+        "kargs":         IOMMU_KARGS,
+    }
+
+
+class IommuReq(BaseModel):
+    enabled: bool
+
+
+@router.get("/iommu")
+def get_iommu():
+    return _iommu_info()
+
+
+@router.post("/iommu")
+def set_iommu(req: IommuReq):
+    info = _iommu_info()
+    if info["pi"]:
+        return {"ok": False, "error": "Raspberry Pi has no GRUB boot parameters; IOMMU passthrough is not configurable here."}
+    if not info["supported"]:
+        return {"ok": False, "error": "This install's boot menu predates the boot-params feature (GRUB config does not read boot-params.cfg). Update the boot partition's grub.cfg first."}
+    err = _write_boot_params("auto" if req.enabled else "off")
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, **_iommu_info()}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────
 
 @router.get("/status")
@@ -142,7 +241,8 @@ def vfio_status():
         "iommu_enabled":  iommu_enabled,
         "vfio_pci_loaded": vfio_loaded,
         "bound_ids":      ids_bound,
-        "cmdline_note":   "Add intel_iommu=on iommu=pt (Intel) or amd_iommu=on iommu=pt (AMD) to kernel parameters and reboot." if not iommu_enabled else "",
+        "cmdline_note":   "IOMMU is off for this boot. Use the toggle to enable it at boot (adds intel_iommu=on amd_iommu=on iommu=pt) and reboot." if not iommu_enabled else "",
+        "boot":           _iommu_info(),
     }
 
 

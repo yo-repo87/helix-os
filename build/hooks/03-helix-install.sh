@@ -284,6 +284,19 @@ LABEL=HELIXDATA
 DATA_MNT=/mnt/data
 log() { echo "[helix-firstboot] $*"; }
 
+# ── Boot-partition ownership ──────────────────────────────────────────────────
+# /boot is FAT (no unix owners): everything is root-owned, so the unprivileged web
+# backend could not write /boot/config and silently fell back to RAM, losing every
+# setting on reboot. Re-mount it owned by helix (no-op on a read-only ISO/CD boot).
+if grep -q ' /boot vfat ' /proc/mounts && touch /boot/.helix-wtest 2>/dev/null; then
+    rm -f /boot/.helix-wtest
+    HU=$(id -u helix 2>/dev/null); HG=$(id -g helix 2>/dev/null)
+    if [ -n "$HU" ] && [ -n "$HG" ]; then
+        mount -o remount,uid="$HU",gid="$HG" /boot 2>/dev/null \
+            && log "/boot remounted owned by helix ($HU:$HG)" || log "WARN: could not remount /boot for helix"
+    fi
+fi
+
 # ── SSH authorized keys ───────────────────────────────────────────────────────
 # Load *.pub from /boot/config/ssh/ into the helix user's authorized_keys. Runs before the HELIXDATA early-exit so
 # keys work on a read-only ISO/CD boot too. On a writable boot medium /boot/config

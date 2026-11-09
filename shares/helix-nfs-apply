@@ -61,6 +61,9 @@ echo "Written: $OUT"
 # Reload exports
 if systemctl is-active --quiet nfs-server 2>/dev/null; then
     exportfs -ra && echo "NFS exports reloaded."
+elif grep -q '^nfs=yes' "$SHARES_CFG" 2>/dev/null; then
+    systemctl start nfs-server 2>/dev/null && echo "nfs-server started." \
+        || echo "WARN: could not start nfs-server (check: journalctl -u nfs-server)"
 else
-    echo "nfs-server not running — config written, start with: systemctl start nfs-server"
+    echo "No NFS shares defined — nfs-server left stopped."
 fi

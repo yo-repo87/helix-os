@@ -121,6 +121,33 @@ if id helix >/dev/null 2>&1; then
     done
 fi
 
+set +e   # container/share services must never be able to fail the array start
+# ── Docker (data-root on persistent storage) ──────────────────────────────────
+# Never in the RAM root. Prefer a cache drive, else the first data disk. These are
+# real filesystems (overlay2 does not work on the mergerfs FUSE user share).
+if command -v dockerd >/dev/null 2>&1; then
+    droot=""
+    for m in "${CACHE_MNTS[@]}"; do
+        if mountpoint -q "$m"; then droot="$m/system/docker"; break; fi
+    done
+    [ -n "$droot" ] || droot="${MOUNTED_MNTS[0]}/system/docker"
+    mkdir -p "$droot" /etc/docker
+    printf '{\n  "data-root": "%s"\n}\n' "$droot" > /etc/docker/daemon.json
+    if systemctl start docker 2>/dev/null; then
+        helix_log "Docker started (data-root $droot)"
+    else
+        helix_log "WARN: docker failed to start (journalctl -u docker)"
+    fi
+fi
+
+# ── Share services (SMB / NFS) ────────────────────────────────────────────────
+if [ -x /usr/local/sbin/helix-shares-apply ]; then
+    HELIX_CONFIG="$HELIX_CONFIG" /usr/local/sbin/helix-shares-apply >/dev/null 2>&1 \
+        && helix_log "Share services applied" || helix_log "WARN: helix-shares-apply reported errors"
+fi
+
+set -e
+
 # ── Record state ──────────────────────────────────────────────────────────────
 echo "started" > "$ARRAY_STATE"
 date -Iseconds >> "$ARRAY_STATE"

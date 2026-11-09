@@ -21,6 +21,9 @@ systemctl disable cloud-init          2>/dev/null || true
 systemctl disable cloud-config        2>/dev/null || true
 systemctl disable cloud-final         2>/dev/null || true
 systemctl disable cloud-init-local    2>/dev/null || true
+# Docker's data-root must live on the array/cache, never in the RAM root, so it is
+# started by helix-array-start (after the drives are mounted), not at boot.
+systemctl disable docker.service docker.socket containerd.service 2>/dev/null || true
 
 # ── Write the helix-startup service (runs /boot/config/go like Unraid) ────────
 cat > /etc/systemd/system/helix-startup.service <<'EOF'

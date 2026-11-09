@@ -17,6 +17,9 @@ load_disk_config
 
 ERRORS=0
 
+# ── Stop things that use the drives ───────────────────────────────────────────
+systemctl stop docker.socket docker nfs-server smbd nmbd 2>/dev/null || true
+
 # ── Stop mergerfs first ───────────────────────────────────────────────────────
 if mountpoint -q "$USER_SHARE"; then
     if ! umount "$USER_SHARE" 2>/dev/null; then
@@ -42,6 +45,15 @@ for i in "${!DATA_DISKS[@]}"; do
             helix_err "Failed to unmount $name: $mnt"
             ERRORS=$((ERRORS+1))
         fi
+    fi
+done
+
+# ── Unmount cache drives ──────────────────────────────────────────────────────
+for i in "${!CACHE_DISKS[@]}"; do
+    mnt="${CACHE_MNTS[$i]}"
+    if mountpoint -q "$mnt"; then
+        umount "$mnt" 2>/dev/null && helix_log "Unmounted ${CACHE_DISKS[$i]}: $mnt" \
+            || { helix_err "Failed to unmount ${CACHE_DISKS[$i]}: $mnt"; ERRORS=$((ERRORS+1)); }
     fi
 done
 

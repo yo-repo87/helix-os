@@ -130,6 +130,9 @@ echo "Written: $OUT"
 if systemctl is-active --quiet smbd 2>/dev/null; then
     smbcontrol all reload-config 2>/dev/null && echo "Samba reloaded." \
         || systemctl reload smbd && echo "smbd reloaded."
+elif grep -q '^smb=yes' "$SHARES_CFG" 2>/dev/null; then
+    systemctl start smbd nmbd 2>/dev/null && echo "smbd started." \
+        || echo "WARN: could not start smbd (check: journalctl -u smbd)"
 else
-    echo "smbd not running — config written, start with: systemctl start smbd"
+    echo "No SMB shares defined — smbd left stopped."
 fi

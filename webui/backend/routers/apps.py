@@ -223,11 +223,35 @@ def _require_docker() -> None:
     import shutil
     if not shutil.which("docker"):
         raise HTTPException(503, "Docker is not installed on this system")
+    try:
+        up = subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode == 0
+    except subprocess.TimeoutExpired:
+        up = False
+    if not up:
+        raise HTTPException(503, "Docker is installed but not running. Start the array first (Docker starts with it).")
+
+
+def _compose_base() -> list[str]:
+    """`docker compose` (v2 plugin) when present, else Debian's docker-compose v1."""
+    import shutil
+    try:
+        if subprocess.run(["docker", "compose", "version"], capture_output=True, timeout=10).returncode == 0:
+            return ["docker", "compose"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return ["docker-compose"] if shutil.which("docker-compose") else ["docker", "compose"]
 
 
 def _docker_compose(app_dir: str | Path, *args, timeout: int = 60) -> tuple[int, str, str]:
+    base = _compose_base()
+    args = list(args)
+    if base[0] == "docker-compose" and "--pull" in args:
+        # v1 has no `up --pull <policy>`; pull first, then bring it up.
+        i = args.index("--pull")
+        del args[i:i + 2]
+        subprocess.run([*base, "pull"], capture_output=True, text=True, cwd=str(app_dir), timeout=timeout)
     r = subprocess.run(
-        ["docker", "compose", *args],
+        [*base, *args],
         capture_output=True, text=True,
         cwd=str(app_dir), timeout=timeout
     )

@@ -86,5 +86,21 @@ python3-dev
 # Placeholder — build.sh replaces KERNEL_PKG_PLACEHOLDER:
 KERNEL_PKG_PLACEHOLDER
 
+# ── File sharing (SMB / NFS / mDNS) ───────────────────────────────────────────
+samba
+smbclient
+nfs-kernel-server
+avahi-daemon
+psmisc
+
+# ── Containers (Debian docker.io; compose v2 is not in bookworm, so the apps
+#    router falls back to the docker-compose v1 package) ─────────────────────────
+docker.io
+docker-compose
+
+# ── VPN / scheduler ───────────────────────────────────────────────────────────
+wireguard-tools
+cron
+
 # ── Web server ────────────────────────────────────────────────────────────────
 nginx

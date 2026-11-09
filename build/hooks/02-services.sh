@@ -60,4 +60,18 @@ EOF
 
 systemctl enable helix-config-network
 
+# ── Default fallback network config (DHCP on all Ethernet) ───────────────────
+# helix-apply-network writes 10-helix-*.network files at boot. This 05- file
+# is a catch-all that ensures any Ethernet interface gets DHCP even if that
+# service fails or runs after networkd has already started.
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/05-helix-fallback.network <<'NETEOF'
+[Match]
+Type=ether
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+NETEOF
+
 echo "==> [hook 02] Done."

@@ -96,6 +96,15 @@ if [ -f "$BACKEND_SRC/helpers/helix-osupdate" ]; then
     echo "  installed /usr/local/sbin/helix-osupdate"
 fi
 
+# ── helix-apply-network: install network config helper ───────────────────────
+NETWORK_SRC="/build/network/helix-apply-network"
+if [ -f "$NETWORK_SRC" ]; then
+    install -m 0755 "$NETWORK_SRC" /usr/local/sbin/helix-apply-network
+    echo "  installed /usr/local/sbin/helix-apply-network"
+else
+    echo "  WARN: network/helix-apply-network not found — helix-config-network will fail"
+fi
+
 # ── State directory ───────────────────────────────────────────────────────────
 mkdir -p /var/lib/helix
 chown helix:helix /var/lib/helix

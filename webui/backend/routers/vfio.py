@@ -26,9 +26,10 @@ VFIO_IDS_FILE = "/etc/modprobe.d/vfio.conf"
 # Read by GRUB on the HELIXBOOT partition (build/grub/grub.cfg).
 BOOT_PARAMS_FILE = os.getenv("HELIX_BOOT_PARAMS", "/boot/config/boot-params.cfg")
 GRUB_CFG_FILE    = os.getenv("HELIX_GRUB_CFG", "/boot/grub/grub.cfg")
-# Both vendors' flags: each is ignored on the other vendor's hardware, so no CPU
-# detection is needed.
-IOMMU_KARGS = "intel_iommu=on amd_iommu=on iommu=pt"
+# intel_iommu=on is required on Intel and ignored on AMD, where the kernel enables
+# the IOMMU by itself once it is on in the BIOS (amd_iommu=on is NOT a valid option:
+# the kernel logs "AMD-Vi: Unknown option"). iommu=pt = passthrough mode, both vendors.
+IOMMU_KARGS = "intel_iommu=on iommu=pt"
 GRUB_DEFAULT  = "/etc/default/grub"
 
 
@@ -179,16 +180,23 @@ def _write_boot_params(mode: str) -> str:
     return ""
 
 
+def _iommu_active() -> bool:
+    """True when the kernel really has IOMMU groups (the truth, whatever the cmdline says)."""
+    return bool(glob.glob("/sys/kernel/iommu_groups/*"))
+
+
 def _iommu_info() -> dict:
     cmdline = _sysfs("/proc/cmdline")
-    running = "intel_iommu=on" in cmdline or "amd_iommu=on" in cmdline
+    # Did THIS boot get our flags? iommu=pt is in them on every vendor.
+    booted_with = "iommu=pt" in cmdline
     mode = _boot_params_mode()
     return {
         "supported":     (not _is_pi()) and _bootloader_supported(),
         "pi":            _is_pi(),
         "boot_mode":     mode,                       # what the NEXT boot will use
-        "running":       running,                    # what THIS boot is using
-        "reboot_needed": running != (mode == "auto"),
+        "running":       booted_with,                # what THIS boot used
+        "active":        _iommu_active(),            # does the kernel have IOMMU groups now
+        "reboot_needed": booted_with != (mode == "auto"),
         "kargs":         IOMMU_KARGS,
     }
 
@@ -221,7 +229,7 @@ def set_iommu(req: IommuReq):
 def vfio_status():
     # IOMMU: check kernel cmdline
     cmdline = _sysfs("/proc/cmdline")
-    iommu_enabled = "intel_iommu=on" in cmdline or "amd_iommu=on" in cmdline or "iommu=pt" in cmdline
+    iommu_enabled = _iommu_active() or "intel_iommu=on" in cmdline
 
     # VFIO modules loaded
     rc, lsmod = _run("lsmod")
@@ -241,7 +249,7 @@ def vfio_status():
         "iommu_enabled":  iommu_enabled,
         "vfio_pci_loaded": vfio_loaded,
         "bound_ids":      ids_bound,
-        "cmdline_note":   "IOMMU is off for this boot. Use the toggle to enable it at boot (adds intel_iommu=on amd_iommu=on iommu=pt) and reboot." if not iommu_enabled else "",
+        "cmdline_note":   "IOMMU is not active. Enable AMD IOMMU / Intel VT-d in the BIOS, then use the toggle to add intel_iommu=on iommu=pt at boot and reboot." if not iommu_enabled else "",
         "boot":           _iommu_info(),
     }
 

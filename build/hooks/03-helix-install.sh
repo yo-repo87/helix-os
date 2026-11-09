@@ -33,6 +33,9 @@ fi
 echo "  backend deps installed"
 
 # ── Copy app files ────────────────────────────────────────────────────────────
+# Replace, don't merge (see build.sh): on a reused rootfs these already exist and
+# `cp -r` would nest backend/backend, leaving the old code running.
+rm -rf "$HIVE_DIR/backend" "$HIVE_DIR/frontend"
 cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"
 [ -d "$FRONTEND_SRC" ] && cp -r "$FRONTEND_SRC" "$HIVE_DIR/frontend"
 

@@ -133,6 +133,9 @@ cp -r "$BUILD_DIR/config/"* "$ROOTFS_DIR/build/config/"
 WEBUI_SRC="$SCRIPT_DIR/../webui"
 if [ -d "$WEBUI_SRC" ]; then
     echo "  Copying webui/ into chroot..."
+    # Replace, don't merge: a reused rootfs already has /build/webui, and
+    # `cp -r src existing_dir` would nest the new tree inside the stale one.
+    rm -rf "$ROOTFS_DIR/build/webui"
     cp -r "$WEBUI_SRC" "$ROOTFS_DIR/build/webui"
 fi
 
@@ -142,6 +145,7 @@ fi
 for helper in network array shares gpu; do
     if [ -d "$SCRIPT_DIR/../$helper" ]; then
         echo "  Copying $helper/ into chroot..."
+        rm -rf "$ROOTFS_DIR/build/$helper"
         cp -r "$SCRIPT_DIR/../$helper" "$ROOTFS_DIR/build/$helper"
     fi
 done

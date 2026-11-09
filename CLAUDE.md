@@ -866,6 +866,27 @@ Do not diagnose a new symptom. First verify the fix actually took effect:
 
 **Rule — never publish a release as "fixed" without confirming the fix is in the binary output**, not just in the source file.
 
+**Rule — always get diagnostic output before fixing boot failures.** Two emergency-shell commands (`cat /proc/partitions` and `ls /dev/`) reveal the entire failure class instantly. Without them every fix is a guess. Ask for this output before writing a single line of code.
+
+---
+
+### 19.6 Busybox blkid does not support util-linux option syntax
+
+**Incident:** Boot still failed after modules were packed into the cpio. Devices (`sda`, `sdb`, `sdc`) were visible in `/dev/` but HELIXBOOT was never found.
+
+**Root cause:** The initramfs uses busybox `blkid`, not util-linux `blkid`. Two differences broke label detection:
+1. Busybox outputs `LABEL=HELIXBOOT` (no quotes). The grep checked for `LABEL="HELIXBOOT"` (with quotes) — never matched.
+2. The brute-force fallback used `blkid -o value -s LABEL <dev>` — util-linux-only syntax. Busybox ignores unknown flags and returns empty string.
+3. The mount fallback tried to read `.volume_label` as a file — that file does not exist on FAT32. Volume labels are in the boot sector, not the filesystem.
+
+**Fix (commit `30baf24`):** `find_boot_dev()` now:
+- Method 3: `blkid | grep "LABEL=" | grep "HELIXBOOT"` — matches both quoted and unquoted forms
+- Method 4 per-device: same two-step grep on individual device output
+- Method 4 mount fallback: probe for the squashfs file (`boot/filesystem.squashfs`) instead of `.volume_label`; try vfat, iso9660, auto in order
+- Brute-force glob: use `sd[a-z][0-9]` patterns to match partitions correctly
+
+**Rule:** Never use util-linux blkid flags (`-L`, `-o value`, `-s LABEL`) in the initramfs init script. The initramfs only has busybox. Test any blkid command with `busybox blkid <args>` on the build host before adding it to init.
+
 ---
 
 ### 19.4 App install failures were silently swallowed

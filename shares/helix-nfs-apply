@@ -44,6 +44,13 @@ while IFS= read -r section; do
     options="${options:-$NFS_OPTIONS}"
     path="$USER_SHARE/$section"
 
+    # Exports from the mergerfs (FUSE) user share require an explicit fsid=. Derive a
+    # stable one from the share name so it never changes between regenerations.
+    case ",$options," in
+        *,fsid=*) ;;
+        *) options="${options:+$options,}fsid=$(( $(printf '%s' "$section" | cksum | cut -d' ' -f1) % 2147483000 + 1 ))" ;;
+    esac
+
     echo "$path    $network($options)"
 done < <(cfg_sections "$SHARES_CFG")
 }

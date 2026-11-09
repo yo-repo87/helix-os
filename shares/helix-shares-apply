@@ -39,6 +39,6 @@ HELIX_CONFIG="$HELIX_CONFIG" USER_SHARE="$USER_SHARE" bash "$SCRIPT_DIR/helix-sa
 # ── Apply NFS ─────────────────────────────────────────────────────────────────
 echo "    Applying NFS..."
 HELIX_CONFIG="$HELIX_CONFIG" USER_SHARE="$USER_SHARE" bash "$SCRIPT_DIR/helix-nfs-apply" || \
-    echo "    SKIP: NFS not installed."
+    echo "    WARN: NFS apply failed (see messages above)." >&2
 
 echo "==> Share configuration applied."

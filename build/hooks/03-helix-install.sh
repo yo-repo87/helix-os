@@ -291,9 +291,21 @@ log() { echo "[helix-firstboot] $*"; }
 if grep -q ' /boot vfat ' /proc/mounts && touch /boot/.helix-wtest 2>/dev/null; then
     rm -f /boot/.helix-wtest
     HU=$(id -u helix 2>/dev/null); HG=$(id -g helix 2>/dev/null)
-    if [ -n "$HU" ] && [ -n "$HG" ]; then
-        mount -o remount,uid="$HU",gid="$HG" /boot 2>/dev/null \
-            && log "/boot remounted owned by helix ($HU:$HG)" || log "WARN: could not remount /boot for helix"
+    # A FAT `remount,uid=` is silently ignored by the kernel (and exits 0), so check
+    # the real owner and, if it did not take, do a clean umount + mount instead.
+    if [ -n "$HU" ] && [ -n "$HG" ] && [ "$(stat -c %u /boot 2>/dev/null)" != "$HU" ]; then
+        BDEV=$(findmnt -n -o SOURCE /boot 2>/dev/null)
+        OPTS="rw,noatime,uid=$HU,gid=$HG,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro"
+        if [ -n "$BDEV" ] && umount /boot 2>/dev/null; then
+            if mount -t vfat -o "$OPTS" "$BDEV" /boot 2>/dev/null; then
+                log "/boot re-mounted owned by helix ($HU:$HG)"
+            else
+                log "WARN: owner mount failed; restoring plain /boot mount"
+                mount -t vfat -o rw,noatime "$BDEV" /boot 2>/dev/null || log "ERROR: could not re-mount /boot"
+            fi
+        else
+            log "WARN: /boot busy or device unknown; config stays on RAM until next boot"
+        fi
     fi
 fi
 

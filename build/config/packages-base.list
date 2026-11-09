@@ -97,6 +97,7 @@ psmisc
 #    router falls back to the docker-compose v1 package) ─────────────────────────
 docker.io
 docker-compose
+apparmor
 
 # ── VPN / scheduler ───────────────────────────────────────────────────────────
 wireguard-tools

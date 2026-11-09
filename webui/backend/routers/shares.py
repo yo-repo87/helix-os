@@ -9,15 +9,30 @@ from config import SHARES_CFG, HELIX_CONFIG, USER_SHARE
 # no-op'd. Configurable for dev.
 SHARES_SBIN = os.getenv("SHARES_SBIN", "/usr/local/sbin")
 
-def _apply_shares():
-    """Regenerate smb.conf + /etc/exports after any config change."""
+def _apply_shares() -> str:
+    """Regenerate smb.conf + /etc/exports after any config change.
+
+    Needs root (it writes /etc/samba and /etc/exports and starts services), and the
+    backend is the unprivileged helix user, so go through sudo. Returns '' on
+    success or the tail of the script's output, so callers can show the failure
+    instead of reporting a share that was never actually exported.
+    """
     script = os.path.join(SHARES_SBIN, "helix-shares-apply")
-    if os.path.exists(script):
-        subprocess.run(
-            ["/bin/bash", script],
-            env={**os.environ, "HELIX_CONFIG": HELIX_CONFIG, "USER_SHARE": USER_SHARE},
-            capture_output=True
-        )
+    if not os.path.exists(script):
+        return f"{script} not found"
+    cmd = ["/bin/bash", script]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", f"USER_SHARE={USER_SHARE}", *cmd]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90,
+                           env={**os.environ, "HELIX_CONFIG": HELIX_CONFIG, "USER_SHARE": USER_SHARE})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    if r.returncode != 0:
+        return ((r.stderr or "") + (r.stdout or "")).strip()[-400:] or f"exit {r.returncode}"
+    # The wrapper exits 0 even when the NFS step warned; surface that too.
+    warn = [l for l in (r.stderr or "").splitlines() if "WARN" in l or "requires fsid" in l]
+    return "\n".join(warn)[-400:]
 
 router = APIRouter(prefix="/api/shares", tags=["shares"])
 
@@ -93,8 +108,8 @@ def create_share(name: str, comment: str = "", smb: bool = True, nfs: bool = Fal
         with open(SHARES_CFG, "w") as f:
             f.write(content.replace(new_entry, ""))
         raise HTTPException(500, f"Share config written but directory creation failed: {exc}")
-    _apply_shares()
-    return {"ok": True, "name": name}
+    err = _apply_shares()
+    return {"ok": True, "name": name, **({"apply_error": err} if err else {})}
 
 class ShareUpdate(BaseModel):
     comment: Optional[str] = None

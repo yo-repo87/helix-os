@@ -10,6 +10,7 @@ GET    /api/scheduler/log           — last N lines of cron syslog entries
 """
 
 import hashlib
+from pathlib import Path
 import os
 import re
 import subprocess
@@ -39,6 +40,12 @@ def _write_crontab(content: str):
         p = subprocess.run(["crontab", "-"], input=content, capture_output=True, text=True)
         if p.returncode != 0:
             raise RuntimeError(f"crontab write failed: {p.stderr.strip()}")
+        # cron lives in RAM: keep a copy in the persistent config for helix-restore-state
+        try:
+            from config import HELIX_CONFIG
+            (Path(HELIX_CONFIG) / "crontab").write_text(content)
+        except OSError:
+            pass
     except FileNotFoundError:
         raise HTTPException(503, "crontab not available on this system")
 
@@ -51,7 +58,10 @@ def _parse_jobs(raw: str) -> list[dict]:
     jobs = []
     for line in raw.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        paused = line.startswith("#PAUSED#")
+        # A disabled job is stored as "#PAUSED# <cron line>". Skipping every line that
+        # starts with '#' made disabled jobs vanish — and the next rewrite dropped them.
+        if not line or (line.startswith("#") and not paused):
             continue
         # Only lines tagged with our marker
         if HELIX_TAG not in line:
@@ -63,9 +73,9 @@ def _parse_jobs(raw: str) -> list[dict]:
         name_m = re.search(r'name=([^;]+)', meta)
         name = name_m.group(1).strip() if name_m else ""
         # Enabled/disabled
-        enabled = not code.startswith("#PAUSED#")
-        if not enabled:
-            code = code.lstrip("#PAUSED# ").strip()
+        enabled = not paused
+        if paused:
+            code = code[len("#PAUSED#"):].strip()
         # Split schedule (5 fields) from command
         parts = code.split(None, 5)
         if len(parts) < 6:

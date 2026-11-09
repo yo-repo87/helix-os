@@ -33,22 +33,37 @@ from config import HELIX_CONFIG
 
 router = APIRouter(prefix="/api/wireguard", tags=["wireguard"])
 
-WG_DIR      = Path("/etc/wireguard")
+# Interface configs live in the persistent config dir (wg-quick accepts a full path), so
+# they survive reboots; /etc/wireguard is in RAM.
 META_DIR    = Path(HELIX_CONFIG) / "wireguard"
+WG_DIR      = META_DIR
 _IS_ROOT    = os.geteuid() == 0
 
 
 def _require_root():
-    if not _IS_ROOT:
-        raise HTTPException(503, "WireGuard management requires the backend to run as root")
+    """No-op: privileged commands go through sudo in _run() (the backend is not root)."""
+    return
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_NEEDS_ROOT = {("wg", "show"), ("wg", "set"), ("wg", "syncconf")}
+
+
 def _run(*args, input: str | None = None, timeout: int = 10) -> tuple[int, str, str]:
-    r = subprocess.run(list(args), capture_output=True, text=True,
-                       input=input, timeout=timeout)
+    cmd = list(args)
+    if not _IS_ROOT and (cmd[0] == "wg-quick" or tuple(cmd[:2]) in _NEEDS_ROOT):
+        cmd = ["sudo", "-n", *cmd]
+    r = subprocess.run(cmd, capture_output=True, text=True, input=input, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
+
+
+def _syncconf(iface: str, path: Path) -> None:
+    """Apply a conf to a running interface. `wg syncconf` rejects wg-quick keys
+    (Address, DNS, ...), so strip them first."""
+    rc, stripped, _ = _run("wg-quick", "strip", str(path))
+    if rc == 0:
+        _run("wg", "syncconf", iface, "/dev/stdin", input=stripped)
 
 
 def _iface_path(iface: str) -> Path:
@@ -263,7 +278,10 @@ def create_interface(req: InterfaceCreate):
     if req.mtu:
         cfg["MTU"] = req.mtu
     p.write_text(_build_conf(cfg, []))
-    p.chmod(0o600)
+    try:
+        p.chmod(0o600)         # FAT ignores modes; harmless there
+    except OSError:
+        pass
     return get_interface(req.name)
 
 
@@ -289,7 +307,7 @@ def update_interface(iface: str, req: InterfaceUpdate):
     p.write_text(_build_conf(cfg, parsed["peers"]))
     # Re-sync if up
     if _iface_up(iface):
-        _run("wg", "syncconf", iface, str(p))
+        _syncconf(iface, p)
     return get_interface(iface)
 
 
@@ -300,7 +318,7 @@ def delete_interface(iface: str):
     if not p.exists():
         raise HTTPException(404)
     if _iface_up(iface):
-        _run("wg-quick", "down", iface)
+        _run("wg-quick", "down", str(_iface_path(iface)))
     p.unlink()
     _meta_path(iface).unlink(missing_ok=True)
     return {"ok": True}
@@ -311,7 +329,7 @@ def iface_up(iface: str):
     _require_root()
     if not _iface_path(iface).exists():
         raise HTTPException(404)
-    rc, _, err = _run("wg-quick", "up", iface, timeout=15)
+    rc, _, err = _run("wg-quick", "up", str(_iface_path(iface)), timeout=15)
     if rc != 0:
         raise HTTPException(500, err.strip())
     return {"ok": True, "up": True}
@@ -322,7 +340,7 @@ def iface_down(iface: str):
     _require_root()
     if not _iface_path(iface).exists():
         raise HTTPException(404)
-    rc, _, err = _run("wg-quick", "down", iface, timeout=15)
+    rc, _, err = _run("wg-quick", "down", str(_iface_path(iface)), timeout=15)
     if rc != 0:
         raise HTTPException(500, err.strip())
     return {"ok": True, "up": False}
@@ -403,7 +421,7 @@ def add_peer(iface: str, req: PeerCreate):
 
     # Sync if interface is up
     if _iface_up(iface):
-        _run("wg", "syncconf", iface, str(p))
+        _syncconf(iface, p)
 
     # Build client config
     _, server_pub_out, _ = _run("wg", "pubkey", input=iface_cfg.get("PrivateKey", ""))
@@ -452,7 +470,7 @@ def remove_peer(iface: str, pubkey_safe: str):
     _save_meta(iface, meta)
     # Sync if up
     if _iface_up(iface):
-        _run("wg", "syncconf", iface, str(p))
+        _syncconf(iface, p)
     return {"ok": True}
 
 

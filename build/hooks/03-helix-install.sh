@@ -243,6 +243,10 @@ systemctl enable nginx
 systemctl enable helix-backend
 
 # ── Privileged OS-update helper (swaps the boot image; invoked via sudo) ──────
+if [ -f "$BACKEND_SRC/helpers/helix-restore-state" ]; then
+    install -m 0755 "$BACKEND_SRC/helpers/helix-restore-state" /usr/local/sbin/helix-restore-state
+    echo "  installed /usr/local/sbin/helix-restore-state"
+fi
 if [ -f "$BACKEND_SRC/helpers/helix-osupdate" ]; then
     install -m 0755 "$BACKEND_SRC/helpers/helix-osupdate" /usr/local/sbin/helix-osupdate
     echo "  installed /usr/local/sbin/helix-osupdate"
@@ -327,6 +331,11 @@ if ls /boot/config/ssh/*.pub >/dev/null 2>&1; then
     done
     chmod 700 "$HELIX_HOME/.ssh"; chmod 600 "$AK" 2>/dev/null || true
     id helix >/dev/null 2>&1 && chown -R helix:helix "$HELIX_HOME/.ssh" 2>/dev/null || true
+fi
+
+# ── Restore accounts, Samba passwords and cron jobs (RAM state saved in /boot/config) ─
+if [ -x /usr/local/sbin/helix-restore-state ]; then
+    HELIX_CONFIG=/boot/config /usr/local/sbin/helix-restore-state 2>&1 | while IFS= read -r l; do log "$l"; done || true
 fi
 
 DATA_PART=$(blkid -L "$LABEL" 2>/dev/null) || DATA_PART=""

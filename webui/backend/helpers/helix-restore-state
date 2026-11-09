@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Recreate runtime state that lives in RAM from what is saved in /boot/config.
+
+Run as root early at boot (from helix-firstboot). Everything is idempotent:
+  users.json   -> local accounts (same uid/gid, password hash, shell, SSH keys)
+  smbpasswd    -> Samba password database (NT hashes)
+  crontab      -> the helix user's crontab (scheduler jobs)
+Pass --dry-run to print what would be done.
+"""
+import json, os, pwd, subprocess, sys
+
+CFG = os.environ.get("HELIX_CONFIG", "/boot/config")
+DRY = "--dry-run" in sys.argv
+
+
+def run(*a, **k):
+    print("+", " ".join(a))
+    if DRY:
+        return subprocess.CompletedProcess(a, 0, "", "")
+    return subprocess.run(a, capture_output=True, text=True, **k)
+
+
+def users():
+    f = os.path.join(CFG, "users.json")
+    if not os.path.exists(f):
+        return
+    for name, u in json.load(open(f)).items():
+        try:
+            pwd.getpwnam(name)
+            continue                         # already there (e.g. warm restart)
+        except KeyError:
+            pass
+        gid = int(u.get("gid", u["uid"]))
+        run("groupadd", "-g", str(gid), name)           # may already exist: fine
+        cmd = ["useradd", "-u", str(u["uid"]), "-g", str(gid), "-s", u.get("shell", "/bin/bash"),
+               "-c", u.get("gecos", "")]
+        cmd += ["-m"] if u.get("home") and u["home"].startswith("/home/") else ["-M"]
+        r = run(*cmd, name)
+        if r.returncode != 0:
+            print("  useradd failed:", r.stderr.strip())
+            continue
+        if u.get("hash"):
+            run("usermod", "-p", u["hash"], name)
+        keys = [k for k in u.get("ssh_keys", []) if k.strip()]
+        if keys and not DRY:
+            home = pwd.getpwnam(name).pw_dir
+            os.makedirs(os.path.join(home, ".ssh"), mode=0o700, exist_ok=True)
+            ak = os.path.join(home, ".ssh", "authorized_keys")
+            open(ak, "w").write("\n".join(keys) + "\n")
+            os.chmod(ak, 0o600)
+            run("chown", "-R", f"{name}:{name}", os.path.join(home, ".ssh"))
+    sp = os.path.join(CFG, "smbpasswd")
+    if os.path.exists(sp) and os.path.getsize(sp) > 0:
+        run("pdbedit", "-i", f"smbpasswd:{sp}")
+
+
+def cron():
+    f = os.path.join(CFG, "crontab")
+    if os.path.exists(f) and os.path.getsize(f) > 0:
+        run("crontab", "-u", "helix", f)
+
+
+if __name__ == "__main__":
+    for step in (users, cron):
+        try:
+            step()
+        except Exception as e:                 # never block boot on a restore problem
+            print(f"{step.__name__} restore failed: {e}")

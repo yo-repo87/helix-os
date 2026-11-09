@@ -124,8 +124,11 @@ def list_templates(
 
     # The CA catalog has thousands of apps: send only what a card shows. The full
     # template (compose + variables) comes from /templates/{name} when one is opened.
-    return [{k: t.get(k) for k in ("name", "title", "description", "category", "icon", "port", "source_id")}
-            for t in templates]
+    def card(t: dict) -> dict:
+        c = {k: (t.get(k) or "") for k in ("name", "title", "description", "category", "icon", "source_id")}
+        c["port"] = t.get("port")
+        return c
+    return [card(t) for t in templates]
 
 
 @router.get("/templates/{name}")

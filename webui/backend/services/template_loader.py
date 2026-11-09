@@ -211,7 +211,7 @@ def _portainer_to_unified(item: dict, source_id: str) -> dict | None:
     if item_type not in (1, 3):
         return None
 
-    title = item.get("title", "")
+    title = item.get("title") or ""        # a JSON null is present-but-empty: .get(k, "") would keep None
     if not title:
         return None
 
@@ -220,7 +220,7 @@ def _portainer_to_unified(item: dict, source_id: str) -> dict | None:
     if not image:
         return None
 
-    desc  = item.get("description", "")
+    desc  = item.get("description") or ""
     cats  = item.get("categories", item.get("category", []))
     cat   = (cats[0] if isinstance(cats, list) and cats else str(cats)).title()
     icon  = item.get("logo", item.get("icon", ""))

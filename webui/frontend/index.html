@@ -2618,11 +2618,11 @@ function renderCatalog(templates, resetLimit = false) {
       <div class="app-card-header">
         <div class="app-icon">${icon}</div>
         <div>
-          <div class="app-card-title">${t.title}</div>
-          <div class="app-card-cat">${t.category}</div>
+          <div class="app-card-title">${_esc(t.title || t.name)}</div>
+          <div class="app-card-cat">${_esc(t.category)}</div>
         </div>
       </div>
-      <div class="app-card-desc">${t.description}</div>
+      <div class="app-card-desc">${_esc(t.description)}</div>
       <div class="app-card-footer">
         <span class="app-port">${t.port ? ':'+t.port : ''}</span>
         <button class="app-install-btn ${isInst?'installed':''}"
@@ -2667,12 +2667,12 @@ function renderInstalled(installed) {
 }
 
 function filterApps(q) {
-  const lq = q.toLowerCase();
-  const filtered = lq ? _allTemplates.filter(t =>
-    t.title.toLowerCase().includes(lq) ||
-    t.description.toLowerCase().includes(lq) ||
-    t.category.toLowerCase().includes(lq)
-  ) : _allTemplates;
+  const lq = (q || '').toLowerCase().trim();
+  // Every field is null-safe: one catalog entry with a missing description used to throw here,
+  // which silently aborted the filter so typing appeared to do nothing.
+  const has = (v) => String(v ?? '').toLowerCase().includes(lq);
+  const filtered = lq ? _allTemplates.filter(t => has(t.title) || has(t.name) || has(t.description) || has(t.category))
+                      : _allTemplates;
   renderCatalog(filtered, true);
 }
 

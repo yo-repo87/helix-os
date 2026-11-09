@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.16)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.18)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1285,6 +1285,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Pi-Hosted catalog paths (`/portainer/Files/AppData/Config/…`, `/portainer/Downloads`, `/portainer/TV`…) meant nothing on Helix | the catalog assumes a Raspberry Pi layout | `build/tools/convert-portainer-catalog.py` rewrites the catalog: app settings → `/mnt/user/appdata/<app>`, `Downloads` → `/mnt/user/downloads`, `TV/Movies/Music/Podcasts/Books/Comics/Pictures` → `/mnt/user/media/<Name>`; system paths (`/etc/localtime`, `/var/run/docker.sock`, `/dev/*`, `/proc`…) and named volumes untouched; 0 `/portainer` left; 388 binds + 2 env defaults + 1 note changed (Dockge's same-path-inside-and-out stacks dir changed on both sides). Output `webui/backend/data/catalogs/pi-hosted-helix.json` ships in the image as default source `pi-hosted` (`url: bundled:…`). Regenerate: `python3 build/tools/convert-portainer-catalog.py --out webui/backend/data/catalogs/pi-hosted-helix.json`. The mapping lives in ONE place, `webui/backend/services/pathmap.py` (used by the converter and by the runtime loader for Pi-Hosted-style catalogs added later); the only app the runtime fallback can't fully fix is Dockge (same path inside and outside the container), which the bundled catalog handles. `/portainer/Files/Downloads` (Transmission) maps to the `downloads` share. |
 | Existing installs would never see a new default template source; a removed default would be resurrected | `load_sources()` returned the saved list untouched | `template_sources.seen` records which defaults were already offered: new defaults are added once, a removal sticks; the pre-existing defaults (`builtin`, `unraid-ca`) count as already offered |
 | App folder fields were free-text boxes; a value with `:` could rewrite a volume mapping; Docker would create missing folders as root | no validation; `_do_install` created any path | UI: share drop-down + folder box (suggests existing folders, a new name = "created on install", "Other path…" for anything else, warning when the share doesn't exist yet); server: `_validate_path_vars` (absolute, no `..`, no `:`/newlines) → 400, `_ensure_dirs` creates folders as the Helix user and only under `/mnt` |
+| Catalog search box did nothing (typing "plex" left the list unchanged) | 4 Pi-Hosted entries (Headphones, SmokePing, SyncThing, UniFi Controller) have `"description": null`; the loader used `item.get("description", "")`, which only defaults a *missing* key, so `None` reached the browser, where `t.description.toLowerCase()` threw inside `filterApps` — the exception silently aborted the filter | loader uses `item.get(k) or ""`; `GET /api/apps/templates` always returns strings; `filterApps`/`renderCatalog` are null-safe (`String(v ?? '')`, `_esc`). Browser-tested with null/all-null entries, clearing, paging. |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)
@@ -1301,6 +1302,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **Debian bookworm facts:** no `docker-compose-plugin`/v2; `docker.io` 20.10; `samba` 4.17; `wireguard-tools` ok. Containers need `apparmor` + `iptables`.
 - **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
 - **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
+- **`dict.get(key, default)` does NOT replace a JSON `null`** — it only covers a missing key. For third-party data use `item.get(key) or default`, and never call string methods on a field you didn't validate. A single bad row in a list that a UI filters can silently kill the whole feature (the exception aborts the handler).
 - **`apiFetch(path)` is GET-only (it ignores a second argument). Use `fetchJSON(path, {method, body})` for POST/PUT/DELETE** — misuse fails silently.
 - **RAM-root state checklist:** `/etc/passwd|shadow|group`, Samba passdb, crontab, `/etc/wireguard`, `/etc/docker/daemon.json`, anything under `/var`. If a feature writes there, it needs a copy in `HELIX_CONFIG` and a restore step (`helix-restore-state`).
 - **`ip rule` priorities must be < 32766** (`main`). Never reuse a routing-table id as a priority. Check with `ip route get <dst> from <src> iif <bridge>`.

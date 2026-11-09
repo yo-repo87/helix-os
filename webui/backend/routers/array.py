@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import asyncio, subprocess, os, json, re, tempfile
+import asyncio, glob, subprocess, os, json, re, tempfile
 from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE
 
 router = APIRouter(prefix="/api/array", tags=["array"])
@@ -91,7 +91,7 @@ def drives():
             dev = None
             continue
         if section and line.startswith("device="):
-            dev = line.split("=", 1)[1].strip()
+            dev = os.path.realpath(line.split("=", 1)[1].strip())
             if not section.startswith("disk"):
                 continue
             mnt = f"{MNT_BASE}/{section}"
@@ -131,6 +131,21 @@ def drives():
 
 
 # ── Disk assignment (writes disks.cfg, consumed by helix-array-start) ─────────
+
+def _stable_path(dev: str) -> str:
+    """A boot-stable name for a disk: /dev/sdX letters are assigned in probe order
+    and change between boots (a reboot once turned the 32 GB cache disk into 'sdb'
+    and a 14 TB data disk into 'sda'), which would silently swap the parity, data
+    and cache roles. Prefer a serial-based /dev/disk/by-id link; wwn-* is the last
+    resort and the plain device name the fallback."""
+    real = os.path.realpath(dev)
+    links = [l for l in glob.glob("/dev/disk/by-id/*")
+             if "-part" not in l and os.path.realpath(l) == real]
+    def rank(l):
+        n = os.path.basename(l)
+        return (n.startswith(("wwn-", "nvme-eui.", "nvme-uuid.")), not n.startswith(("ata-", "nvme-", "scsi-", "usb-")), n)
+    return sorted(links, key=rank)[0] if links else dev
+
 
 class AssignReq(BaseModel):
     parity: list[str] = []   # device paths, e.g. ["/dev/sdb"]
@@ -181,6 +196,9 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     all_devs = req.parity + req.data + req.cache
     if len(set(all_devs)) != len(all_devs):
         raise HTTPException(400, "A device was assigned to more than one slot.")
+    req.parity = [_stable_path(d) for d in req.parity]
+    req.data   = [_stable_path(d) for d in req.data]
+    req.cache  = [_stable_path(d) for d in req.cache]
     lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
     for i, dev in enumerate(req.parity, 1):
         lines += [f"[parity{i}]", f"device={dev}", ""]

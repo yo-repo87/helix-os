@@ -42,6 +42,7 @@ PIA_IFACE      = "pia0"
 PIA_WG_CONF    = f"/etc/wireguard/{PIA_IFACE}.conf"
 PIA_DOCKER_NET = "helix_pia"
 PIA_SUBNET     = "172.28.0.0/16"
+PIA_TABLE      = 51821   # routing table / rule priority for the container bridge
 PIA_BR         = "br_pia"
 
 PIA_TOKEN_URL   = "https://www.privateinternetaccess.com/gtoken/generateToken"
@@ -51,9 +52,24 @@ REGIONS_TTL     = 3600  # seconds
 _IS_ROOT = os.geteuid() == 0
 
 
-def _require_root():
-    if not _IS_ROOT:
-        raise HTTPException(503, "PIA management requires the backend to run as root")
+def _prun(*args, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a privileged command. The backend is the unprivileged helix user, which
+    has passwordless sudo, so no root-only gate is needed."""
+    return _run(*(args if _IS_ROOT else ("sudo", "-n", *args)), timeout=timeout)
+
+
+def _write_root_file(path: str, content: str, mode: str = "600") -> None:
+    """Write a root-owned file (e.g. /etc/wireguard/pia0.conf) via sudo."""
+    if _IS_ROOT:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(content)
+        os.chmod(path, int(mode, 8))
+        return
+    rc, _, err = _prun("mkdir", "-p", os.path.dirname(path))
+    r = subprocess.run(["sudo", "-n", "tee", path], input=content, capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        raise RuntimeError(f"cannot write {path}: {r.stderr.strip() or 'permission denied'}")
+    _prun("chmod", mode, path)
 
 
 def _run(*args, timeout: int = 30) -> tuple[int, str, str]:
@@ -183,7 +199,13 @@ def _build_wg_conf(privkey: str, peer_ip: str, dns: str,
         f"[Interface]\n"
         f"PrivateKey = {privkey}\n"
         f"Address = {peer_ip}/32\n"
-        f"DNS = {dns}\n\n"
+        # Do NOT take over the host: no default-route hijack and no DNS rewrite.
+        # Only traffic from the PIA Docker bridge subnet is routed through the tunnel.
+        f"Table = off\n"
+        f"PostUp = ip route replace default dev {PIA_IFACE} table {PIA_TABLE}; "
+        f"ip rule add from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}\n"
+        f"PostDown = ip rule del from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}; "
+        f"ip route flush table {PIA_TABLE}\n\n"
         f"[Peer]\n"
         f"PublicKey = {server_key}\n"
         f"AllowedIPs = 0.0.0.0/0, ::/0\n"
@@ -206,12 +228,12 @@ def _ensure_docker_net():
 
 
 def _setup_iptables():
-    subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], capture_output=True)
+    _prun("sysctl", "-w", "net.ipv4.ip_forward=1")
 
     nat_check = ["iptables", "-t", "nat", "-C", "POSTROUTING",
                  "-s", PIA_SUBNET, "-o", PIA_IFACE, "-j", "MASQUERADE"]
-    if _run(*nat_check)[0] != 0:
-        _run("iptables", "-t", "nat", "-A", "POSTROUTING",
+    if _prun(*nat_check)[0] != 0:
+        _prun("iptables", "-t", "nat", "-A", "POSTROUTING",
              "-s", PIA_SUBNET, "-o", PIA_IFACE, "-j", "MASQUERADE")
 
     for fwd in [
@@ -219,8 +241,8 @@ def _setup_iptables():
         ["-i", PIA_IFACE, "-o", PIA_BR, "-m", "state",
          "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
     ]:
-        if _run("iptables", "-C", "FORWARD", *fwd)[0] != 0:
-            _run("iptables", "-A", "FORWARD", *fwd)
+        if _prun("iptables", "-C", "FORWARD", *fwd)[0] != 0:
+            _prun("iptables", "-A", "FORWARD", *fwd)
 
 
 def _teardown_iptables():
@@ -233,7 +255,7 @@ def _teardown_iptables():
          "-i", PIA_IFACE, "-o", PIA_BR, "-m", "state",
          "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
     ]:
-        _run("iptables", *args)
+        _prun("iptables", *args)
 
 
 def _routed_containers() -> list[dict]:
@@ -315,7 +337,6 @@ class PiaSettings(BaseModel):
 
 @router.put("/settings")
 def save_settings(s: PiaSettings):
-    _require_root()
     updates: dict = {}
     if s.username:
         updates["USERNAME"] = s.username
@@ -333,7 +354,6 @@ class ConnectRequest(BaseModel):
 
 @router.post("/connect")
 def pia_connect(req: ConnectRequest):
-    _require_root()
     cfg = _load_cfg()
     username = cfg.get("USERNAME", "")
     password = cfg.get("PASSWORD", "")
@@ -362,12 +382,10 @@ def pia_connect(req: ConnectRequest):
             server_port=peer["server_port"],
         )
 
-        os.makedirs("/etc/wireguard", exist_ok=True)
-        Path(PIA_WG_CONF).write_text(conf)
-        os.chmod(PIA_WG_CONF, 0o600)
+        _write_root_file(PIA_WG_CONF, conf, "600")
 
-        _run("wg-quick", "down", PIA_IFACE)   # idempotent
-        rc, _, err = _run("wg-quick", "up", PIA_IFACE)
+        _prun("wg-quick", "down", PIA_IFACE)   # idempotent
+        rc, _, err = _prun("wg-quick", "up", PIA_IFACE)
         if rc != 0:
             raise RuntimeError(f"wg-quick up pia0 failed: {err.strip()}")
 
@@ -389,9 +407,8 @@ def pia_connect(req: ConnectRequest):
 
 @router.post("/disconnect")
 def pia_disconnect():
-    _require_root()
     _teardown_iptables()
-    _run("wg-quick", "down", PIA_IFACE)
+    _prun("wg-quick", "down", PIA_IFACE)
     _save_state({})
     return {"ok": True}
 
@@ -409,7 +426,6 @@ def available_containers():
 
 @router.post("/containers/{container_id}/route")
 def route_container(container_id: str):
-    _require_root()
     state = _load_state()
     if not state.get("region_id"):
         raise HTTPException(409, "Connect to PIA first before routing containers.")
@@ -422,7 +438,6 @@ def route_container(container_id: str):
 
 @router.delete("/containers/{container_id}/route")
 def unroute_container(container_id: str):
-    _require_root()
     rc, _, err = _run("docker", "network", "disconnect", PIA_DOCKER_NET, container_id)
     if rc != 0:
         raise HTTPException(500, err.strip())

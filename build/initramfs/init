@@ -130,7 +130,11 @@ msg "Found boot device: $USB_DEV"
 BOOT_FS_READONLY=false
 MOUNTED=false
 for fstype in vfat iso9660 auto; do
-    if mount -t "$fstype" -o ro,noatime "$USB_DEV" /run/helix/usb 2>/dev/null; then
+    # FAT has no unix owners: give the whole partition to uid/gid 1000 (the helix
+    # user) so the unprivileged web backend can write /boot/config. FAT only honours
+    # uid/gid at the first mount, never on a later remount.
+    mopts="ro,noatime"; [ "$fstype" = "vfat" ] && mopts="ro,noatime,uid=1000,gid=1000,fmask=0022,dmask=0022"
+    if mount -t "$fstype" -o "$mopts" "$USB_DEV" /run/helix/usb 2>/dev/null; then
         MOUNTED=true
         [ "$fstype" = "iso9660" ] && BOOT_FS_READONLY=true
         break

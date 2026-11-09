@@ -14,7 +14,7 @@ state="stopped"
 declare -a disk_info
 for i in "${!DATA_DISKS[@]}"; do
     name="${DATA_DISKS[$i]}"
-    dev="${DATA_DEVS[$i]}"
+    dev=$(readlink -f "${DATA_DEVS[$i]}")
     mnt="${DATA_MNTS[$i]}"
 
     present="no";  [ -b "$dev" ]             && present="yes"
@@ -36,7 +36,7 @@ done
 declare -a cache_info
 for i in "${!CACHE_DISKS[@]}"; do
     name="${CACHE_DISKS[$i]}"
-    dev="${CACHE_DEVS[$i]}"
+    dev=$(readlink -f "${CACHE_DEVS[$i]}")
     mnt="${CACHE_MNTS[$i]}"
     present="no";  [ -b "$dev" ]             && present="yes"
     mounted="no";  mountpoint -q "$mnt" 2>/dev/null && mounted="yes"
@@ -52,7 +52,7 @@ done
 # ── Gather per-parity-drive info (parity1, parity2 mount at $MNTBASE/parityN) ──
 declare -a parity_info
 for i in "${!PARITY_DEVS[@]}"; do
-    dev="${PARITY_DEVS[$i]}"
+    dev=$(readlink -f "${PARITY_DEVS[$i]}")
     name="parity$((i + 1))"
     mnt="${MNTBASE}/$name"
     present="no";  [ -b "$dev" ]             && present="yes"

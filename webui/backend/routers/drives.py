@@ -61,7 +61,7 @@ def _assigned_map() -> dict:
             section = m.group(1)
             continue
         if section and line.startswith("device="):
-            dev = line.split("=", 1)[1].strip()
+            dev = os.path.realpath(line.split("=", 1)[1].strip())   # by-id link -> current /dev/sdX
             if section.startswith("parity"):
                 role = "parity"
             elif section.startswith(("cache", "pool")):

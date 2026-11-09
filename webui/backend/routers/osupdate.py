@@ -205,7 +205,10 @@ def _pick_release(repo: str, channel: str, token: str) -> dict:
         cands = [r for r in cands if not r.get("prerelease")]
     if not cands:
         raise RuntimeError("no suitable release found")
-    cands.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+    # Order by version, not by date: releases tagged from the same commit share
+    # one published_at, and a timestamp tie made the updater pick the wrong one.
+    cands.sort(key=lambda r: (_ver_tuple((r.get("tag_name") or "").lstrip("vV")),
+                              r.get("published_at") or ""), reverse=True)
     return cands[0]
 
 

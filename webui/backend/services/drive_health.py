@@ -51,7 +51,8 @@ def _parse_disks_cfg() -> list[dict]:
                 drives.append({"name": section, "device": None, "role": role})
             continue
         if section and line.startswith("device=") and drives and drives[-1]["name"] == section:
-            drives[-1]["device"] = line.split("=", 1)[1].strip()
+            # disks.cfg holds a stable /dev/disk/by-id link; resolve to this boot's name
+            drives[-1]["device"] = os.path.realpath(line.split("=", 1)[1].strip())
 
     return [d for d in drives if d["device"]]
 

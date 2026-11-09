@@ -1168,7 +1168,7 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
         <span id="pia-region-badge" style="font-size:11px;color:var(--fg-dim);margin-left:8px"></span>
         <div class="wg-iface-actions">
           <button id="pia-toggle-btn" onclick="piaToggle()">Connect</button>
-          <button onclick="showPiaSettings()">Settings</button>
+          <button id="pia-settings-btn" onclick="showPiaSettings()">Settings</button>
         </div>
       </div>
       <div class="wg-peers-hdr" style="display:flex;align-items:center">
@@ -2459,7 +2459,7 @@ function renderCatalog(templates) {
       <div class="app-card-footer">
         <span class="app-port">${t.port ? ':'+t.port : ''}</span>
         <button class="app-install-btn ${isInst?'installed':''}"
-          onclick="installApp('${t.name}', this)"
+          onclick="openAppForm('install', '${t.name}')"
           ${isInst ? 'disabled' : ''}>
           ${isInst ? '✓ Installed' : 'Install'}
         </button>
@@ -2488,6 +2488,7 @@ function renderInstalled(installed) {
       <div class="app-card-footer">
         <span class="app-port">${a.port ? ':'+a.port : ''}</span>
         <div style="display:flex;gap:5px">
+          <button class="ctr-btn" onclick="openAppForm('configure','${a.name}')" title="Environment variables, tokens, folders, ports">⚙ Configure</button>
           <button class="ctr-btn" onclick="appAction('${a.name}','${a.state==='running'?'stop':'start'}')">
             ${a.state === 'running' ? 'Stop' : 'Start'}
           </button>
@@ -2508,41 +2509,129 @@ function filterApps(q) {
   renderCatalog(filtered);
 }
 
-async function installApp(name, btn) {
-  if (!liveMode) { alert('Demo mode — connect backend for live install.'); return; }
-  btn.disabled = true; btn.textContent = 'Installing…';
+// ── App install / configure form ────────────────────────────────
+// Every template exposes variables (folders, tokens, environment, ports). The old
+// one-click install posted {vars: {}}, so there was nowhere to enter e.g. a
+// Cloudflare tunnel token or a Plex media folder, and no way to change them later.
+const _APP_VAR_TIPS = {
+  path:     'A folder on this server. It is created if it does not exist. Put data under /mnt/user/<share> so it lives on the array.',
+  env:      'Passed to the container as an environment variable.',
+  password: 'Passed to the container as an environment variable. It is stored in this app\'s compose file on this server.',
+  port:     'The port published on this server.',
+};
+function _esc(x) { return String(x ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+
+function appfAddEnv(k = '', v = '') {
+  document.getElementById('appf-env').insertAdjacentHTML('beforeend',
+    `<div class="appf-env-row" style="display:flex;gap:6px;margin-bottom:6px">
+       <input class="settings-input appf-ek" placeholder="NAME" value="${_esc(k)}" style="flex:1">
+       <input class="settings-input appf-ev" placeholder="value" value="${_esc(v)}" style="flex:2">
+       <button class="ctr-btn" onclick="this.parentElement.remove()" title="Remove">✕</button></div>`);
+}
+function appfAddVol(h = '', c = '', ro = false) {
+  document.getElementById('appf-vol').insertAdjacentHTML('beforeend',
+    `<div class="appf-vol-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+       <input class="settings-input appf-vh" placeholder="/mnt/user/media" value="${_esc(h)}" style="flex:2">
+       <span style="color:var(--fg-dim)">→</span>
+       <input class="settings-input appf-vc" placeholder="/data (inside the container)" value="${_esc(c)}" style="flex:2">
+       <label style="font-size:11px;color:var(--fg-muted);white-space:nowrap"><input type="checkbox" class="appf-vr" ${ro ? 'checked' : ''}> read-only</label>
+       <button class="ctr-btn" onclick="this.parentElement.remove()" title="Remove">✕</button></div>`);
+}
+
+async function openAppForm(mode, name) {
+  if (!liveMode) { alert('Demo mode — connect backend.'); return; }
+  let title, vars, extras = {env: {}, volumes: []}, note = '';
   try {
-    const r = await fetch(API + '/api/apps/install', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name, vars: {}})
-    });
-    if (!r.ok) { throw new Error(await r.text()); }
-    // Poll install-status until done or error
-    let attempts = 0;
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const s = await apiFetch(`/api/apps/${name}/install-status`);
-        if (s.state === 'installed') {
-          clearInterval(poll);
-          btn.textContent = 'Installed'; btn.classList.add('installed');
-          setTimeout(loadApps, 1000);
-        } else if (s.state === 'error') {
-          clearInterval(poll);
-          btn.disabled = false; btn.textContent = 'Install';
-          alert(`Install failed:\n${s.error || 'Unknown error'}`);
-        } else if (attempts > 120) {
-          clearInterval(poll);
-          btn.disabled = false; btn.textContent = 'Install';
-          alert('Install timed out — check container logs.');
-        }
-      } catch { /* status not ready yet, keep polling */ }
-    }, 2500);
-  } catch(e) {
-    btn.disabled = false; btn.textContent = 'Install';
-    alert(`Install failed: ${e.message}`);
-  }
+    if (mode === 'install') {
+      const t = await apiFetch(`/api/apps/templates/${encodeURIComponent(name)}`);
+      title = `Install ${t.title}`; vars = (t.vars || []).map(v => ({...v, value: v.default}));
+    } else {
+      const c = await apiFetch(`/api/apps/${encodeURIComponent(name)}/config`);
+      title = `Configure ${c.title}`; vars = c.vars || []; extras = c.extras || extras;
+      if (!c.template_available) note = 'This app\'s template source is no longer available, so its settings cannot be changed. Re-enable the source first.';
+    }
+  } catch (e) { alert('Could not load the app settings: ' + e.message); return; }
+
+  const rows = vars.map(v => {
+    const type = v.type === 'password' ? 'password' : v.type === 'port' ? 'number' : 'text';
+    const tip = _APP_VAR_TIPS[v.type] || _APP_VAR_TIPS.env;
+    return `<div class="settings-row">
+        <label class="settings-label">${_esc(v.label || v.key)}${tipHtml(tip)}</label>
+        <input class="settings-input appf-var" data-key="${_esc(v.key)}" type="${type}" value="${_esc(v.value)}"
+               placeholder="${_esc(v.default)}" ${v.type === 'password' ? 'autocomplete="new-password"' : ''}>
+      </div>`;
+  }).join('') || '<div style="font-size:12px;color:var(--fg-dim)">This app has no preset settings. Add anything it needs below.</div>';
+
+  const body = `<div style="max-height:62vh;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px">
+      ${note ? `<div style="color:var(--warn);font-size:12px">${note}</div>` : ''}
+      ${rows}
+      <div class="form-label" style="margin-top:6px">Extra environment variables${tipHtml('Tokens, claim codes, timezone and so on. These are added to the container\'s environment and override a preset with the same name.')}</div>
+      <div id="appf-env"></div>
+      <div><button class="ctr-btn" onclick="appfAddEnv()">+ Add variable</button></div>
+      <div class="form-label" style="margin-top:6px">Extra folders${tipHtml('Map a folder on this server into the container, e.g. your media library at /mnt/user/media to /data. Read-only stops the app from changing the files.')}</div>
+      <div id="appf-vol"></div>
+      <div><button class="ctr-btn" onclick="appfAddVol()">+ Add folder</button></div>
+      <div id="appf-msg" style="font-size:12px;color:var(--err)"></div>
+    </div>`;
+  const actions = mode === 'install'
+    ? `<button class="ctr-btn" onclick="closeModal()">Cancel</button>
+       <button class="settings-btn primary" onclick="appfSubmit('install','${name}')">Install</button>`
+    : `<button class="ctr-btn" style="color:var(--err);margin-right:auto" onclick="appfRemove('${name}')">Remove app…</button>
+       <button class="ctr-btn" onclick="closeModal()">Cancel</button>
+       <button class="settings-btn primary" onclick="appfSubmit('configure','${name}')" ${note ? 'disabled' : ''}>Save &amp; restart</button>`;
+  showModal(title, body, actions);
+  Object.entries(extras.env || {}).forEach(([k, v]) => appfAddEnv(k, v));
+  (extras.volumes || []).forEach(v => appfAddVol(v.host, v.container, v.ro));
+}
+
+function appfCollect() {
+  const vars = {};
+  document.querySelectorAll('.appf-var').forEach(i => { vars[i.dataset.key] = i.value; });
+  const env = {};
+  document.querySelectorAll('.appf-env-row').forEach(r => {
+    const k = r.querySelector('.appf-ek').value.trim(); if (k) env[k] = r.querySelector('.appf-ev').value;
+  });
+  const volumes = [...document.querySelectorAll('.appf-vol-row')].map(r => ({
+    host: r.querySelector('.appf-vh').value.trim(), container: r.querySelector('.appf-vc').value.trim(),
+    ro: r.querySelector('.appf-vr').checked,
+  })).filter(v => v.host || v.container);
+  return {vars, extras: {env, volumes}};
+}
+
+async function appfSubmit(mode, name) {
+  const {vars, extras} = appfCollect();
+  const msg = document.getElementById('appf-msg');
+  try {
+    const r = mode === 'install'
+      ? await fetch(API + '/api/apps/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, vars, extras})})
+      : await fetch(API + `/api/apps/${encodeURIComponent(name)}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({vars, extras})});
+    if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (_) {} throw new Error(d || ('HTTP ' + r.status)); }
+  } catch (e) { msg.textContent = e.message; return; }
+  closeModal();
+  watchAppStatus(name, mode === 'install' ? 'Install' : 'Reconfigure');
+}
+
+// Poll the background job; report the real error if it fails.
+function watchAppStatus(name, what) {
+  let attempts = 0;
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const s = await apiFetch(`/api/apps/${encodeURIComponent(name)}/install-status`);
+      if (s.state === 'installed') { clearInterval(poll); setTimeout(loadApps, 800); }
+      else if (s.state === 'error') { clearInterval(poll); loadApps(); alert(`${what} failed:\n${s.error || 'Unknown error'}`); }
+      else if (attempts > 180) { clearInterval(poll); alert(`${what} is taking a long time — check the app's logs.`); }
+    } catch { /* status not written yet */ }
+  }, 2500);
+  setTimeout(loadApps, 1500);
+}
+
+async function appfRemove(name) {
+  if (!confirm(`Remove ${name}?\n\nThe container and its compose file are deleted. Data in your folders is kept.`)) return;
+  const r = await fetch(API + `/api/apps/${encodeURIComponent(name)}?purge=true`, {method: 'DELETE'}).catch(() => null);
+  closeModal();
+  if (!r || !r.ok) { alert('Remove failed' + (r ? ` (HTTP ${r.status})` : '')); }
+  setTimeout(loadApps, 800);
 }
 
 async function appAction(name, action) {
@@ -4270,8 +4359,10 @@ function renderPia(pia) {
     dot.className = 'ctr-dot stopped';
     ipEl.textContent = '';
     badgeEl.textContent = 'Not configured';
-    btn.textContent = 'Configure';
+    // Not set up yet: ONE button. The separate Settings button opened the very same dialog.
+    btn.textContent = 'Set up PIA…';
     btn.onclick = showPiaSettings;
+    document.getElementById('pia-settings-btn').style.display = 'none';
     addBtn.disabled = true;
     document.getElementById('pia-containers').innerHTML =
       '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">Enter your PIA credentials in Settings to get started.</div>';
@@ -4279,6 +4370,7 @@ function renderPia(pia) {
   }
 
   btn.onclick = piaToggle;
+  document.getElementById('pia-settings-btn').style.display = '';
   const up = pia.connected;
   dot.className = 'ctr-dot ' + (up ? 'running' : 'stopped');
   ipEl.textContent = pia.peer_ip || '';
@@ -4336,37 +4428,44 @@ async function piaUnrouteContainer(id) {
 }
 
 async function showPiaSettings() {
-  // Fetch current settings and regions in parallel
-  const [settingsRes, regionsRes] = await Promise.allSettled([
-    apiFetch('/api/pia/settings'),
-    _piaRegions.length ? Promise.resolve(_piaRegions) : apiFetch('/api/pia/regions'),
-  ]);
-  const settings = settingsRes.status === 'fulfilled' ? settingsRes.value : {};
-  _piaRegions = regionsRes.status === 'fulfilled' ? regionsRes.value : [];
+  let settings = {}, regionsErr = '';
+  try { settings = await apiFetch('/api/pia/settings'); } catch (_) {}
+  if (!_piaRegions.length) {
+    try {
+      const rs = await apiFetch('/api/pia/regions');
+      _piaRegions = Array.isArray(rs) ? rs : [];
+      if (!_piaRegions.length) regionsErr = 'The server returned no locations.';
+    } catch (e) { regionsErr = 'Could not load the list of locations from PIA (' + e.message + ').'; }
+  }
 
-  const regionOptions = _piaRegions.map(r =>
-    `<option value="${r.id}" ${r.id === settings.region ? 'selected' : ''}>${r.name} (${r.country})</option>`
+  // Group by country so ~100 locations stay navigable; the saved region stays selected.
+  const byCountry = {};
+  _piaRegions.forEach(r => (byCountry[r.country || 'Other'] = byCountry[r.country || 'Other'] || []).push(r));
+  const regionOptions = Object.keys(byCountry).sort().map(c =>
+    `<optgroup label="${_esc(c)}">` + byCountry[c].sort((a, b) => a.name.localeCompare(b.name)).map(r =>
+      `<option value="${_esc(r.id)}" ${r.id === settings.region ? 'selected' : ''}>${_esc(r.name)}</option>`).join('') + '</optgroup>'
   ).join('');
+  const fallback = `<option value="${_esc(settings.region || 'us_east')}">${_esc(settings.region || 'us_east')} (saved default)</option>`;
 
   showModal('PIA Settings',
     `<div style="display:flex;flex-direction:column;gap:10px">
       <div class="settings-row">
-        <label class="settings-label">PIA Username</label>
-        <input class="settings-input" id="pia-user" value="${settings.username || ''}" placeholder="p1234567">
+        <label class="settings-label">PIA Username${tipHtml('Your regular PIA account name, like p1234567.')}</label>
+        <input class="settings-input" id="pia-user" value="${_esc(settings.username)}" placeholder="p1234567">
       </div>
       <div class="settings-row">
-        <label class="settings-label">PIA Password</label>
-        <input class="settings-input" id="pia-pass" type="password" value="${settings.password || ''}" placeholder="••••••••">
+        <label class="settings-label">PIA Password${tipHtml('Your regular PIA account password. It is stored on this server so the VPN can reconnect.')}</label>
+        <input class="settings-input" id="pia-pass" type="password" value="${_esc(settings.password)}" placeholder="••••••••" autocomplete="new-password">
       </div>
       <div class="settings-row">
-        <label class="settings-label">Region</label>
-        <select class="settings-select" id="pia-region" style="flex:1">
-          ${regionOptions || '<option value="us_east">US East (loading…)</option>'}
-        </select>
+        <label class="settings-label">Location${tipHtml('The PIA server location your routed containers exit from.')}</label>
+        <select class="settings-select" id="pia-region" style="flex:1">${regionOptions || fallback}</select>
       </div>
+      ${regionsErr ? `<div style="font-size:12px;color:var(--warn)">${_esc(regionsErr)}
+          <button class="ctr-btn" style="margin-left:6px" onclick="_piaRegions=[];showPiaSettings()">Retry</button></div>` : ''}
       <div style="font-size:11px;color:var(--fg-dim);line-height:1.5">
-        PIA credentials are your regular PIA account username and password.<br>
-        Containers are routed via the <code>helix_pia</code> Docker network.
+        Only containers you choose are routed through PIA (via the <code>helix_pia</code> Docker network);
+        this server's own traffic is not.
       </div>
     </div>`,
     `<button class="ctr-btn" onclick="closeModal()">Cancel</button>

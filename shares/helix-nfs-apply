@@ -20,7 +20,11 @@ cfg_sections() { grep -oP '(?<=^\[)[^\]]+' "$1" 2>/dev/null; }
 NFS_NETWORK=$(cfg_get "nfs" "ALLOWED_NETWORK" "$NFS_CFG" 2>/dev/null || true)
 NFS_NETWORK="${NFS_NETWORK:-192.168.0.0/16}"
 NFS_OPTIONS=$(cfg_get "nfs" "OPTIONS" "$NFS_CFG" 2>/dev/null || true)
-NFS_OPTIONS="${NFS_OPTIONS:-rw,sync,no_subtree_check,no_root_squash}"
+# Squash every client (root included) to the helix service user so files written over
+# NFS are owned like those written over SMB. no_root_squash made them root-owned and
+# unwritable for SMB users.
+HU=$(id -u helix 2>/dev/null || echo 65534); HG=$(id -g helix 2>/dev/null || echo 65534)
+NFS_OPTIONS="${NFS_OPTIONS:-rw,sync,no_subtree_check,all_squash,anonuid=$HU,anongid=$HG}"
 
 generate() {
 cat <<EOF

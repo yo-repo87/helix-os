@@ -88,18 +88,27 @@ while IFS= read -r section; do
    force directory mode = 0775
 EOF
 
+    # One service identity for all protocols (like Unraid's nobody:users): guests
+    # act as the helix user so files written over SMB, NFS and the web file manager
+    # can all be changed by each other. Without this, guests map to 'nobody', who
+    # cannot write the helix-owned share directory.
+    HAVE_HELIX=false; id helix >/dev/null 2>&1 && HAVE_HELIX=true
+
     if [[ "$sec" == "public" ]]; then
         echo "   public = yes"
         echo "   writable = yes"
         echo "   guest ok = yes"
+        $HAVE_HELIX && { echo "   force user = helix"; echo "   force group = helix"; }
     elif [[ "$sec" == "private" ]]; then
         echo "   public = no"
         echo "   writable = yes"
         echo "   valid users = @sambashare"
+        $HAVE_HELIX && echo "   force group = helix"
     else
         echo "   public = no"
         echo "   writable = yes"
         echo "   valid users = $sec"
+        $HAVE_HELIX && echo "   force group = helix"
     fi
 
     # Recycle bin (enabled by default for SMB shares)

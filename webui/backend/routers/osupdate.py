@@ -200,7 +200,13 @@ def _api_get_json(url: str, token: str):
 def _pick_release(repo: str, channel: str, token: str) -> dict:
     """Latest non-draft release; include pre-releases only for channel=beta."""
     rels = _api_get_json(f"{GH_API}/repos/{repo}/releases?per_page=20", token)
-    cands = [r for r in rels if not r.get("draft")]
+    # Only real update releases: tagged vX.Y.Z AND carrying the manifest. Other
+    # releases in the repo (e.g. 'images-2026.11.06', the installer images) parse as
+    # huge version numbers and must never be offered as an update.
+    cands = [r for r in rels
+             if not r.get("draft")
+             and re.match(r"^[vV]?\d+(\.\d+)+$", r.get("tag_name") or "")
+             and any(a.get("name") == "helix-release.json" for a in r.get("assets", []))]
     if channel != "beta":
         cands = [r for r in cands if not r.get("prerelease")]
     if not cands:

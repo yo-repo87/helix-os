@@ -208,8 +208,63 @@ def _substitute_vars(obj: Any, vars_map: dict) -> Any:
     return obj
 
 
-def _write_compose(app_dir: Path, template: dict, vars_map: dict) -> Path:
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _clean_extras(raw: dict | None) -> dict:
+    """Validate user-supplied extras: {"env": {KEY: value}, "volumes": [{host, container, ro}]}."""
+    raw = raw or {}
+    env = {}
+    for k, v in (raw.get("env") or {}).items():
+        k = str(k).strip()
+        if not k:
+            continue
+        if not _ENV_KEY_RE.match(k):
+            raise HTTPException(400, f"Invalid environment variable name: {k!r}")
+        env[k] = str(v)
+    vols = []
+    for v in raw.get("volumes") or []:
+        host, cont = str(v.get("host", "")).strip(), str(v.get("container", "")).strip()
+        if not host and not cont:
+            continue
+        if not host.startswith("/") or not cont.startswith("/"):
+            raise HTTPException(400, f"Folder paths must be absolute (start with /): {host!r} -> {cont!r}")
+        if ":" in host or ":" in cont:
+            raise HTTPException(400, "Folder paths cannot contain ':'")
+        vols.append({"host": host, "container": cont, "ro": bool(v.get("ro"))})
+    return {"env": env, "volumes": vols}
+
+
+def _read_extras(app_dir: Path) -> dict:
+    try:
+        return _clean_extras(json.loads((Path(app_dir) / "extras.json").read_text()))
+    except Exception:
+        return {"env": {}, "volumes": []}
+
+
+def _apply_extras(compose: dict, extras: dict) -> dict:
+    """Merge extras into the first service of the compose project."""
+    services = compose.get("services") or {}
+    if not services or not (extras.get("env") or extras.get("volumes")):
+        return compose
+    svc = services[next(iter(services))]
+    if extras.get("env"):
+        env = svc.get("environment") or {}
+        if isinstance(env, list):
+            env = dict(e.split("=", 1) for e in env if "=" in e)
+        env.update(extras["env"])
+        svc["environment"] = env
+    for v in extras.get("volumes", []):
+        spec = f'{v["host"]}:{v["container"]}' + (":ro" if v.get("ro") else "")
+        vols = svc.setdefault("volumes", [])
+        if spec not in vols:
+            vols.append(spec)
+    return compose
+
+
+def _write_compose(app_dir: Path, template: dict, vars_map: dict, extras: dict | None = None) -> Path:
     compose = _substitute_vars(template["compose"], vars_map)
+    compose = _apply_extras(compose, extras if extras is not None else _read_extras(app_dir))
     if "version" not in compose:
         compose = {"version": "3.8", **compose}
     dest = app_dir / "docker-compose.yml"
@@ -264,7 +319,7 @@ def _set_install_status(name: str, state: str, error: str = "") -> None:
     status_file.write_text(json.dumps({"state": state, "error": error}))
 
 
-def _do_install(name: str, vars_map: dict) -> None:
+def _do_install(name: str, vars_map: dict, extras: dict | None = None) -> None:
     app_dir = Path(APPS_STATE_DIR) / name
     app_dir.mkdir(parents=True, exist_ok=True)
     _set_install_status(name, "installing")
@@ -278,6 +333,13 @@ def _do_install(name: str, vars_map: dict) -> None:
         final_vars = {v["key"]: v["default"] for v in t.get("vars", [])}
         final_vars.update(vars_map)
         (app_dir / "vars.json").write_text(json.dumps(final_vars, indent=2))
+        extras = _clean_extras(extras)
+        (app_dir / "extras.json").write_text(json.dumps(extras, indent=2))
+        for ev in extras["volumes"]:
+            try:
+                Path(ev["host"]).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass   # e.g. an existing media mount we cannot create into; docker will report real problems
 
         # Ensure required host dirs
         for v_def in t.get("vars", []):
@@ -286,7 +348,7 @@ def _do_install(name: str, vars_map: dict) -> None:
                 if val:
                     Path(val).mkdir(parents=True, exist_ok=True)
 
-        _write_compose(app_dir, t, final_vars)
+        _write_compose(app_dir, t, final_vars, extras)
         rc, out, err = _docker_compose(app_dir, "up", "-d", "--pull", "always", timeout=300)
         if rc != 0:
             _set_install_status(name, "error", err.strip()[-500:] or out.strip()[-500:])
@@ -301,6 +363,7 @@ def _do_install(name: str, vars_map: dict) -> None:
 class InstallRequest(BaseModel):
     name: str
     vars: dict[str, str] = {}
+    extras: dict | None = None      # {"env": {...}, "volumes": [{host, container, ro}]}
 
 
 @router.post("/install")
@@ -311,8 +374,74 @@ def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
     if req.name in _installed_apps():
         raise HTTPException(409, f"'{req.name}' is already installed")
     _require_docker()
-    background_tasks.add_task(_do_install, req.name, req.vars)
+    _clean_extras(req.extras)    # fail fast (400) on bad input, before the background task
+    background_tasks.add_task(_do_install, req.name, req.vars, req.extras)
     return {"ok": True, "message": f"Installing {templates[req.name]['title']}…"}
+
+
+@router.get("/{name}/config")
+def get_app_config(name: str):
+    """Everything the Configure dialog needs: the template's variables with their
+    current values, plus the user's extra environment variables and folders."""
+    installed = _installed_apps()
+    if name not in installed:
+        raise HTTPException(404, f"'{name}' is not installed")
+    t = {x["name"]: x for x in load_all_templates()}.get(name)
+    cur = installed[name].get("vars", {})
+    tvars = [{**v, "value": cur.get(v["key"], v.get("default", ""))} for v in (t.get("vars", []) if t else [])]
+    return {"name": name, "title": t["title"] if t else name,
+            "template_available": t is not None,
+            "vars": tvars, "extras": _read_extras(installed[name]["dir"])}
+
+
+class ConfigUpdate(BaseModel):
+    vars: dict[str, str] = {}
+    extras: dict | None = None
+
+
+@router.put("/{name}/config")
+def set_app_config(name: str, req: ConfigUpdate, background_tasks: BackgroundTasks):
+    """Save new variables/extras, regenerate the compose file and recreate the
+    container so the change takes effect. Progress shows up in install-status."""
+    installed = _installed_apps()
+    if name not in installed:
+        raise HTTPException(404, f"'{name}' is not installed")
+    t = {x["name"]: x for x in load_all_templates()}.get(name)
+    if not t:
+        raise HTTPException(409, "The template this app came from is no longer available "
+                                 "(re-enable its source), so its configuration cannot be rebuilt.")
+    extras = _clean_extras(req.extras)
+    _require_docker()
+    app_dir = Path(installed[name]["dir"])
+    merged = {**installed[name].get("vars", {}), **req.vars}
+    background_tasks.add_task(_reconfigure, name, app_dir, t, merged, extras)
+    return {"ok": True, "message": f"Applying configuration to {t['title']}…"}
+
+
+def _reconfigure(name: str, app_dir: Path, t: dict, vars_map: dict, extras: dict) -> None:
+    _set_install_status(name, "installing")
+    try:
+        (app_dir / "vars.json").write_text(json.dumps(vars_map, indent=2))
+        (app_dir / "extras.json").write_text(json.dumps(extras, indent=2))
+        for v_def in t.get("vars", []):
+            if v_def.get("type") == "path" and vars_map.get(v_def["key"]):
+                try:
+                    Path(vars_map[v_def["key"]]).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+        for ev in extras["volumes"]:
+            try:
+                Path(ev["host"]).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        _write_compose(app_dir, t, vars_map, extras)
+        rc, out, err = _docker_compose(app_dir, "up", "-d", "--force-recreate", timeout=300)
+        if rc != 0:
+            _set_install_status(name, "error", err.strip()[-500:] or out.strip()[-500:])
+        else:
+            _set_install_status(name, "installed")
+    except Exception as exc:
+        _set_install_status(name, "error", str(exc))
 
 
 @router.get("/{name}/install-status")

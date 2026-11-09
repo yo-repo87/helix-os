@@ -188,7 +188,10 @@ if [ "$BOOT_FS_READONLY" = "false" ]; then
     mount -o remount,rw "$USB_DEV" /run/helix/usb
 fi
 mkdir -p /root/boot
-mount --bind /run/helix/usb /root/boot
+# --move, not --bind: a bind leaves the original mount stranded at /run/helix/usb
+# in the discarded initramfs tree. Nothing can reach it to unmount it, so the boot
+# partition could never be released (no resize, fsck or reflash while running).
+mount --move /run/helix/usb /root/boot
 
 # ── 9. Move pseudo-filesystems into new root ─────────────────────────────────
 mkdir -p /root/dev /root/proc /root/sys /root/run

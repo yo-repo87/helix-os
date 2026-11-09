@@ -1,0 +1,30 @@
+#!/bin/bash
+# helix-array-autostart — start the array at boot when "Start array on boot" is enabled
+# (autostart=yes in $HELIX_CONFIG/array.cfg). Waits for the assigned disks to appear
+# first: USB/SATA/virtio devices can take a few seconds to enumerate after boot.
+source "$(dirname "$0")/helix-array-lib.sh"
+
+CFG="$HELIX_CONFIG/array.cfg"
+if ! grep -q '^autostart=yes' "$CFG" 2>/dev/null; then
+    helix_log "Array autostart is off (enable it under Array Controls)."
+    exit 0
+fi
+
+load_disk_config
+if [ $(( ${#DATA_DEVS[@]} + ${#PARITY_DEVS[@]} + ${#CACHE_DEVS[@]} )) -eq 0 ]; then
+    helix_log "Array autostart: no disks assigned — nothing to start."
+    exit 0
+fi
+
+for _ in $(seq 1 45); do                       # up to ~90 s
+    missing=0
+    for d in "${DATA_DEVS[@]}" "${PARITY_DEVS[@]}" "${CACHE_DEVS[@]}"; do
+        [ -b "$d" ] || missing=1
+    done
+    [ "$missing" = 0 ] && break
+    sleep 2
+done
+[ "$missing" = 0 ] || helix_log "Array autostart: some assigned disks are missing; starting with what is present."
+
+helix_log "Array autostart: starting the array…"
+exec "$(dirname "$0")/helix-array-start"

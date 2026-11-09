@@ -175,8 +175,8 @@ def rename_path(req: RenameRequest):
 # ── Recycle bin ───────────────────────────────────────────────────────────────
 # Samba VFS recycle places deleted files at <share_root>/.recycle/<user>/<orig_path>
 
-RECYCLE_ROOTS = ["/mnt/user", "/mnt/disk1", "/mnt/disk2", "/mnt/disk3",
-                 "/mnt/disk4", "/mnt/disk5", "/mnt/disk6", "/mnt/cache"]
+RECYCLE_ROOTS = (["/mnt/user"] + [f"/mnt/disk{i}" for i in range(1, 29)]
+                 + [f"/mnt/cache{i}" for i in range(1, 5)])      # helix-array-start mounts cache1, cache2, …
 
 
 def _walk_recycle(root: Path) -> list[dict]:

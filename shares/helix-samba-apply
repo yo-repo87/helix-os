@@ -115,7 +115,7 @@ EOF
     recycled=$(cfg_get "$section" "recycle_bin" "$SHARES_CFG")
     if [[ "${recycled:-yes}" == "yes" ]]; then
         echo "   vfs objects = fruit streams_xattr recycle"
-        echo "   recycle:repository = .Recycle.Bin"
+        echo "   recycle:repository = .recycle/%U"
         echo "   recycle:keeptree = yes"
         echo "   recycle:versions = yes"
     fi

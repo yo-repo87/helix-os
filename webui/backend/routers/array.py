@@ -147,6 +147,42 @@ def _stable_path(dev: str) -> str:
     return sorted(links, key=rank)[0] if links else dev
 
 
+AUTOSTART_CFG = os.path.join(HELIX_CONFIG, "array.cfg")
+
+
+def _autostart_enabled() -> bool:
+    try:
+        return any(l.strip() == "autostart=yes" for l in open(AUTOSTART_CFG).read().splitlines())
+    except OSError:
+        return False
+
+
+class AutostartReq(BaseModel):
+    enabled: bool
+
+
+@router.get("/autostart")
+def get_autostart():
+    return {"enabled": _autostart_enabled()}
+
+
+@router.post("/autostart")
+def set_autostart(req: AutostartReq):
+    """"Start array on boot". Stored in the persistent config; read by helix-array-autostart."""
+    try:
+        os.makedirs(os.path.dirname(AUTOSTART_CFG), exist_ok=True)
+        # keep any other lines a future version may add
+        try:
+            keep = [l for l in open(AUTOSTART_CFG).read().splitlines() if not l.startswith("autostart=")]
+        except OSError:
+            keep = []
+        with open(AUTOSTART_CFG, "w") as f:
+            f.write("\n".join(keep + [f"autostart={'yes' if req.enabled else 'no'}"]) + "\n")
+    except OSError as e:
+        return {"ok": False, "error": f"cannot write {AUTOSTART_CFG}: {e}"}
+    return {"ok": True, "enabled": req.enabled}
+
+
 class AssignReq(BaseModel):
     parity: list[str] = []   # device paths, e.g. ["/dev/sdb"]
     data:   list[str] = []   # device paths for data disks

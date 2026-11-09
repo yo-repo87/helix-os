@@ -266,7 +266,7 @@ fi
 for helper in \
     /build/array/sbin/helix-array-lib.sh \
     /build/array/sbin/helix-array-start /build/array/sbin/helix-array-stop \
-    /build/array/sbin/helix-array-status \
+    /build/array/sbin/helix-array-status /build/array/sbin/helix-array-autostart \
     /build/array/sbin/helix-parity-check /build/array/sbin/helix-parity-rebuild \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
     /build/gpu/setup-ai-gpu.sh; do
@@ -381,6 +381,26 @@ ExecStart=/usr/local/sbin/helix-firstboot
 WantedBy=multi-user.target
 FBSVC
 systemctl enable helix-firstboot 2>/dev/null || echo "  (helix-firstboot enable deferred)"
+
+# "Start array on boot" (Unraid parity): runs after config + users are restored and the
+# network is up; a no-op unless autostart=yes in /boot/config/array.cfg.
+cat > /etc/systemd/system/helix-array-autostart.service <<'ASSVC'
+[Unit]
+Description=Helix OS — start the array on boot (if enabled)
+After=helix-firstboot.service local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+Environment=HELIX_CONFIG=/boot/config
+ExecStart=/usr/local/sbin/helix-array-autostart
+
+[Install]
+WantedBy=multi-user.target
+ASSVC
+systemctl enable helix-array-autostart 2>/dev/null || echo "  (helix-array-autostart enable deferred)"
 echo "  installed /usr/local/sbin/helix-firstboot + service"
 
 # Fallback: DHCP on any wired interface, so the machine is reachable out of the

@@ -24,7 +24,9 @@ def _vnstat_available() -> bool:
 
 def _run_vnstat(*args) -> dict | None:
     try:
-        r = subprocess.run(["vnstat", "--json"] + list(args),
+        # --json must come AFTER the period flag: `vnstat --json -d` prints plain
+        # text ("Not enough data available yet"), `vnstat -d --json` prints JSON.
+        r = subprocess.run(["vnstat", *args, "--json"],
                            capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
             return json.loads(r.stdout)

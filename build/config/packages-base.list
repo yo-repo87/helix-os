@@ -88,6 +88,7 @@ KERNEL_PKG_PLACEHOLDER
 
 # ── File sharing (SMB / NFS / mDNS) ───────────────────────────────────────────
 samba
+samba-vfs-modules
 smbclient
 nfs-kernel-server
 avahi-daemon

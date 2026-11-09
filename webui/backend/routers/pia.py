@@ -31,8 +31,9 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/pia", tags=["pia"])
 
-HELIX_CONFIG = os.getenv("HELIX_CONFIG", "/etc/helix")
-STATE_DIR   = os.getenv("STATE_DIR",   "/var/lib/helix")
+# Shared paths (persistent /boot/config + the writable state dir). These two used to
+# define their own /etc/helix and /var/lib/helix, which the unprivileged backend cannot write.
+from config import HELIX_CONFIG, STATE_DIR
 
 PIA_CFG           = os.path.join(HELIX_CONFIG, "pia.cfg")
 PIA_STATE_FILE    = os.path.join(STATE_DIR,   "pia_state.json")

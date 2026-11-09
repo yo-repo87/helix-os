@@ -224,8 +224,16 @@ def _portainer_to_unified(item: dict, source_id: str) -> dict | None:
         elabel = e.get("label", ekey)
         edef   = str(e.get("default", e.get("value", "")))
         etype  = "password" if e.get("preset") is False and "password" in elabel.lower() else "env"
+        entry  = {"key": ekey, "label": elabel, "default": edef, "type": etype}
+        sel = e.get("select")
+        if isinstance(sel, list) and sel:               # Portainer "select": [{text, value, default?}]
+            vals = [str(o.get("value", "")) for o in sel if isinstance(o, dict)]
+            if vals:
+                entry["choices"] = vals
+                entry["default"] = next((str(o.get("value", "")) for o in sel
+                                         if isinstance(o, dict) and o.get("default")), vals[0])
         if ekey:
-            vars_list.append({"key": ekey, "label": elabel, "default": edef, "type": etype})
+            vars_list.append(entry)
             compose_env[ekey] = f"{{{{{ekey}}}}}"
 
     svc: dict[str, Any] = {"image": image, "container_name": name}
@@ -496,7 +504,16 @@ def _ca_app_to_template(app: dict, name: str, source_id: str) -> dict | None:
         elif ctype in ("variable", "env") and target:
             # Mask secrets even when the template author forgot to (tokens, keys, passwords).
             secret = mask or bool(re.search(r"PASS|SECRET|TOKEN|API_?KEY|PRIVATE", target.upper()))
-            key = add_var(target, {**base, "type": "password" if secret else "env"})
+            var = {**base, "type": "password" if secret else "env"}
+            # Unraid convention: Default="a|b|c" is a dropdown of choices (the current
+            # value, else the first, is selected) — NOT the literal string "a|b|c".
+            parts = [x.strip() for x in default.split("|")]
+            # An empty entry (e.g. "|oidc|ldap") is a legitimate "unset" choice.
+            if len(parts) > 1 and any(parts) and " | " not in default:     # " | " = prose, not a list
+                cur = str(item.get("value") or "").strip()
+                var["choices"] = parts
+                var["default"] = cur if cur in parts else parts[0]
+            key = add_var(target, var)
             env[target] = f"{{{{{key}}}}}"
         # Label / unknown types are Unraid UI metadata only
 
@@ -606,10 +623,24 @@ def load_all_templates(source_filter: str | None = None) -> list[dict]:
             items = []
 
         for t in items:
-            # Deduplicate by name: built-in wins over external
             n = t.get("name", "")
             if n in seen_names:
-                continue
+                # Same app name in another source. Dropping it silently meant the big
+                # Unraid CA catalog hid every same-named app from a source the user added
+                # on purpose. Keep it, under a distinct name, labelled with its source.
+                import copy
+                t = copy.deepcopy(t)
+                new = f"{n}-{src['id']}"
+                for svc in (t.get("compose", {}).get("services", {}) or {}).values():
+                    if svc.get("container_name") == n:
+                        svc["container_name"] = new
+                svcs = t.get("compose", {}).get("services")
+                if svcs and n in svcs:
+                    t["compose"]["services"] = {(new if k == n else k): v for k, v in svcs.items()}
+                t["name"], t["title"] = new, f"{t.get('title', n)} ({src.get('name', src['id'])})"
+                n = new
+                if n in seen_names:
+                    continue
             seen_names.add(n)
             all_templates.append(t)
 

@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.22)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.23)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1294,6 +1294,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Network sidebar link showed the dashboard (no page existed); backend config API unused, looked for its script at a path that does not exist in the image, ran without root, VLANs were created but never attached | `#network` was not in `SECTION_IDS`; `routers/network.py` pointed `NETWORK_SBIN` at `../../../../network` | New Network page (`#network-section`): live interfaces (kind, state, MAC, addresses, speed, MTU, rx/tx + rates), settings form (DHCP/static, DNS, domain, MTU/jumbo, bonding, bridge, VLAN, mDNS) with server + client validation (`_validate`: IPv4/mask/gateway-in-subnet/MTU/bond ports; nothing unvalidated reaches `network.cfg`), **confirm-or-revert safety net** (`PUT /config` backs up `network.cfg`, applies, and reverts by itself after 90 s unless `POST /confirm`; the yellow `#net-pending` bar shows on every page; survives a backend restart), routing table + persistent static routes (`network-routes.cfg`, read by `helix-apply-network`), DNS in use, diagnostics (ping/DNS per server/traceroute with strict host validation), listening ports (`ss -tulnp` via sudo). `NETWORK_SBIN` resolves to `/usr/local/sbin`; apply runs via `services/privileged.py`; the apply script now attaches the VLAN to its parent and writes a `.network` for it; `/status` (dashboard tile) no longer calls the script because that dropped `rx_mb`/`tx_mb` |
 | Opening or reloading the page on `#files` / `#network` (any route whose loader uses variables defined in a later script block) failed with "Cannot access 'x' before initialization" | `updateSections()` ran at script *parse* time, before the later blocks had defined their `const`s | it now runs on `DOMContentLoaded`. Rule: never call route loaders while the script is still being evaluated |
 | Static-IP fields always visible; "Keep/Undo" bar could never hide | `.net-row{display:flex}` and `#net-pending{display:flex}` beat the `hidden` attribute (same trap as the demo banner) | `[hidden]{display:none}` rules for each class that sets `display`; found by the browser test, not by reading |
+| Array, Shares and Docker sidebar links showed the same page as Dashboard | they had no section in `SECTION_IDS`, so every one of them fell through to the dashboard (which already holds the array, shares and containers tiles) | links removed. Audit method: click every `a.nav-item` on the VM and fingerprint the visible `main > *` ids; any two links with the same fingerprint are duplicates (only that one group existed). Re-run it whenever a link is added |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)
@@ -1337,7 +1338,7 @@ Released and verified on the VM: **2.0.13** (every version 2.0.1 → 2.0.13 was 
 Verified working end to end on the VM: Unraid CA catalog (4 809 apps) + a custom Pi-Hosted source (261) in one catalog, both persisting across reboots, PIA connect + container routing (exit IP differs from the host; host route/DNS/IP untouched; routed app still reachable from the LAN), app install/Configure/extras/Remove, array (data+parity+cache by serial), parity sync with data, SMB + NFS read/write interchange, Docker app install/logs/stop/start/remove with image data on the cache disk, settings persistence across reboots, IOMMU boot flags, all 21 UI pages without JS errors.
 
 Open items:
-- **Sidebar tabs without pages:** `#array`, `#shares`, `#docker`, `#dashboard` all show the same dashboard (only `SECTION_IDS` routes get their own page). ZFS has a page but ZFS is only in `packages-full.list`, so images say "ZFS not available". Decide: dedicated Array/Shares/Docker pages (like Unraid's Main/Shares/Docker tabs) and ZFS in the image (Debian needs `contrib` + `zfs-dkms` + kernel headers).
+- **ZFS:** the ZFS page exists but `zfsutils-linux` is only in `packages-full.list`, so images say "ZFS not available". Decide whether to ship ZFS in the image (Debian needs `contrib` + `zfs-dkms` + kernel headers).
 - **REST API is unauthenticated** (only `/mcp` checks the bearer). The UI sends no token. Needs login/session + first-boot password decision.
 - **VMs:** libvirt/qemu are not in the image (`/api/vms/` returns `available:false`); GPU passthrough UI is untested on hardware.
 - Portainer **stack templates (type 3)** — 36 of 297 Pi-Hosted entries — are skipped (no single image).

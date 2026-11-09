@@ -27,6 +27,9 @@ dosfstools
 xfsprogs
 e2fsprogs
 btrfs-progs
+mergerfs
+snapraid
+fuse3
 gdisk
 parted
 
@@ -66,6 +69,7 @@ tcpdump
 # ── Misc ─────────────────────────────────────────────────────────────────────
 sudo
 ca-certificates
+openssl
 locales
 tzdata
 rsync

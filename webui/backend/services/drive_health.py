@@ -45,8 +45,10 @@ def _parse_disks_cfg() -> list[dict]:
         if m:
             section = m.group(1)
             if section not in ("sharedefaults",):
-                drives.append({"name": section, "device": None,
-                                "role": "parity" if section.startswith("parity") else "data"})
+                role = ("parity" if section.startswith("parity")
+                        else "cache" if section.startswith(("cache", "pool"))
+                        else "data")
+                drives.append({"name": section, "device": None, "role": role})
             continue
         if section and line.startswith("device=") and drives and drives[-1]["name"] == section:
             drives[-1]["device"] = line.split("=", 1)[1].strip()

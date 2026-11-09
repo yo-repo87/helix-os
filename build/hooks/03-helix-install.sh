@@ -24,12 +24,13 @@ apt-get install -y --no-install-recommends python3-venv python3-dev gcc 2>/dev/n
 mkdir -p "$HIVE_DIR"
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet || echo "  WARN: pip self-upgrade failed (continuing)"
-# Non-fatal: a flaky package download must not abort the whole image build.
-# Prefer prebuilt wheels so no compiler/Rust toolchain is needed in the chroot.
-if ! "$VENV_DIR/bin/pip" install -r "$BACKEND_SRC/requirements.txt" --quiet; then
-    echo "  WARN: backend dependency install failed — image will build, but the"
-    echo "        helix-backend service may not start until deps are installed."
+# Fatal: an image whose backend deps are missing boots to an nginx 502, so a
+# failed install must abort the build rather than ship a dead web UI.
+if ! "$VENV_DIR/bin/pip" install -r "$BACKEND_SRC/requirements.txt"; then
+    echo "  ERROR: backend dependency install failed (check chroot DNS/network)." >&2
+    exit 1
 fi
+echo "  backend deps installed"
 
 # ── Copy app files ────────────────────────────────────────────────────────────
 cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"
@@ -37,38 +38,179 @@ cp -r "$BACKEND_SRC"  "$HIVE_DIR/backend"
 
 chown -R helix:helix "$HIVE_DIR"
 
-# ── Nginx config: reverse proxy to FastAPI backend ───────────────────────────
+# Verify the ACTUAL app imports — exactly what `uvicorn main:app` does at runtime.
+# This catches a router needing a dependency that isn't in requirements.txt
+# (e.g. python-multipart for Form/upload routes), which otherwise only surfaces
+# as an nginx 502 on the booted machine.
+mkdir -p /tmp/helix-cfg-check
+if ! ( cd "$HIVE_DIR/backend" && HELIX_CONFIG=/tmp/helix-cfg-check "$VENV_DIR/bin/python" -c "import main; assert main.app" ); then
+    echo "  ERROR: helix backend app failed to import — aborting (missing dep or code error)." >&2
+    exit 1
+fi
+echo "  backend app imports cleanly (uvicorn main:app will start)"
+
+# ── Nginx config: reverse proxy to FastAPI backend (HTTP :80 + HTTPS :443) ────
+# Shared proxy block, included by both the HTTP and HTTPS servers.
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/snippets/helix-proxy.conf <<'PROXYEOF'
+# SSE / streaming: disable buffering
+proxy_buffering off;
+proxy_cache off;
+
+location / {
+    proxy_pass         http://127.0.0.1:8082;
+    proxy_http_version 1.1;
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+PROXYEOF
+
 cat > /etc/nginx/sites-available/helix <<'NGINXEOF'
+# HTTP — served as-is (no forced HTTPS redirect, so http:// keeps working).
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-
-    # SSE / streaming: disable buffering
-    proxy_buffering off;
-    proxy_cache off;
-
-    location / {
-        proxy_pass         http://127.0.0.1:8082;
-        proxy_http_version 1.1;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-    }
+    include snippets/helix-proxy.conf;
 }
+
+# HTTPS (:443) is dropped into helix-https.d by helix-gen-cert once a cert
+# exists. The wildcard matches zero files without error, so a missing or failed
+# cert can NEVER stop nginx (and the HTTP UI) from starting.
+include /etc/nginx/helix-https.d/*.conf;
 NGINXEOF
+mkdir -p /etc/nginx/helix-https.d
 
 # Remove default site, enable ours
 rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/helix /etc/nginx/sites-enabled/helix
 
+# ── Self-signed TLS cert for HTTPS (443) ─────────────────────────────────────
+# Generated per-machine at first boot (persisted on /boot/config when writable;
+# regenerated in RAM for a read-only ISO/CD boot). nginx references the copy in
+# /etc so a cert always exists even when /boot is read-only.
+cat > /usr/local/sbin/helix-gen-cert <<'CERTEOF'
+#!/bin/sh
+# helix-gen-cert — ensure a self-signed cert exists and, only then, enable the
+# nginx :443 server block. Ordered Before=nginx.service so it runs before nginx's
+# own `nginx -t`. No `set -e`: a cert failure must leave nginx serving HTTP, not
+# abort and take the whole web UI down.
+set -u
+ETC_DIR=/etc/helix/ssl
+PERSIST_DIR=/boot/config/ssl
+HTTPS_DIR=/etc/nginx/helix-https.d
+mkdir -p "$ETC_DIR" "$HTTPS_DIR" 2>/dev/null || true
+
+have_cert() { [ -s "$ETC_DIR/helix.crt" ] && [ -s "$ETC_DIR/helix.key" ]; }
+
+if ! have_cert; then
+    if [ -s "$PERSIST_DIR/helix.crt" ] && [ -s "$PERSIST_DIR/helix.key" ]; then
+        # Reuse a persisted per-machine cert (survives reboots / updates).
+        cp "$PERSIST_DIR/helix.crt" "$ETC_DIR/helix.crt" 2>/dev/null || true
+        cp "$PERSIST_DIR/helix.key" "$ETC_DIR/helix.key" 2>/dev/null || true
+    else
+        CN="$(hostname 2>/dev/null || echo helix)"
+        SAN="DNS:$CN,DNS:$CN.local,DNS:localhost,IP:127.0.0.1"
+        for ip in $(ip -o -4 addr show scope global 2>/dev/null | awk '{split($4,a,"/");print a[1]}'); do
+            SAN="$SAN,IP:$ip"
+        done
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -keyout "$ETC_DIR/helix.key" -out "$ETC_DIR/helix.crt" \
+            -subj "/CN=$CN" -addext "subjectAltName=$SAN" >/dev/null 2>&1 || true
+        # Persist to /boot/config when writable (skipped on read-only media).
+        if have_cert && mkdir -p "$PERSIST_DIR" 2>/dev/null && [ -w "$PERSIST_DIR" ]; then
+            cp "$ETC_DIR/helix.crt" "$PERSIST_DIR/helix.crt" 2>/dev/null || true
+            cp "$ETC_DIR/helix.key" "$PERSIST_DIR/helix.key" 2>/dev/null || true
+        fi
+    fi
+fi
+chmod 600 "$ETC_DIR/helix.key" 2>/dev/null || true
+chmod 644 "$ETC_DIR/helix.crt" 2>/dev/null || true
+
+# Enable the HTTPS server block ONLY if we actually have a cert.
+if have_cert; then
+    cat > "$HTTPS_DIR/https.conf" <<HTTPSCONF
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_certificate     $ETC_DIR/helix.crt;
+    ssl_certificate_key $ETC_DIR/helix.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:HelixSSL:1m;
+    include snippets/helix-proxy.conf;
+}
+HTTPSCONF
+else
+    rm -f "$HTTPS_DIR/https.conf" 2>/dev/null || true
+fi
+exit 0
+CERTEOF
+chmod 0755 /usr/local/sbin/helix-gen-cert
+
+# Generate the cert in its OWN oneshot service ordered Before=nginx.service, so
+# the cert exists before nginx runs its built-in `ExecStartPre=nginx -t` config
+# test. (A drop-in ExecStartPre would run AFTER nginx's own test and so fail it,
+# leaving nginx down → connection refused.)
+cat > /etc/systemd/system/helix-gen-cert.service <<'GCEOF'
+[Unit]
+Description=Helix OS — generate self-signed TLS cert for nginx HTTPS
+After=local-fs.target
+Before=nginx.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-gen-cert
+
+[Install]
+WantedBy=multi-user.target
+GCEOF
+
+# Make nginx explicitly wait for the cert service too (belt and suspenders).
+mkdir -p /etc/systemd/system/nginx.service.d
+cat > /etc/systemd/system/nginx.service.d/helix-ssl.conf <<'DROPEOF'
+[Unit]
+Wants=helix-gen-cert.service
+After=helix-gen-cert.service
+DROPEOF
+
+systemctl enable helix-gen-cert 2>/dev/null || echo "  (helix-gen-cert enable deferred)"
+
+# ── Validate the HTTPS config at build time ──────────────────────────────────
+# openssl is required for the cert; fail loudly if it's missing from the image.
+command -v openssl >/dev/null || { echo "  ERROR: openssl not installed — add it to packages-base.list" >&2; exit 1; }
+# Mint a throwaway cert (this also writes helix-https.d/https.conf), validate the
+# full config with nginx -t, then remove the cert + https drop-in so each machine
+# mints its own at first boot (via helix-gen-cert.service, ordered before nginx).
+/usr/local/sbin/helix-gen-cert
+if [ ! -s /etc/nginx/helix-https.d/https.conf ]; then
+    echo "  ERROR: helix-gen-cert did not produce the HTTPS server block (openssl failure?)." >&2
+    exit 1
+fi
+if ! nginx -t 2>&1; then
+    echo "  ERROR: nginx config invalid — aborting." >&2
+    exit 1
+fi
+# Also confirm nginx -t still passes with NO cert present (HTTP-only fallback).
+rm -f /etc/nginx/helix-https.d/https.conf \
+      /etc/helix/ssl/helix.crt /etc/helix/ssl/helix.key \
+      /boot/config/ssl/helix.crt /boot/config/ssl/helix.key 2>/dev/null || true
+if ! nginx -t 2>&1; then
+    echo "  ERROR: nginx config invalid without the HTTPS drop-in — aborting." >&2
+    exit 1
+fi
+echo "  HTTPS validated (with cert + HTTP-only fallback); cert minted per-machine at first boot"
+
 # ── systemd service ──────────────────────────────────────────────────────────
 cat > /etc/systemd/system/helix-backend.service <<'SVCEOF'
 [Unit]
 Description=Helix OS Web Backend (FastAPI)
-After=network.target
+After=network.target helix-firstboot.service
 Wants=network.target
 
 [Service]
@@ -96,17 +238,151 @@ if [ -f "$BACKEND_SRC/helpers/helix-osupdate" ]; then
     echo "  installed /usr/local/sbin/helix-osupdate"
 fi
 
-# ── helix-apply-network: install network config helper ───────────────────────
-NETWORK_SRC="/build/network/helix-apply-network"
-if [ -f "$NETWORK_SRC" ]; then
-    install -m 0755 "$NETWORK_SRC" /usr/local/sbin/helix-apply-network
+# ── Network bring-up helper (applies /boot/config/network.cfg at boot) ────────
+# helix-config-network.service (hook 02) runs this; without it NO networkd
+# units are written and the box never requests DHCP.
+if [ -f /build/network/helix-apply-network ]; then
+    install -m 0755 /build/network/helix-apply-network /usr/local/sbin/helix-apply-network
     echo "  installed /usr/local/sbin/helix-apply-network"
-else
-    echo "  WARN: network/helix-apply-network not found — helix-config-network will fail"
+fi
+
+# ── Array + share management helpers (called by the backend, ARRAY_SBIN=/usr/local/sbin) ──
+# These live in the repo but were never installed, so /api/array/* and share
+# apply failed on the real image. Install every runtime helper to /usr/local/sbin.
+for helper in \
+    /build/array/sbin/helix-array-lib.sh \
+    /build/array/sbin/helix-array-start /build/array/sbin/helix-array-stop \
+    /build/array/sbin/helix-array-status \
+    /build/array/sbin/helix-parity-check /build/array/sbin/helix-parity-rebuild \
+    /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
+    /build/gpu/setup-ai-gpu.sh; do
+    if [ -f "$helper" ]; then
+        install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
+        echo "  installed /usr/local/sbin/$(basename "$helper")"
+    fi
+done
+
+# ── Persistent data partition (HELIXDATA) setup ───────────────────────────────
+# The boot image is tiny vs a modern USB/SD; write-usb.sh / make-pi-image.sh put
+# the leftover space in an ext4 partition labelled HELIXDATA. This one-shot grows
+# it to fill the device (Pi: SD larger than the image) and mounts it at /mnt/data
+# for persistent config + appdata. No-op on a read-only ISO/CD boot.
+cat > /usr/local/sbin/helix-firstboot <<'FBEOF'
+#!/bin/sh
+set -u
+LABEL=HELIXDATA
+DATA_MNT=/mnt/data
+log() { echo "[helix-firstboot] $*"; }
+
+# ── SSH authorized keys ───────────────────────────────────────────────────────
+# Load *.pub from /boot/config/ssh/ into the helix user's authorized_keys. Runs before the HELIXDATA early-exit so
+# keys work on a read-only ISO/CD boot too. On a writable boot medium /boot/config
+# persists, so keys survive reboots.
+HELIX_HOME=$(getent passwd helix 2>/dev/null | cut -d: -f6)
+[ -n "$HELIX_HOME" ] || HELIX_HOME=/home/helix
+if ls /boot/config/ssh/*.pub >/dev/null 2>&1; then
+    mkdir -p "$HELIX_HOME/.ssh"
+    AK="$HELIX_HOME/.ssh/authorized_keys"; touch "$AK"
+    for pub in /boot/config/ssh/*.pub; do
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in \#*) continue ;; esac
+            grep -qxF "$line" "$AK" 2>/dev/null || { echo "$line" >> "$AK"; log "added SSH key from $(basename "$pub")"; }
+        done < "$pub"
+    done
+    chmod 700 "$HELIX_HOME/.ssh"; chmod 600 "$AK" 2>/dev/null || true
+    id helix >/dev/null 2>&1 && chown -R helix:helix "$HELIX_HOME/.ssh" 2>/dev/null || true
+fi
+
+DATA_PART=$(blkid -L "$LABEL" 2>/dev/null) || DATA_PART=""
+[ -n "$DATA_PART" ] || { log "no $LABEL partition (ISO/CD or legacy layout) — skipping."; exit 0; }
+
+# Grow the partition to fill the disk, then its filesystem (idempotent/safe).
+PK=$(lsblk -no PKNAME "$DATA_PART" 2>/dev/null | head -1)
+PNUM=$(printf '%s' "$DATA_PART" | grep -oE '[0-9]+$')
+if [ -n "$PK" ] && [ -n "$PNUM" ] && command -v parted >/dev/null 2>&1; then
+    parted -s "/dev/$PK" resizepart "$PNUM" 100% >/dev/null 2>&1 || true
+    command -v partprobe >/dev/null 2>&1 && partprobe "/dev/$PK" >/dev/null 2>&1 || true
+fi
+e2fsck -p -f "$DATA_PART" >/dev/null 2>&1 || true
+resize2fs "$DATA_PART" >/dev/null 2>&1 || true
+
+mkdir -p "$DATA_MNT"
+mountpoint -q "$DATA_MNT" || mount "$DATA_PART" "$DATA_MNT" 2>/dev/null \
+    || { log "mount of $DATA_PART failed"; exit 0; }
+
+mkdir -p "$DATA_MNT/config" "$DATA_MNT/appdata"
+# Seed persistent config from the boot medium the first time.
+if [ -d /boot/config ] && [ -z "$(ls -A "$DATA_MNT/config" 2>/dev/null)" ]; then
+    cp -a /boot/config/. "$DATA_MNT/config/" 2>/dev/null || true
+fi
+id helix >/dev/null 2>&1 && chown -R helix:helix "$DATA_MNT/config" "$DATA_MNT/appdata" 2>/dev/null || true
+log "HELIXDATA ready at $DATA_MNT (persistent config + appdata)."
+exit 0
+FBEOF
+chmod 0755 /usr/local/sbin/helix-firstboot
+
+cat > /etc/systemd/system/helix-firstboot.service <<'FBSVC'
+[Unit]
+Description=Helix OS — mount/grow HELIXDATA persistent data partition
+After=local-fs.target
+Before=helix-backend.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-firstboot
+
+[Install]
+WantedBy=multi-user.target
+FBSVC
+systemctl enable helix-firstboot 2>/dev/null || echo "  (helix-firstboot enable deferred)"
+echo "  installed /usr/local/sbin/helix-firstboot + service"
+
+# Fallback: DHCP on any wired interface, so the machine is reachable out of the
+# box even if helix-apply-network hasn't run or network.cfg is empty. The
+# config-driven units are written as 10-helix-*.network and take precedence
+# (lower prefix wins) over this 99- fallback.
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/99-helix-dhcp-fallback.network <<'NETEOF'
+[Match]
+Name=en* eth*
+Type=ether
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+NETEOF
+echo "  installed DHCP fallback /etc/systemd/network/99-helix-dhcp-fallback.network"
+
+# ── Console banner: show IP + web UI URL before the login prompt ──────────────
+if [ -f /build/network/helix-console-banner ]; then
+    install -m 0755 /build/network/helix-console-banner /usr/local/sbin/helix-console-banner
+    cat > /etc/systemd/system/helix-console-banner.service <<'SVCEOF'
+[Unit]
+Description=Helix OS console IP banner (/etc/issue)
+After=network-online.target systemd-networkd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/helix-console-banner
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+    systemctl enable helix-console-banner 2>/dev/null || true
+    echo "  installed /usr/local/sbin/helix-console-banner + service"
 fi
 
 # ── State directory ───────────────────────────────────────────────────────────
-mkdir -p /var/lib/helix
-chown helix:helix /var/lib/helix
+# STATE_DIR is /var/local/helix (config.py): the backend (running as 'helix')
+# writes the SMART cache, array_state and audit log here, and uses
+# /var/local/helix/config as the writable config fallback on read-only boot.
+# /var/local is root-only by default, so create + chown these now or the
+# unprivileged backend can't write them (drive cache stays empty, etc.).
+mkdir -p /var/local/helix/config
+chown -R helix:helix /var/local/helix
 
 echo "==> [hook 03] Helix OS backend installed at $HIVE_DIR"

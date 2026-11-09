@@ -174,16 +174,10 @@ def network_status():
 @router.get("/avahi")
 def avahi_status():
     """Return avahi-daemon running state."""
-    rc, out, _ = subprocess.run(
-        ["systemctl", "is-active", "avahi-daemon"],
-        capture_output=True, text=True).returncode, \
-        *subprocess.run(["systemctl", "is-active", "avahi-daemon"],
-                         capture_output=True, text=True).stdout.strip().split()[:1], ""
-    active = out == "active"
-    # Check if installed
-    installed_rc, _, _ = subprocess.run(
-        ["which", "avahi-daemon"], capture_output=True).returncode, None, None
-    return {"installed": installed_rc == 0, "active": active}
+    st = subprocess.run(["systemctl", "is-active", "avahi-daemon"], capture_output=True, text=True)
+    active = st.stdout.strip() == "active"
+    installed = subprocess.run(["which", "avahi-daemon"], capture_output=True).returncode == 0
+    return {"installed": installed, "active": active}
 
 
 @router.post("/avahi/enable")

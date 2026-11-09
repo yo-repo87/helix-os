@@ -86,8 +86,15 @@ else
         done
     done
 
+    # Boot splash background shown by vesamenu (1280x720 PNG).
+    if [ -f "$SCRIPT_DIR/boot-assets/splash.png" ]; then
+        cp "$SCRIPT_DIR/boot-assets/splash.png" "$ISO_STAGING/isolinux/splash.png"
+        echo "  boot splash: $ISO_STAGING/isolinux/splash.png"
+    fi
+
     cat > "$ISO_STAGING/isolinux/isolinux.cfg" <<'EOF'
 UI vesamenu.c32
+MENU RESOLUTION 1280 720
 TIMEOUT 50
 DEFAULT helix
 

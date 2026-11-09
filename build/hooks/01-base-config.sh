@@ -21,8 +21,8 @@ cat > /etc/hosts <<'EOF'
 ::1         localhost ip6-localhost ip6-loopback
 EOF
 
-# ── Root password (disabled — use SSH keys or the web UI) ────────────────────
-passwd -l root
+# ── Root: blank until the user sets one, same as Unraid ──────────────────────
+passwd -d root
 
 # ── Default user: helix (web UI runs as this, sudo without password) ───────────
 # Create the user first, then add only to groups that actually exist in this
@@ -35,10 +35,10 @@ passwd -l helix 2>/dev/null || true
 echo "helix ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/helix
 chmod 440 /etc/sudoers.d/helix
 
-# ── SSH: disable password auth, enable key auth ───────────────────────────────
-sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+# ── SSH: root + password or key, as Unraid (empty passwords remain refused) ──
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 # (SSH keys are loaded from /boot/config/ssh/ at runtime by rc.helix-network)
 
 # ── OS identity ───────────────────────────────────────────────────────────────

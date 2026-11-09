@@ -39,11 +39,22 @@ load_disk_config() {
     DATA_DISKS=()
     DATA_DEVS=()
     DATA_MNTS=()
+    CACHE_DISKS=()
+    CACHE_DEVS=()
+    CACHE_MNTS=()
 
     while IFS= read -r section; do
         [[ "$section" =~ ^parity ]] && {
             dev=$(cfg_get "$DISKS_CFG" "$section" "device")
             [ -n "$dev" ] && PARITY_DEVS+=("$dev")
+            continue
+        }
+        [[ "$section" =~ ^cache ]] && {
+            dev=$(cfg_get "$DISKS_CFG" "$section" "device")
+            [ -n "$dev" ] || continue
+            CACHE_DISKS+=("$section")
+            CACHE_DEVS+=("$dev")
+            CACHE_MNTS+=("$MNTBASE/$section")
             continue
         }
         [[ "$section" =~ ^disk ]] && {
@@ -107,7 +118,7 @@ helix_err() { helix_log "ERROR: $*" >&2; }
 # ── Ensure directories exist ─────────────────────────────────────────────────
 ensure_dirs() {
     mkdir -p "$STATE_DIR" /var/snapraid /var/log
-    for mnt in "${DATA_MNTS[@]}" "${MNTBASE}/parity1" "${MNTBASE}/parity2" "$USER_SHARE"; do
+    for mnt in "${DATA_MNTS[@]}" "${CACHE_MNTS[@]}" "${MNTBASE}/parity1" "${MNTBASE}/parity2" "$USER_SHARE"; do
         mkdir -p "$mnt"
     done
 }

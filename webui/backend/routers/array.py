@@ -1,17 +1,25 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
-import asyncio, subprocess, os, json, re
+from pydantic import BaseModel
+import asyncio, subprocess, os, json, re, tempfile
 from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE
 
 router = APIRouter(prefix="/api/array", tags=["array"])
 
-def _run_sbin(script: str, *args, env_override: dict | None = None) -> tuple[int, str, str]:
-    env = os.environ.copy()
-    env["HELIX_CONFIG"] = HELIX_CONFIG
-    if env_override:
-        env.update(env_override)
+def _sbin_cmd(script: str, *args) -> list:
+    """Build a sudo invocation for an array helper. The helpers mount disks /
+    start mergerfs and require root; the backend runs as the unprivileged 'helix'
+    user (NOPASSWD sudo), so run them via sudo with HELIX_CONFIG passed through."""
     path = os.path.join(ARRAY_SBIN, script)
-    r = subprocess.run(["/bin/bash", path, *args], capture_output=True, text=True, env=env)
+    return ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", "/bin/bash", path, *args]
+
+
+def _run_sbin(script: str, *args, env_override: dict | None = None) -> tuple[int, str, str]:
+    cmd = ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}"]
+    if env_override:
+        cmd += [f"{k}={v}" for k, v in env_override.items()]
+    cmd += ["/bin/bash", os.path.join(ARRAY_SBIN, script), *args]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
 def _array_state() -> str:
@@ -111,6 +119,66 @@ def drives():
     return disks
 
 
+# ── Disk assignment (writes disks.cfg, consumed by helix-array-start) ─────────
+
+class AssignReq(BaseModel):
+    parity: list[str] = []   # device paths, e.g. ["/dev/sdb"]
+    data:   list[str] = []   # device paths for data disks
+    cache:  list[str] = []   # device paths for cache/pool drives (fast write cache)
+    fmt:    str = "xfs"      # filesystem for data disks
+    cache_fmt: str = "btrfs" # filesystem for cache drives (btrfs supports pools)
+
+
+def _write_disks_cfg(content: str) -> str:
+    """Write disks.cfg; fall back to sudo since the backend is unprivileged and
+    /boot is usually root-owned. Returns '' on success or an error string."""
+    try:
+        os.makedirs(os.path.dirname(DISKS_CFG), exist_ok=True)
+        with open(DISKS_CFG, "w") as f:
+            f.write(content)
+        return ""
+    except (PermissionError, OSError):
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".disks") as tf:
+                tf.write(content)
+                tmp = tf.name
+            d = os.path.dirname(DISKS_CFG)
+            subprocess.run(["sudo", "-n", "mkdir", "-p", d], capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["sudo", "-n", "cp", tmp, DISKS_CFG], capture_output=True, text=True, timeout=10)
+            os.unlink(tmp)
+            if r.returncode != 0:
+                return (f"cannot write {DISKS_CFG}: {r.stderr.strip() or 'permission denied'} — "
+                        "the boot medium is likely read-only (ISO/CD). Boot Helix from a writable "
+                        "USB/disk to save array assignments.")
+            return ""
+        except Exception as e:
+            return f"cannot write {DISKS_CFG}: {e}"
+
+
+@router.post("/assign")
+def assign_disks(req: AssignReq):
+    """Persist a parity/data disk assignment to disks.cfg (reboot-safe on a
+    writable boot medium). Does not start the array — call /start after."""
+    all_devs = req.parity + req.data + req.cache
+    if len(set(all_devs)) != len(all_devs):
+        raise HTTPException(400, "A device was assigned to more than one slot.")
+    lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
+    for i, dev in enumerate(req.parity, 1):
+        lines += [f"[parity{i}]", f"device={dev}", ""]
+    for i, dev in enumerate(req.data, 1):
+        lines += [f"[disk{i}]", f"device={dev}", f"format={req.fmt}", ""]
+    for i, dev in enumerate(req.cache, 1):
+        lines += [f"[cache{i}]", f"device={dev}", f"format={req.cache_fmt}", ""]
+    err = _write_disks_cfg("\n".join(lines) + "\n")
+    if err:
+        # Return 200 with ok=false (not a 500): BaseHTTPMiddleware can turn a
+        # raised HTTPException into a generic "Internal Server Error", hiding the
+        # real cause from the UI. The frontend shows .error.
+        return {"ok": False, "error": err}
+    return {"ok": True, "parity": req.parity, "data": req.data,
+            "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
+
+
 # ── Parity check SSE streaming ────────────────────────────────────────────────
 
 _parity_proc: asyncio.subprocess.Process | None = None
@@ -130,14 +198,11 @@ async def parity_stream(scrub: bool = False):
 
     async def _generate():
         global _parity_proc
-        env = os.environ.copy()
-        env["HELIX_CONFIG"] = HELIX_CONFIG
-        script = os.path.join(ARRAY_SBIN, "helix-parity-check")
-        args = ["/bin/bash", script] + (["--scrub"] if scrub else [])
+        args = _sbin_cmd("helix-parity-check", *(["--scrub"] if scrub else []))
 
         try:
             _parity_proc = await asyncio.create_subprocess_exec(
-                *args, env=env,
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -186,20 +251,16 @@ async def rebuild_stream():
     async def _gen():
         global _rebuild_proc
         script = os.path.join(ARRAY_SBIN, "helix-parity-rebuild")
-        if not os.path.isfile(script):
-            # Fallback: direct snapraid fix
-            script = None
+        if os.path.isfile(script):
+            cmd = _sbin_cmd("helix-parity-rebuild")
+        else:
+            # Fallback: direct snapraid fix (also needs root).
+            cmd = ["sudo", "-n", "snapraid", "fix", "-e"]
         try:
-            if script:
-                _rebuild_proc = await asyncio.create_subprocess_exec(
-                    script,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT)
-            else:
-                _rebuild_proc = await asyncio.create_subprocess_exec(
-                    "snapraid", "fix", "-e",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT)
+            _rebuild_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
         except FileNotFoundError as e:
             yield f"data: ERROR: {e}\n\n"
             yield "data: DONE\n\n"

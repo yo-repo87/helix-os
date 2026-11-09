@@ -21,24 +21,21 @@ mount -t tmpfs     tmpfs    /run
 mkdir -p /run/helix/usb /run/helix/ro /run/helix/rw
 
 # ── 2. Kernel modules ─────────────────────────────────────────────────────────
-# Filesystem + loop
-for mod in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8 isofs; do
-    modprobe "$mod" 2>/dev/null || true
-done
-# USB host controllers (EHCI/xHCI/OHCI cover USB 2/3/1)
-for mod in ehci_hcd ohci_hcd xhci_hcd xhci_pci usbcore; do
-    modprobe "$mod" 2>/dev/null || true
-done
-# USB storage
-for mod in usb_storage uas scsi_mod sd_mod sr_mod; do
-    modprobe "$mod" 2>/dev/null || true
-done
-# VirtIO (Proxmox/QEMU VMs)
-for mod in virtio virtio_pci virtio_blk virtio_scsi; do
-    modprobe "$mod" 2>/dev/null || true
-done
-# SATA / NVMe / generic SCSI
-for mod in ahci libahci ata_piix nvme nvme_core; do
+# Load filesystem modules AND the storage/controller drivers needed to see the
+# boot device. Without the controller drivers (VirtIO on KVM/Proxmox, AHCI/SATA,
+# NVMe, USB, SD/MMC) the HELIXBOOT device never appears and the search below
+# times out. devtmpfs creates the device nodes automatically as each driver
+# attaches, so no udev is required.
+for mod in \
+    virtio_pci virtio_mmio virtio_blk virtio_scsi \
+    ahci ata_piix ata_generic pata_acpi libata \
+    scsi_mod sd_mod sr_mod cdrom \
+    nvme_core nvme \
+    usb_common usbcore ehci_pci ehci_hcd ohci_pci ohci_hcd uhci_hcd \
+    xhci_pci xhci_hcd usb_storage uas \
+    mmc_core mmc_block sdhci sdhci_pci sdhci_acpi sdhci_pltfm \
+    sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm \
+    squashfs overlay loop vfat exfat isofs nls_cp437 nls_ascii nls_utf8; do
     modprobe "$mod" 2>/dev/null || true
 done
 # Allow USB devices time to enumerate before scanning
@@ -58,7 +55,11 @@ for disk in /dev/sd[a-z] /dev/vd[a-z] /dev/hd[a-z] /dev/nvme[0-9]n[0-9]; do
 done
 sleep 1  # give partition nodes a moment to appear
 
-# ── 3. Wait for boot USB (by filesystem label) ───────────────────────────────
+# Let asynchronous probing (USB/VirtIO enumeration) settle before scanning.
+udevadm trigger 2>/dev/null || true
+udevadm settle --timeout=10 2>/dev/null || true
+
+# ── 3. Wait for boot device (by filesystem label) ────────────────────────────
 msg "Searching for boot device (label=$BOOT_LABEL, timeout=${TIMEOUT}s)..."
 # Resolve the boot device by filesystem label. busybox blkid does not support
 # `-L`, so try several methods: util-linux blkid -L, busybox findfs, then a
@@ -113,12 +114,16 @@ i=0
 while [ $i -lt $TIMEOUT ]; do
     USB_DEV=$(find_boot_dev)
     [ -n "$USB_DEV" ] && break
-    # trigger udev rescan on first miss (no-op under busybox mdev)
-    [ $i -eq 0 ] && { udevadm trigger 2>/dev/null || true; udevadm settle 2>/dev/null || true; }
+    # Re-trigger enumeration periodically (no-op under busybox mdev).
+    udevadm trigger 2>/dev/null || true
     sleep 1
     i=$((i + 1))
 done
-[ -n "$USB_DEV" ] || die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
+if [ -z "$USB_DEV" ]; then
+    warn "Boot device (label=$BOOT_LABEL) not found. Visible block devices:"
+    blkid 2>/dev/null >&2 || true
+    die "Boot device (label=$BOOT_LABEL) not found after ${TIMEOUT}s."
+fi
 msg "Found boot device: $USB_DEV"
 
 # ── 4. Mount boot device read-only (vfat for USB/disk, iso9660 for ISO/CD) ───
@@ -149,7 +154,7 @@ elif [ ! -f "$SQUASHFS_SRC" ] && [ -f "$SQUASHFS_PREV" ]; then
 fi
 [ -f "$SQUASHFS_SRC" ] || die "No bootable filesystem.squashfs on boot device."
 
-# Copying to RAM means the USB can be removed after boot (Unraid behaviour).
+# Copying to RAM means the USB/CD can be removed after boot (Unraid behaviour).
 SQUASHFS_SIZE=$(du -k "$SQUASHFS_SRC" | cut -f1)
 msg "Loading filesystem (~${SQUASHFS_SIZE}K) into RAM..."
 mkdir -p /run/helix/img

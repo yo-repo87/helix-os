@@ -112,6 +112,8 @@ echo -n "  Copying filesystem.squashfs... "
 cp "$OUTPUT_DIR/boot/filesystem.squashfs" "$MNT/boot/"
 echo "done."
 
+cp -r "$OUTPUT_DIR/config/." "$MNT/config/"
+
 # Default config/go
 [ -f "$MNT/config/go" ] || cat > "$MNT/config/go" <<'EOF'
 #!/bin/bash
@@ -124,29 +126,15 @@ chmod +x "$MNT/config/go"
 echo "Installing GRUB..."
 mkdir -p "$MNT/EFI/BOOT" "$MNT/grub"
 
-BOOT_CMDLINE="boot=helix helix_label=HELIXBOOT quiet"
-
-cat > "$MNT/grub/grub.cfg" <<EOF
-set timeout=3
-set default=0
-
-menuentry "Helix OS" {
-    search --no-floppy --label --set=root HELIXBOOT
-    linux  /boot/vmlinuz $BOOT_CMDLINE
-    initrd /boot/initrd.img
-}
-
-menuentry "Helix OS (safe mode)" {
-    search --no-floppy --label --set=root HELIXBOOT
-    linux  /boot/vmlinuz $BOOT_CMDLINE helixsafemode
-    initrd /boot/initrd.img
-}
-EOF
+cp "$SCRIPT_DIR/grub/grub.cfg" "$MNT/grub/grub.cfg"
+cp "$SCRIPT_DIR/boot-assets/splash.png" "$MNT/grub/splash.png"
+mkdir -p "$MNT/grub/fonts"
+cp /usr/share/grub/unicode.pf2 "$MNT/grub/fonts/unicode.pf2"
 
 # UEFI GRUB binary — only include modules that actually exist in this GRUB build
 GRUB_MODS=""
 for mod in part_gpt part_msdos fat normal linux search search_label \
-           echo all_video gfxterm configfile ls reboot halt; do
+           echo all_video gfxterm gfxterm_background png font gzio serial terminal test configfile ls reboot halt; do
     [ -f "/usr/lib/grub/x86_64-efi/${mod}.mod" ] && GRUB_MODS="$GRUB_MODS $mod"
 done
 # shellcheck disable=SC2086

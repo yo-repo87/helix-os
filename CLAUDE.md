@@ -595,11 +595,12 @@ Bump `build/config/VERSION` for each release so running systems detect the new v
 Run **`./launch.sh`** to resume the most recent Claude Code session for this project.
 
 ### Where things live
-- **GitHub repo:** `github.com/yo-repo87/helix-os` — **private**. Auth PAT is in
-  `./gitkey` (gitignored). Git remote `helix-os` points here; `origin` still points
-  at the old `template` repo and is unused.
-- **Branches:** `main` (project baseline) · `helix-osupdate` (OTA feature, **PR #1**,
-  mergeable — merge it to land OTA + this section on `main`).
+- **GitHub repo:** `github.com/yo-repo87/helix-os` — **public** (made public
+  2026-11-06). Auth PAT is in `./gitkey` (gitignored) and used for pushes/releases;
+  `gh auth setup-git` wires it into git. Git remote `helix-os` points here; `origin`
+  still points at the old `template` repo and is unused.
+- **Branches:** `main` (baseline + OTA, **PR #1 merged** 2026-11-06) ·
+  `fix/live-boot-storage-drivers` (live-boot driver fix, **PR #2** — see §18).
 - **Releases:** `images-2026.11.06` (full installer images) · `v0.1.0` (OTA update
   bundle: per-arch boot files + `helix-release.json`).
 - **Flashable images** (repo root, not in git — too large):
@@ -644,12 +645,10 @@ Note: inside a git worktree the shell sandbox refuses `export GH_TOKEN=$(cat …
 GitHub commands from the main checkout, or let the scripts read `./gitkey` themselves.
 
 ### Open caveats / next steps
-- Images verified structurally (arch, modules, bootloader) but **not boot-tested** on
-  hardware/VM. A headless QEMU smoke test of the ISO is a good next step.
 - OTA validated live except the physical **reboot-into-new-image** step.
-- A **private** repo needs a read-only token pasted into Settings → Helix OS Update
-  (stored at `/boot/config/osupdate.cfg`) for a running Helix OS to fetch updates.
-- Merge **PR #1** to bring OTA + §16/§17 onto `main`.
+- A read-only token pasted into Settings → Helix OS Update (stored at
+  `/boot/config/osupdate.cfg`) lets a running Helix OS fetch updates (needed while
+  the repo/release is private; harmless when public).
 
 *Last updated: 2026-11-06. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
 
@@ -896,4 +895,315 @@ Do not diagnose a new symptom. First verify the fix actually took effect:
 **Root cause:** `_do_install()` ran as a FastAPI `BackgroundTask` with no try/except. Any exception was discarded.
 
 **Fix (commit `48a5a75`):** `_do_install()` now writes `install_status.json` to `STATE_DIR/apps/{name}/` with `state: installing / installed / error` and the error message. Frontend polls `GET /api/apps/{name}/install-status` every 2.5s and shows an alert with the actual error on failure.
+
+
+---
+
+## 18. Live-Boot Device-Driver Fix (2026-11-06)
+
+First boot attempt (Proxmox) hung at `[helix] Searching for boot device
+(label=HELIXBOOT, timeout=30s)…`. Root cause: the live-boot initramfs bundled only
+filesystem modules (squashfs/overlay/vfat/isofs) and **no block-device controller
+drivers**, so the kernel never saw the HELIXBOOT device on a VM disk/CD, USB stick,
+or SD card. A second latent bug hard-mounted the boot device as `vfat`, which fails
+on the iso9660 ISO.
+
+**Fixed** (`build/initramfs/`, PR #2 → `fix/live-boot-storage-drivers`):
+- `build-initramfs.sh`: bundle SCSI/SATA/NVMe/VirtIO/USB/MMC drivers. `install_module`
+  now matches `modules.dep` with `-`/`_` treated interchangeably — kernel module
+  **file** names use `-` (`usb-storage.ko`, `xhci-hcd.ko`, `sdhci-iproc.ko`) while
+  module names use `_`, so the first attempt silently skipped every dash-named driver
+  (USB + SD among them).
+- `init`: `modprobe` the controllers before the device scan and let probing settle;
+  mount the boot device by auto-detect then `iso9660`/`vfat` fallback; treat a
+  read-only boot medium (ISO/CD) as non-fatal; dump visible block devices on failure;
+  rename the leftover `[hive]` tag / `/run/hive` paths to `[helix]` / `/run/helix`.
+
+Rebuilt both images and verified the initramfs now contains the drivers
+(amd64: usb-storage, uas, xhci/ehci/ohci/uhci-hcd, sr_mod, ahci, nvme, virtio_blk,
+sdhci — 59 modules). Covers boot from CD/DVD, USB, SATA, VirtIO, NVMe, and SD.
+Build scratch was also moved off the `nodev` tmpfs (`/tmp/helix-build` →
+`/var/tmp/helix-build`) so the arm64 cross-build's `mkinitramfs` can create device
+nodes under qemu.
+
+---
+
+## 19. Networking Bring-Up + Console IP Banner (2026-11-06)
+
+**No network / no DHCP lease.** `helix-config-network.service` runs
+`/usr/local/sbin/helix-apply-network`, but that script was never installed into
+the image — `build.sh` copied only `webui/` into the chroot, and no hook installed
+the `network/` helpers. The service failed at boot, so no systemd-networkd
+`.network` units were written and the box never requested DHCP (nothing appeared
+on the router). The shipped `/boot/config/network.cfg` was also in a different
+format (`IFACE=`/`DHCP=`) than `helix-apply-network` parses (`[network]` INI with
+`IFNAME`/`USE_DHCP`), so its values were ignored. NIC drivers were never the
+problem — the squashfs carries Debian's full module set (virtio_net, e1000/e1000e,
+r8169, igb, tg3, vmxnet3, … 448 net drivers).
+
+Fixes:
+- `build.sh` copies the helper trees (`network/`, `array/`, `shares/`, `gpu/`)
+  into the chroot.
+- `03-helix-install.sh` installs `/usr/local/sbin/helix-apply-network` and ships
+  `99-helix-dhcp-fallback.network` (DHCP on `en*`/`eth*`) so the box is reachable
+  out of the box even if the config-driven path hasn't run; the config-driven
+  `10-helix-*.network` units take precedence.
+- `build/usb-layout/config/network.cfg` rewritten to the `[network]` INI format.
+
+**Console IP banner.** New `/usr/local/sbin/helix-console-banner` +
+`helix-console-banner.service` (after `network-online.target`) write `/etc/issue`
+with the hostname, each interface's IPv4, and the web UI URL (`http://<ip>/`)
+*before* the login prompt, and restart `getty@tty1` so the address shows
+immediately. Helix OS has no console password, so this is how you find the box.
+
+---
+
+## 20. Web UI 502 — Backend Dependency Install Fix (2026-11-06)
+
+The web UI returned **502 Bad Gateway** (nginx up, backend down). Cause: during the
+build, `systemd-resolved`'s postinst repoints `/etc/resolv.conf` at a stub that
+doesn't exist inside the chroot, so `pip install` in `03-helix-install.sh` had no
+DNS (`Temporary failure in name resolution` → `No matching distribution found for
+fastapi`). `apt` had already downloaded its packages, so only `pip` broke. The
+result: no `fastapi`/`uvicorn` in `/opt/helix/venv`, `helix-backend.service`
+couldn't start, and nginx proxying to `127.0.0.1:8082` returned 502.
+
+Fixes:
+- `build.sh` writes a working `/etc/resolv.conf` (1.1.1.1/8.8.8.8) in the chroot
+  before apt and again before the hooks run, then restores the systemd-resolved
+  symlink for the shipped image.
+- `03-helix-install.sh` now treats a failed `pip install` (or a failed
+  `import fastapi, uvicorn`) as **fatal** — the build aborts instead of shipping
+  an image whose web UI 502s.
+
+---
+
+## 21. Web UI 502 (round 2) + HTTPS (2026-11-07)
+
+**Still 502 after the deps fix.** With fastapi/uvicorn installed, the app still
+failed to import: routers use FastAPI Form/upload routes, which require
+`python-multipart` — not in `requirements.txt`. FastAPI raises at route-build
+time, so `uvicorn main:app` crashed and nginx returned 502. The earlier build
+check only imported `fastapi, uvicorn`, not the app, so it missed this.
+
+Fixes:
+- `requirements.txt`: add `python-multipart`.
+- `03-helix-install.sh`: the build-time check now imports the **actual app**
+  (`cd /opt/helix/backend && python -c "import main; assert main.app"`), exactly
+  what the service does — so any missing router dep fails the build, not the boot.
+
+**HTTPS (self-signed).** nginx now serves both **:80 (HTTP)** and **:443 (HTTPS)**;
+no forced redirect, so `http://` still works. `/usr/local/sbin/helix-gen-cert`
+mints a per-machine self-signed cert (RSA-2048, 10 yr, SAN = hostname + current
+IPs) at first boot, run as `nginx.service` `ExecStartPre` so the cert always
+exists before nginx binds 443. It persists to `/boot/config/ssl/` when writable
+and regenerates in RAM on a read-only ISO/CD boot. `openssl` added to
+packages-base; the build validates the config with `nginx -t`. Browsers show a
+one-time self-signed warning; real certs can be managed later via Settings →
+HTTPS/SSL (`routers/ssl.py`). Let's Encrypt is not used (no public domain on a
+LAN-by-IP appliance).
+
+---
+
+## 22. Raspberry Pi Overclocking (2026-11-07)
+
+Pi boards are overclocked through the firmware `config.txt`, not sysfs/MSR like
+x86 (see §15 cpu_oc.py/gpu.py), so this is a separate module.
+
+- **Backend** `routers/pi_oc.py` (`/api/pi-oc/{status,profiles,apply,custom,reset,live}`):
+  detects the board/SoC from `/proc/device-tree/{model,compatible}`
+  (bcm2712=Pi 5, bcm2711=Pi 4/CM4/400, bcm2837/2710=Pi 3/Zero 2 W); reads/writes a
+  Helix-managed block in `/boot/config.txt` (markers `# >>> helix-oc >>>`), backs up
+  once to `config.txt.helix-bak`, and falls back to `sudo cp` since the backend runs
+  as the unprivileged `helix` user (NOPASSWD sudo) and `/boot` is root-owned. `custom`
+  merges into the current block; `reset` removes it. `live` SSE streams ARM clock,
+  SoC temp, and decoded `vcgencmd get_throttled` flags. Changes need a reboot.
+- **Profiles** `data/pi_oc_profiles.json` (11), model-aware across CPU / GPU / memory:
+  - Pi 5: arm_freq 2.0–3.0 GHz with `over_voltage_delta` (µV) + gpu_freq.
+  - Pi 4: arm_freq 1.2–2.2 GHz with `over_voltage` (0–8) + gpu_freq/v3d_freq;
+    an "Extreme" tier uses `force_turbo` (flagged warranty-voiding).
+  - Pi 3 / Zero 2 W: arm_freq + over_voltage + core_freq + `sdram_freq` (memory OC,
+    which only applies on Pi 1–3). Each profile carries needs_cooling / voids_warranty
+    flags and notes.
+- **Frontend**: a "Pi Overclock" tab on the Hardware page, shown only when
+  `/api/pi-oc/status` reports `is_pi`. Profile cards (CPU/GPU/RAM/voltage badges +
+  cooling/warranty flags), a model-adaptive custom panel (Pi 5 shows
+  over_voltage_delta; Pi 3 shows sdram_freq), live temp/clock/throttle readout, a
+  "reboot to apply" prompt, and Reset.
+
+---
+
+## 23. HTTPS broke nginx startup — connection refused (2026-11-07)
+
+The §21 HTTPS attempt added `ExecStartPre=/usr/local/sbin/helix-gen-cert` as an
+nginx.service **drop-in**. But Debian's `nginx.service` has its own
+`ExecStartPre=/usr/sbin/nginx -t`, and a drop-in's ExecStartPre runs *after* the
+unit's own — so nginx ran its config test *before* the cert existed, the test
+failed on the missing `ssl_certificate`, and **nginx never started → connection
+refused** (both :80 and :443).
+
+Fixes (all verified by booting the built rootfs under `systemd-nspawn`):
+- Cert generation moved to its own oneshot `helix-gen-cert.service`, ordered
+  `Before=nginx.service`, so the cert exists before nginx's own `nginx -t`.
+- The `:443` server block is no longer inline. `helix-gen-cert` writes it to
+  `/etc/nginx/helix-https.d/https.conf` *only after* a cert exists, and the main
+  config does `include /etc/nginx/helix-https.d/*.conf;` (a wildcard matches zero
+  files without error). So a missing/failed cert degrades to HTTP-only and can
+  **never** stop nginx from starting.
+- `helix-gen-cert` uses `set -u` (not `-e`) and `exit 0`, so an openssl hiccup
+  leaves HTTP serving rather than aborting.
+- `systemd-networkd-wait-online` set to `--any --timeout=30` (nginx orders
+  After=network-online.target; the default waits for *all* links and could stall
+  the UI ~120s if a second NIC is down).
+- Console banner now shows both `http://<ip>/` and `https://<ip>/`.
+
+**Verification:** `systemd-nspawn --network-veth --boot` of the built rootfs →
+DHCP came up, `network-online`/`multi-user` reached, `helix-gen-cert` + nginx +
+helix-backend all **active**, listeners on :80/:443/:8082, and `curl` returned
+**HTTP=200, HTTPS=200, /api/health=200** with no manual intervention. The build
+also runs `nginx -t` with the cert present and again with it removed (HTTP-only
+fallback), and imports the real app, so a broken web UI fails the build.
+
+---
+
+## 24. Drive discovery/assignment + the "helper scripts never installed" class (2026-11-07)
+
+Deep-dive after "drives can't be seen/selected." Two findings:
+
+**Systemic: helper scripts exist in the repo but the build never installed them.**
+Audit of every `/usr/local/sbin/helix-*` the backend calls vs what the hooks
+install showed only `helix-osupdate`/`helix-gen-cert`/`helix-apply-network`/
+`helix-console-banner` were installed. Missing (so their routers errored at
+runtime): `helix-array-{start,stop,status}`, `helix-parity-{check,rebuild}`,
+`helix-array-lib.sh`, and `helix-shares-apply`/`helix-samba-apply`/
+`helix-nfs-apply`. `shares.py` also pointed `SHARES_SBIN` at a relative path that
+resolved to a non-existent `/shares` in the image. Fixes: hook 03 installs all
+array/share/gpu helpers to `/usr/local/sbin`; `SHARES_SBIN` is now
+`/usr/local/sbin` (env-overridable).
+
+**Missing feature: no physical-disk discovery.** `/api/drives/` and
+`/api/array/drives` only listed disks already written into `disks.cfg`, so a
+fresh system showed nothing to assign. Added:
+- `GET /api/drives/available` — `lsblk -J -b` enumeration of every physical disk
+  (size/model/serial/HDD-SSD/transport), flagged assigned-vs-free and marking the
+  boot medium so it's never offered to the array.
+- `POST /api/array/assign` — writes `disks.cfg` from selected parity/data devices
+  (sudo fallback; clear error when the boot medium is read-only, e.g. ISO/CD).
+- Frontend "⊹ Assign Disks" button + modal (lists all disks, role per disk, Save),
+  then the existing Start Array works.
+
+Note: persisting the assignment needs a **writable** boot medium. Booting the ISO
+as a Proxmox CD-ROM makes `/boot` read-only, so assignments won't survive reboot
+there — boot Helix from a writable USB/disk (or attach the image as a writable
+disk) for a real array.
+
+---
+
+## 25. Assign 500 → writable-config fallback + STATE_DIR fix (2026-11-07)
+
+"Add disks to the array" returned HTTP 500. Three stacked causes, all found by
+the deep-dive:
+
+- **Read-only boot:** booting the ISO as a CD makes `/boot` (hence
+  `/boot/config`) read-only, so `disks.cfg` couldn't be written. `config.py` now
+  detects a non-writable `/boot/config` and falls back to a writable in-RAM dir
+  (`$STATE_DIR/config`), seeded from the boot config. Assignments then work for
+  the session; a writable USB/disk is still needed to persist across reboots
+  (`HELIX_CONFIG_PERSISTENT` flags which mode is active).
+- **STATE_DIR never writable:** `STATE_DIR=/var/local/helix`, but hook 03 created
+  `/var/lib/helix` (wrong path) and `/var/local` is root-only — so the
+  unprivileged backend couldn't write the SMART cache, `array_state`, or audit
+  log (which also kept `/api/drives/` empty). Hook 03 now creates
+  `/var/local/helix` (+ `/config`) owned by `helix`.
+- **Opaque 500:** a raised `HTTPException` surfaced as a generic Starlette
+  "Internal Server Error" through `BaseHTTPMiddleware`. `/api/array/assign` now
+  returns `200 {ok:false,error}` and the UI shows the real message.
+
+---
+
+## 26. HELIXDATA persistent data partition (2026-11-07)
+
+The boot image is ~400 MB vs multi-GB USB/SD media, so the leftover space is now
+a persistent **ext4 partition labelled HELIXDATA** (not swap — swap/cache on flash
+wears it out; use zram or a real SSD for those).
+
+- **write-usb.sh**: FAT32 boot (2 GiB) + ext4 HELIXDATA (rest), done offline (safe).
+- **make-pi-image.sh**: FAT32 boot (512 MiB) + ext4 HELIXDATA (rest of the image).
+- **helix-firstboot.service** (`/usr/local/sbin/helix-firstboot`, `Before=helix-backend`):
+  grows the last partition to fill the disk (`parted resizepart` + `resize2fs` —
+  the standard, lower-risk operation; no live partition *creation*), mounts
+  HELIXDATA at `/mnt/data`, and seeds `/mnt/data/config` + `/mnt/data/appdata`.
+  No-op on a read-only ISO/CD boot.
+- **config.py** now prefers `/mnt/data/config` (persistent) → `/boot/config`
+  (writable boot) → `$STATE_DIR/config` (RAM fallback), so config/array
+  assignments persist on writable media.
+
+---
+
+## 27. Array actually starts + versioning policy (2026-11-07)
+
+- **mergerfs/snapraid** were only in `packages-full` (images build `FULL=no`), so
+  the array could never start. Moved to `packages-base` (+`fuse3`).
+- **`helix-array-start` requires root** (mounts, mergerfs), but `array.py`
+  `_run_sbin` / parity / rebuild invoked the helpers **without sudo**, so they ran
+  as the unprivileged `helix` user and exited `Must run as root` — array_state
+  never became "started". Now all array helpers run via `sudo -n env
+  HELIX_CONFIG=… /bin/bash …` (`_sbin_cmd`). Format worked already because it used
+  `_sudo`.
+- **Format dialog** now shows a single **Done** button after completion.
+
+### Versioning policy
+`build/config/VERSION` is the revision stamped into `/etc/helix-version` (shown on
+the console banner + Settings → Helix OS Update). **Bump the PATCH/revision on
+every shipped update** so builds are distinguishable and the OTA updater flags new
+versions. Now **0.1.1** (the first patched revision over the initial 0.1.0 — all of
+today's boot/network/HTTPS/web-UI/drive/array fixes).
+
+---
+
+## 28. Release 0.1.2 + 0.1.3 — cache drive, SSH keys, writable disk, MCP (2026-11-08)
+
+Consolidated since 0.1.1:
+
+- **Cache/pool drive role (0.1.2).** Assign Disks modal gains a `cache` role;
+  `POST /api/array/assign` takes `cache[]`+`cache_fmt` and writes `[cacheN]`
+  sections; `helix-array-start` mounts them at `/mnt/cacheN` (separate from the
+  mergerfs array); `helix-array-status` reports a `cache` array. Shares set to
+  "use cache" land there first; the mover moves them to the array. Fixed a latent
+  `helix-array-status` bug (literal `,\n` separator → invalid JSON for 2+ entries).
+- **SSH keys actually load (0.1.2).** The banner promised `/boot/config/ssh/` but
+  nothing read it. `helix-firstboot` now loads `*.pub` from there into the `helix`
+  user's `authorized_keys` (login is key-only, root disabled), before the HELIXDATA
+  early-exit so it works on CD boot too. On a writable medium the keys persist.
+- **Writable disk image for Proxmox.** `helix-os-disk-YYYYMMDD.qcow2` (built with
+  `HELIX_OUTPUT=<dir> write-usb.sh` → raw → `qemu-img convert -c`). Boots via its
+  own GRUB and has ~1.7 GB free on `/boot`, so OTA applies (the ISO-as-CD can't —
+  `/boot` is read-only). `build/grub/grub.cfg` now uses serial+console terminals
+  and `console=ttyS0 console=tty0` for reliable headless auto-boot.
+- **OTA read-only message.** `helix-osupdate stage` detects a read-only/zero-free
+  boot medium and says to write Helix to a USB/disk, instead of "have 0".
+- **MCP server (0.1.3).** `webui/backend/routers/mcp.py` — dependency-free
+  Streamable-HTTP JSON-RPC at `POST /mcp` (proxied by nginx on :80/:443). Tools:
+  `system_stats, array_status, list_disks, list_shares, list_docker,
+  hardware_info, array_start, array_stop` — each a loopback call to the local API,
+  run via `run_in_threadpool` to avoid deadlocking the single-worker event loop.
+  **Auth fails closed**: every call needs `Authorization: Bearer <token>` where the
+  token is a Helix API key (Settings → API Keys); with no keys configured it refuses
+  all calls. Point an MCP client at `http(s)://<helix-ip>/mcp` with that bearer token.
+  See [[helix-ota-release-process]] for publishing. Now **0.1.3**.
+
+*Last updated: 2026-11-08. Source: direct binary analysis of unRAIDServer-7.3.4-x86_64.zip.*
+
+---
+
+### 19.7 Unmerged work: confirm the branch before building a release
+
+**Incident:** v0.1.1 to v0.1.4 were built from `fix/live-boot-storage-drivers`, whose 22 commits were never merged. v2.0.0 was built from `main`, which silently removed the console IP banner, DHCP fallback, chroot DNS, boot splash, array/share helpers, HELIXDATA partition, the MCP server, and the original storage-driver fix. Several sessions then re-diagnosed and re-implemented regressions from scratch.
+
+**Rules:**
+- Before a release, run `git log --all --oneline --not main` and `git worktree list`. Unmerged commits must be merged or explicitly dropped.
+- When something "stopped working", run `git log --all --grep=<feature>` before writing a fix.
+- `build.sh` deletes `output/`; edit sources such as `build/usb-layout/`, never generated files.
+- Boot-test in QEMU before publishing (real image over emulated USB, then check `/api/health`).
+- For troubleshooting, compare with Unraid's equivalent in `bzroot-fs/` or `unraid-extracted/bzmodules`.
 

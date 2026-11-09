@@ -60,18 +60,16 @@ EOF
 
 systemctl enable helix-config-network
 
-# ── Default fallback network config (DHCP on all Ethernet) ───────────────────
-# helix-apply-network writes 10-helix-*.network files at boot. This 05- file
-# is a catch-all that ensures any Ethernet interface gets DHCP even if that
-# service fails or runs after networkd has already started.
-mkdir -p /etc/systemd/network
-cat > /etc/systemd/network/05-helix-fallback.network <<'NETEOF'
-[Match]
-Type=ether
-
-[Network]
-DHCP=yes
-IPv6AcceptRA=yes
-NETEOF
+# ── Make network-online.target complete promptly ──────────────────────────────
+# nginx (and other services) order After=network-online.target. The default
+# systemd-networkd-wait-online waits for ALL managed links, so one down/absent
+# interface can stall the web UI for ~120s after boot. --any lets a single link
+# coming online satisfy it, with a bounded timeout.
+mkdir -p /etc/systemd/system/systemd-networkd-wait-online.service.d
+cat > /etc/systemd/system/systemd-networkd-wait-online.service.d/helix.conf <<'WOEOF'
+[Service]
+ExecStart=
+ExecStart=/lib/systemd/systemd-networkd-wait-online --any --timeout=30
+WOEOF
 
 echo "==> [hook 02] Done."

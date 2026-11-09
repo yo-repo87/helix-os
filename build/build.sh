@@ -99,6 +99,16 @@ cleanup_mounts() {
 }
 trap cleanup_mounts EXIT
 
+# Working DNS inside the chroot so apt AND pip (in the hooks) can resolve hosts.
+# systemd-resolved's postinst repoints /etc/resolv.conf at a stub that does not
+# exist in the chroot, which silently breaks pip; (re)write a real file here and
+# again right before the hooks run.
+write_resolv_conf() {
+    rm -f "$ROOTFS_DIR/etc/resolv.conf"
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$ROOTFS_DIR/etc/resolv.conf"
+}
+write_resolv_conf
+
 chroot "$ROOTFS_DIR" /bin/bash -c "
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -107,6 +117,10 @@ chroot "$ROOTFS_DIR" /bin/bash -c "
     apt-get clean
     rm -rf /var/lib/apt/lists/*
 "
+
+# apt's systemd-resolved install may have clobbered resolv.conf — restore it so
+# the customization hooks (notably pip in 03-helix-install.sh) have DNS.
+write_resolv_conf
 
 # ── Step 3: Run customization hooks ──────────────────────────────────────────
 echo ""
@@ -122,12 +136,27 @@ if [ -d "$WEBUI_SRC" ]; then
     cp -r "$WEBUI_SRC" "$ROOTFS_DIR/build/webui"
 fi
 
+# Copy helper script trees the hooks install into the image (network bring-up,
+# array/share/gpu helpers). Without these the services that reference
+# /usr/local/sbin/helix-* fail at boot (e.g. no network config is applied).
+for helper in network array shares gpu; do
+    if [ -d "$SCRIPT_DIR/../$helper" ]; then
+        echo "  Copying $helper/ into chroot..."
+        cp -r "$SCRIPT_DIR/../$helper" "$ROOTFS_DIR/build/$helper"
+    fi
+done
+
 for hook in "$BUILD_DIR/hooks/"*.sh; do
     echo "  Running: $(basename "$hook")"
     chmod +x "$hook"
     cp "$hook" "$ROOTFS_DIR/tmp/$(basename "$hook")"
     chroot "$ROOTFS_DIR" /bin/bash "/tmp/$(basename "$hook")"
 done
+
+# Hand runtime DNS back to systemd-resolved in the shipped image (it is enabled
+# and gets upstream servers from networkd/DHCP). The build-time static file above
+# was only needed so pip could resolve pypi.org.
+ln -sf /run/systemd/resolve/stub-resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/dev/null || true
 
 cleanup_mounts
 trap - EXIT

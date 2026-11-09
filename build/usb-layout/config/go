@@ -4,9 +4,6 @@
 # Runs once at boot (via helix-startup.service) after network is up.
 # Customize this file to run commands at startup.
 
-# Start the Helix OS management daemon
-/usr/local/sbin/hive-mgmtd &
-
 # Example: start a Docker container automatically
 # docker start my-container
 

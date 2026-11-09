@@ -45,6 +45,96 @@ def list_drives():
     return [{k: v for k, v in d.items() if k != "attributes"} for d in drives]
 
 
+def _assigned_map() -> dict:
+    """device -> (role, section) from disks.cfg (what's already in the array)."""
+    from config import DISKS_CFG
+    out = {}
+    try:
+        text = Path(DISKS_CFG).read_text()
+    except Exception:
+        return out
+    section = None
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(r'^\[(\w+)\]$', line)
+        if m:
+            section = m.group(1)
+            continue
+        if section and line.startswith("device="):
+            dev = line.split("=", 1)[1].strip()
+            if section.startswith("parity"):
+                role = "parity"
+            elif section.startswith(("cache", "pool")):
+                role = "cache"
+            else:
+                role = "data"
+            out[dev] = (role, section)
+    return out
+
+
+def _boot_disk() -> str:
+    """Parent disk backing /boot (the HELIXBOOT medium) — never assignable."""
+    try:
+        src = subprocess.run(["findmnt", "-n", "-o", "SOURCE", "--target", "/boot"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if not src or not src.startswith("/dev/"):
+            return ""
+        pk = subprocess.run(["lsblk", "-no", "PKNAME", src],
+                            capture_output=True, text=True, timeout=5).stdout.strip().splitlines()
+        return f"/dev/{pk[0].strip()}" if pk and pk[0].strip() else src
+    except Exception:
+        return ""
+
+
+@router.get("/available")
+def available_drives():
+    """Every physical disk on the machine (via lsblk), flagged assigned vs free.
+
+    This is what the drive-assignment UI lists — unlike '/', which only shows
+    disks already written into the array config. The boot medium is flagged so
+    the UI won't offer it for the array.
+    """
+    assigned = _assigned_map()
+    boot = _boot_disk()
+    disks = []
+    try:
+        r = subprocess.run(
+            ["lsblk", "-J", "-b", "-o",
+             "NAME,PATH,SIZE,TYPE,MODEL,SERIAL,ROTA,TRAN,MOUNTPOINT,FSTYPE,VENDOR"],
+            capture_output=True, text=True, timeout=15)
+        data = json.loads(r.stdout or "{}")
+    except Exception as e:
+        return {"disks": [], "error": str(e), "boot_disk": boot}
+
+    for d in data.get("blockdevices", []):
+        if d.get("type") != "disk":
+            continue  # skip partitions, loop, rom/CD, lvm
+        name = d.get("name") or ""
+        # Skip pseudo/virtual/empty devices (floppy, loop, ram, zram, md, dm, sr).
+        if (d.get("size") or 0) < 1_000_000 or name.startswith(
+                ("fd", "sr", "loop", "ram", "zram", "md", "dm-", "nbd")):
+            continue
+        path = d.get("path") or f"/dev/{name}"
+        role, aname = assigned.get(path, ("", ""))
+        rota = d.get("rota")
+        disks.append({
+            "device": path,
+            "size_gb": round((d.get("size") or 0) / 1e9, 2),
+            "model": (d.get("model") or "").strip(),
+            "serial": (d.get("serial") or "").strip(),
+            "kind": "HDD" if rota in (True, 1, "1") else "SSD",
+            "tran": d.get("tran") or "",
+            "fstype": d.get("fstype") or "",
+            "mountpoint": d.get("mountpoint") or "",
+            "assigned": bool(role),
+            "role": role,
+            "array_name": aname,
+            "is_boot": (path == boot),
+            "partitions": [c.get("name") for c in (d.get("children") or [])],
+        })
+    return {"disks": disks, "boot_disk": boot}
+
+
 @router.get("/{name}/smart")
 def drive_smart(name: str):
     """Full SMART attribute table for one drive."""
@@ -184,11 +274,8 @@ def format_drive(name: str, req: FormatReq):
         raise HTTPException(400, "fs must be xfs, btrfs, or ext4")
 
     # Safety: refuse if mounted
-    rc, out, _ = subprocess.run(["findmnt", "-n", device],
-                                  capture_output=True, text=True).returncode, \
-                 *subprocess.run(["findmnt", "-n", device],
-                                  capture_output=True, text=True).stdout.splitlines()[:1], ""
-    if rc == 0 and out:
+    mnt = subprocess.run(["findmnt", "-n", device], capture_output=True, text=True)
+    if mnt.returncode == 0 and mnt.stdout.strip():
         raise HTTPException(409, f"{device} is currently mounted — unmount first")
 
     label_args: list[str] = []
@@ -214,11 +301,8 @@ def _run_preclear(device: str):
     _preclear_jobs[device] = {"pct": 0, "done": False, "error": ""}
     try:
         # Get drive size
-        rc, out, _ = subprocess.run(
-            ["blockdev", "--getsize64", device],
-            capture_output=True, text=True).returncode, \
-            *subprocess.run(["blockdev", "--getsize64", device],
-                             capture_output=True, text=True).stdout.strip().split()[:1], ""
+        bd = subprocess.run(["blockdev", "--getsize64", device], capture_output=True, text=True)
+        out = bd.stdout.strip()
         total_bytes = int(out) if out.isdigit() else 0
 
         proc = subprocess.Popen(

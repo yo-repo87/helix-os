@@ -274,8 +274,16 @@ def _clean_extras(raw: dict | None) -> dict:
         host, cont = str(v.get("host", "")).strip(), str(v.get("container", "")).strip()
         if not host and not cont:
             continue
-        if not host.startswith("/") or not cont.startswith("/"):
-            raise HTTPException(400, f"Folder paths must be absolute (start with /): {host!r} -> {cont!r}")
+        if cont and not cont.startswith("/"):
+            cont = "/" + cont          # a bare name like "Anime" means /Anime inside the container
+        if not host:
+            raise HTTPException(400, f"Extra folder: the server folder is empty (the container path is {cont!r})")
+        if not cont:
+            raise HTTPException(400, f"Extra folder {host!r}: say where it appears inside the container, e.g. /data")
+        if not host.startswith("/"):
+            raise HTTPException(400, f"Extra folder: the server folder must start with / (got {host!r}), e.g. /mnt/user/media")
+        if ".." in host.split("/") or ".." in cont.split("/"):
+            raise HTTPException(400, "Folder paths cannot contain '..'")
         if ":" in host or ":" in cont:
             raise HTTPException(400, "Folder paths cannot contain ':'")
         vols.append({"host": host, "container": cont, "ro": bool(v.get("ro"))})

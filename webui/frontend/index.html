@@ -2699,9 +2699,9 @@ function appfAddEnv(k = '', v = '') {
 function appfAddVol(h = '', c = '', ro = false) {
   document.getElementById('appf-vol').insertAdjacentHTML('beforeend',
     `<div class="appf-vol-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
-       <input class="settings-input appf-vh" placeholder="/mnt/user/media" value="${_esc(h)}" style="flex:2">
+       <input class="settings-input appf-vh" placeholder="Folder on the server, e.g. /mnt/user/media/Anime" title="Folder on this server" list="appf-vh-list" value="${_esc(h)}" style="flex:2">
        <span style="color:var(--fg-dim)">→</span>
-       <input class="settings-input appf-vc" placeholder="/data (inside the container)" value="${_esc(c)}" style="flex:2">
+       <input class="settings-input appf-vc" placeholder="Path inside the app, e.g. /anime" title="Where the app sees the folder; must start with /" value="${_esc(c)}" style="flex:2">
        <label style="font-size:11px;color:var(--fg-muted);white-space:nowrap"><input type="checkbox" class="appf-vr" ${ro ? 'checked' : ''}> read-only</label>
        <button class="ctr-btn" onclick="this.parentElement.remove()" title="Remove">✕</button></div>`);
 }
@@ -2838,6 +2838,7 @@ async function openAppForm(mode, name) {
       <div id="appf-env"></div>
       <div><button class="ctr-btn" onclick="appfAddEnv()">+ Add variable</button></div>
       <div class="form-label" style="margin-top:6px">Extra folders${tipHtml('Map a folder on this server into the container, e.g. your media library at /mnt/user/media to /data. Read-only stops the app from changing the files.')}</div>
+      <datalist id="appf-vh-list">${(_pickerShares || ['appdata']).map(n => `<option value="/mnt/user/${_esc(n)}/">`).join('')}</datalist>
       <div id="appf-vol"></div>
       <div><button class="ctr-btn" onclick="appfAddVol()">+ Add folder</button></div>
       <div id="appf-msg" style="font-size:12px;color:var(--err)"></div>

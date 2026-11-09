@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.18)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.19)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1286,6 +1286,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Existing installs would never see a new default template source; a removed default would be resurrected | `load_sources()` returned the saved list untouched | `template_sources.seen` records which defaults were already offered: new defaults are added once, a removal sticks; the pre-existing defaults (`builtin`, `unraid-ca`) count as already offered |
 | App folder fields were free-text boxes; a value with `:` could rewrite a volume mapping; Docker would create missing folders as root | no validation; `_do_install` created any path | UI: share drop-down + folder box (suggests existing folders, a new name = "created on install", "Other path…" for anything else, warning when the share doesn't exist yet); server: `_validate_path_vars` (absolute, no `..`, no `:`/newlines) → 400, `_ensure_dirs` creates folders as the Helix user and only under `/mnt` |
 | Catalog search box did nothing (typing "plex" left the list unchanged) | 4 Pi-Hosted entries (Headphones, SmokePing, SyncThing, UniFi Controller) have `"description": null`; the loader used `item.get("description", "")`, which only defaults a *missing* key, so `None` reached the browser, where `t.description.toLowerCase()` threw inside `filterApps` — the exception silently aborted the filter | loader uses `item.get(k) or ""`; `GET /api/apps/templates` always returns strings; `filterApps`/`renderCatalog` are null-safe (`String(v ?? '')`, `_esc`). Browser-tested with null/all-null entries, clearing, paging. |
+| Adding an extra folder to Emby failed with "Folder paths must be absolute: '/mnt/user/smoke-share/Anime' -> 'Anime'" | the container-side box needs an absolute path, but the message printed both and read as if the (valid) host path was wrong; the boxes were unlabeled | `_clean_extras` now says which side is wrong, treats a bare container name as `/Anime`, rejects `..`; placeholders say "Folder on the server" / "Path inside the app"; host box suggests `/mnt/user/<share>/` |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)

@@ -683,6 +683,28 @@ main { padding-bottom: 44px; }
   .hdr-uptime { display: none; }
 }
 
+/* ── Network page ───────────────────────────────────────────── */
+.net-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.net-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.net-stat .k { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); }
+.net-stat .v { font-size: 15px; font-weight: 600; margin-top: 3px; word-break: break-all; }
+.net-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+.net-card-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 16px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); border-bottom: 1px solid var(--border); }
+.net-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.net-table th { padding: 7px 12px; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.net-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.net-table tr:last-child td { border-bottom: 0; }
+.net-empty { text-align: center; color: var(--fg-dim); padding: 18px !important; }
+.net-mono { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
+.net-pre { margin: 0; padding: 10px 16px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; white-space: pre-wrap; border-top: 1px solid var(--border); max-height: 280px; overflow: auto; }
+.net-row { display: flex; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.net-row > div { flex: 1; min-width: 170px; }
+.net-row[hidden], #net-pending[hidden], .net-pre[hidden] { display: none; }   /* display:flex/block would otherwise beat the hidden attribute */
+.net-sec { margin: 14px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); border-top: 1px solid var(--border); padding-top: 12px; }
+.net-note { font-size: 11.5px; color: var(--fg-muted); margin-top: 4px; }
+.net-bad { color: var(--err); font-size: 11.5px; min-height: 14px; margin-top: 3px; }
+#net-pending { position: fixed; top: 0; left: var(--nav-w); right: 0; z-index: 150; padding: 9px 16px; background: var(--warn-dim, #4a3b12); color: var(--warn, #f0b429); border-bottom: 1px solid var(--warn, #f0b429); font-size: 13px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
 /* ── File manager ───────────────────────────────────────────── */
 .fm-th th { padding: 8px 10px; font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); border-bottom: 1px solid var(--border); white-space: nowrap; }
 .fm-th th[data-sort] { cursor: pointer; user-select: none; }
@@ -1825,6 +1847,61 @@ main { padding-bottom: 44px; }
     <div id="proxy-routes-list"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
   </div>
 
+  <!-- ── Network (hidden until #network) ── -->
+  <div id="network-section" hidden>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <span class="section-title" style="margin:0">Network</span>
+      <span id="net-host" style="font-size:12px;color:var(--fg-muted)"></span>
+    </div>
+    <div id="net-summary" class="net-grid"></div>
+
+    <div class="net-card">
+      <div class="net-card-h"><span>Interfaces</span>
+        <label style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="net-showvirt" onchange="net.showVirtual=this.checked;netRenderIfaces()"> show container and virtual interfaces</label></div>
+      <div style="overflow:auto"><table class="net-table" id="net-iftable"><thead><tr>
+        <th>Interface</th><th>Status</th><th>Addresses</th><th>MAC</th><th>Link</th><th>MTU</th><th>Received</th><th>Sent</th><th>Driver</th></tr></thead>
+        <tbody id="net-ifbody"><tr><td colspan="9" class="net-empty">Loading…</td></tr></tbody></table></div>
+    </div>
+
+    <div class="net-card">
+      <div class="net-card-h"><span>Network settings</span><span id="net-cfgnote" style="font-weight:400;text-transform:none;letter-spacing:0"></span></div>
+      <div id="net-cfg" style="padding:12px 16px"></div>
+    </div>
+
+    <div class="net-card">
+      <div class="net-card-h"><span>Routing table</span></div>
+      <div style="overflow:auto"><table class="net-table"><thead><tr><th>Destination</th><th>Gateway</th><th>Interface</th><th>Metric</th><th>Source</th><th></th></tr></thead>
+        <tbody id="net-routes"><tr><td colspan="6" class="net-empty">Loading…</td></tr></tbody></table></div>
+      <div style="padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--border)">
+        <span style="font-size:12px;color:var(--fg-muted)">Add a static route</span>
+        <input id="nr-dest" class="settings-input" placeholder="10.20.0.0/16" style="width:150px">
+        <span style="color:var(--fg-dim)">via</span>
+        <input id="nr-gw" class="settings-input" placeholder="gateway, e.g. 192.168.1.2" style="width:180px">
+        <input id="nr-metric" class="settings-input" placeholder="metric" style="width:80px" inputmode="numeric">
+        <button class="ctr-btn" onclick="netAddRoute()">Add route</button>
+        <span id="nr-msg" class="fm-err"></span>
+      </div>
+    </div>
+
+    <div class="net-card">
+      <div class="net-card-h"><span>Diagnostics</span></div>
+      <div style="padding:12px 16px;display:flex;gap:18px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px"><div class="form-label">Ping</div><div style="display:flex;gap:6px"><input id="nd-ping" class="settings-input" placeholder="host or IP" list="nd-hosts"><button class="ctr-btn" onclick="netDiag('ping')">Ping</button></div></div>
+        <div style="flex:1;min-width:240px"><div class="form-label">DNS lookup</div><div style="display:flex;gap:6px"><input id="nd-dns" class="settings-input" placeholder="name, e.g. github.com" list="nd-hosts"><button class="ctr-btn" onclick="netDiag('dns')">Look up</button></div></div>
+        <div style="flex:1;min-width:240px"><div class="form-label">Trace route</div><div style="display:flex;gap:6px"><input id="nd-trace" class="settings-input" placeholder="host or IP" list="nd-hosts"><button class="ctr-btn" onclick="netDiag('trace')">Trace</button></div></div>
+      </div>
+      <datalist id="nd-hosts"><option value="1.1.1.1"><option value="8.8.8.8"><option value="github.com"><option value="pkgs.tailscale.com"></datalist>
+      <pre id="nd-out" class="net-pre" hidden></pre>
+    </div>
+
+    <div class="net-card">
+      <div class="net-card-h"><span>Listening ports</span>
+        <input id="nl-filter" class="settings-input" placeholder="filter" style="width:160px;font-size:11px;padding:3px 8px" oninput="netRenderListening()"></div>
+      <div style="overflow:auto;max-height:340px"><table class="net-table"><thead><tr><th>Port</th><th>Protocol</th><th>Reachable from</th><th>Address</th><th>Program</th></tr></thead>
+        <tbody id="net-listen"><tr><td colspan="5" class="net-empty">Loading…</td></tr></tbody></table></div>
+    </div>
+  </div>
+
   <!-- ── LAN Scanner (hidden until #scanner) ── -->
   <div id="scanner-section" hidden>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
@@ -1855,6 +1932,7 @@ main { padding-bottom: 44px; }
     <div id="cmk-services-list" style="display:none;margin-top:10px"></div>
   </div>
 </main>
+<div id="net-pending" hidden><span>⚠ A network change is waiting for your confirmation. It will be undone in <b id="net-pending-t">…</b> unless you keep it.</span><button class="settings-btn primary" onclick="netKeep()">Keep</button><button class="ctr-btn" onclick="netUndo()">Undo now</button></div>
 <div id="helix-footer" role="status" aria-live="polite"><span id="footer-dot" class="footer-dot"></span><span id="footer-text">Array …</span><span id="footer-job"></span></div>
 
 <!-- ── MODAL ─────────────────────────────────────────────────── -->
@@ -2599,6 +2677,7 @@ async function refresh() {
   try { renderShares(shares || []); } catch (e) { console.warn('renderShares', e); }
   try { renderContainers((ctrs && ctrs.containers) || []); } catch (e) { console.warn('renderContainers', e); }
   if (netStatus) { try { renderNetwork(netStatus); } catch (e) { console.warn('renderNetwork', e); } }
+  netCheckPending();
 }
 
 // ── Nav hash routing ────────────────────────────────────────────
@@ -4026,6 +4105,7 @@ const SECTION_IDS = {
   '#zfs':          'zfs-section',
   '#proxy':        'proxy-section',
   '#scanner':      'scanner-section',
+  '#network':      'network-section',
 };
 const SECTION_LOADERS = {
   '#config':       () => { loadSettings(); loadLoginUsers(); loadAuditLog(); },
@@ -4044,6 +4124,7 @@ const SECTION_LOADERS = {
   '#zfs':          loadZfs,
   '#proxy':        loadProxy,
   '#scanner':      loadScannerHosts,
+  '#network':      loadNetworkPage,
 };
 
 function updateSections() {
@@ -4058,14 +4139,16 @@ function updateSections() {
   // Show/hide dashboard content
   const isDash = !activeId;
   document.querySelectorAll(
-    'main > *:not(.demo-banner):not(#settings-section):not(#users-section):not(#notif-settings-section):not(#apps-section):not(#vpn-section):not(#vms-section):not(#terminal-section):not(#diagnostics-section):not(#scheduler-section):not(#files-section):not(#gpu-mgmt-section):not(#hardware-section):not(#backup-section):not(#zfs-section):not(#proxy-section):not(#scanner-section):not(#modal-overlay)'
+    'main > *:not(.demo-banner):not(#settings-section):not(#users-section):not(#notif-settings-section):not(#apps-section):not(#vpn-section):not(#vms-section):not(#terminal-section):not(#diagnostics-section):not(#scheduler-section):not(#files-section):not(#gpu-mgmt-section):not(#hardware-section):not(#backup-section):not(#zfs-section):not(#proxy-section):not(#scanner-section):not(#network-section):not(#net-pending):not(#modal-overlay)'
   ).forEach(el => { el.hidden = !isDash; });
 
   if (SECTION_LOADERS[hash]) SECTION_LOADERS[hash]();
 }
 window.addEventListener('hashchange', () => { handleHash(); updateSections(); });
 
-updateSections();
+// Not at parse time: the loaders for #files, #network ... use variables that later script blocks define,
+// so opening or reloading the page on one of those routes used to fail with "Cannot access ... before initialization".
+document.addEventListener('DOMContentLoaded', updateSections);
 
 // ── Modal ────────────────────────────────────────────────────────
 function showModal(title, bodyHtml, actionsHtml = '') {
@@ -7038,6 +7121,296 @@ async function fmUploadFiles(files) {
     : `<span style="color:var(--ok)">${ctl.cancel ? 'Upload cancelled.' : 'Upload complete.'}</span>`;
   if (!failed.length) setTimeout(() => { if (!fm.uploading) el.hidden = true; }, 4000);
   if (fm.path === dir) fbNavigate(dir);
+}
+
+// ── Network page ──────────────────────────────────────────────────────────────
+// Live interfaces, address/DNS/bonding/bridge/VLAN settings (applied by systemd-networkd), routing table,
+// diagnostics and listening ports. A settings change reverts by itself after 90 s unless it is confirmed,
+// so a wrong address can never lock you out of the machine.
+const net = {ifaces: [], prev: {}, rates: {}, cfg: null, routes: [], dns: null, listening: [], physical: [], primary: null,
+             showVirtual: false, timer: null, avahi: null, pendingT: null};
+const NET_BOND_MODES = {'1': 'Active backup (failover, no switch setup needed)', '0': 'Round robin (needs switch support)', '2': 'XOR (needs switch support)',
+  '3': 'Broadcast (needs switch support)', '4': 'LACP 802.3ad (needs switch support)', '5': 'Adaptive transmit load balancing', '6': 'Adaptive load balancing'};
+const NET_KIND = {physical: 'Ethernet', bond: 'Bond', bridge: 'Bridge', vlan: 'VLAN', tailscale: 'Tailscale', veth: 'Container', virtual: 'Virtual', wireguard: 'WireGuard'};
+
+function loadNetworkPage() {
+  netRefresh(); netLoadCfg(); netLoadRoutes(); netLoadDns(); netLoadListening(); netCheckPending();
+  clearInterval(net.timer);
+  net.timer = setInterval(() => { if (location.hash === '#network' && !document.hidden) netRefresh(); }, 3000);
+}
+
+async function netRefresh() {
+  try {
+    const d = await apiFetch('/api/network/interfaces');
+    const t = d.time;
+    d.interfaces.forEach(i => {
+      const p = net.prev[i.name];
+      if (p && t > p.t) net.rates[i.name] = {rx: Math.max(0, (i.rx_bytes - p.rx) / (t - p.t)), tx: Math.max(0, (i.tx_bytes - p.tx) / (t - p.t))};
+      net.prev[i.name] = {rx: i.rx_bytes, tx: i.tx_bytes, t};
+    });
+    net.ifaces = d.interfaces; net.primary = d.primary; net.physical = d.physical;
+    netRenderIfaces(); netRenderSummary();
+    if (net.cfg && !document.getElementById('ncf-if')) netRenderCfg();
+  } catch (e) {
+    document.getElementById('net-ifbody').innerHTML = `<tr><td colspan="9" class="net-empty">Could not read the interfaces (${_esc(e.message)})</td></tr>`;
+  }
+}
+
+function netRenderSummary() {
+  const p = net.ifaces.find(i => i.name === net.primary) || net.ifaces.find(i => i.ipv4.length && !i.hidden);
+  const gw = (net.routes.find(r => r.dest === 'default' && r.family === 'IPv4') || {}).gateway || '—';
+  const dns = net.dns ? (net.dns.servers.join(', ') || '—') : '…';
+  const stat = (k, v) => `<div class="net-stat"><div class="k">${k}</div><div class="v">${_esc(v)}</div></div>`;
+  document.getElementById('net-summary').innerHTML =
+    stat('Connected through', p ? p.name : 'no connection') + stat('IPv4 address', p && p.ipv4[0] ? p.ipv4[0] : '—') + stat('Gateway', gw) + stat('DNS servers', dns) +
+    stat('Link speed', p && p.speed_mbps ? (p.speed_mbps >= 1000 ? p.speed_mbps / 1000 + ' Gbit/s' : p.speed_mbps + ' Mbit/s') + (p.duplex ? ' ' + p.duplex : '') : '—');
+  if (net.dns) document.getElementById('net-host').textContent = `${net.dns.hostname}${net.dns.domains.length ? ' · search ' + net.dns.domains.join(', ') : ''}`;
+}
+
+function netRenderIfaces() {
+  const rows = net.ifaces.filter(i => net.showVirtual || !i.hidden);
+  const dot = (c) => `<span class="ctr-dot ${c}" style="display:inline-block;margin-right:6px"></span>`;
+  document.getElementById('net-ifbody').innerHTML = rows.length ? rows.map(i => {
+    const state = i.up && (i.carrier || !i.physical) ? dot('running') + 'Up' : i.up ? dot('paused') + 'No cable' : dot('stopped') + 'Down';
+    const r = net.rates[i.name] || {rx: 0, tx: 0};
+    const role = i.master ? `<div class="net-note" style="margin:0">in ${_esc(i.master)}</div>` : i.default_route ? '<div class="net-note" style="margin:0;color:var(--accent)">default route</div>' : '';
+    return `<tr><td><b>${_esc(i.name)}</b><div class="net-note" style="margin:0">${_esc(NET_KIND[i.kind] || i.kind)}</div>${role}</td><td>${state}</td>
+      <td class="net-mono">${i.ipv4.map(_esc).join('<br>') || '<span style="color:var(--fg-dim)">—</span>'}${i.ipv6.length ? `<div style="color:var(--fg-dim)">${i.ipv6.slice(0, 2).map(_esc).join('<br>')}</div>` : ''}</td>
+      <td class="net-mono">${_esc(i.mac)}</td>
+      <td>${i.speed_mbps ? (i.speed_mbps >= 1000 ? i.speed_mbps / 1000 + ' Gbit/s' : i.speed_mbps + ' Mbit/s') + (i.duplex ? ` <span style="color:var(--fg-dim)">${_esc(i.duplex)}</span>` : '') : '—'}</td>
+      <td>${i.mtu ?? '—'}</td>
+      <td>${fbFmtSize(i.rx_bytes)}<div class="net-note" style="margin:0">${fbFmtSize(r.rx)}/s${i.rx_errors ? ` · <span style="color:var(--err)">${i.rx_errors} errors</span>` : ''}</div></td>
+      <td>${fbFmtSize(i.tx_bytes)}<div class="net-note" style="margin:0">${fbFmtSize(r.tx)}/s${i.tx_errors ? ` · <span style="color:var(--err)">${i.tx_errors} errors</span>` : ''}</div></td>
+      <td>${_esc(i.driver || '—')}</td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="net-empty">No interfaces</td></tr>';
+}
+
+// ── settings ──────────────────────────────────────────────────────────────────
+async function netLoadCfg() {
+  try { net.cfg = await apiFetch('/api/network/config'); netRenderCfg(); }
+  catch (e) { document.getElementById('net-cfg').innerHTML = `<span style="color:var(--err)">Could not read the settings (${_esc(e.message)})</span>`; }
+}
+async function netLoadDns() { try { net.dns = await apiFetch('/api/network/dns'); netRenderSummary(); netRenderCfg(true); } catch (_) {} }
+
+function netRenderCfg(onlyIfPresent) {
+  const el = document.getElementById('net-cfg'), c = net.cfg; if (!c || (onlyIfPresent && !document.getElementById('ncf-if'))) return;
+  if (onlyIfPresent) { const n = document.getElementById('ncf-dnsnow'); if (n) n.textContent = net.dns ? 'In use now: ' + (net.dns.servers.join(', ') || 'none') : ''; return; }
+  const jumbo = +c.mtu > 1500;
+  el.innerHTML = `
+    <div class="net-row">
+      <div><div class="form-label">Network port</div><select id="ncf-if" class="settings-input"><option value="">Automatic (first port)</option>${net.physical.map(n => `<option>${_esc(n)}</option>`).join('')}</select>
+        <div class="net-note">The port that carries the address. Not used when bonding.</div></div>
+      <div><div class="form-label">IPv4 address</div><select id="ncf-dhcp" class="settings-input" onchange="netCfgToggle()"><option value="yes">Automatic (DHCP)</option><option value="no">Static</option></select></div>
+      <div><div class="form-label">IPv6</div><select id="ncf-v6" class="settings-input"><option value="auto">Automatic</option><option value="no">Disabled</option></select></div>
+    </div>
+    <div id="ncf-static" class="net-row" hidden>
+      <div><div class="form-label">IP address</div><input id="ncf-ip" class="settings-input" placeholder="192.168.1.50" autocomplete="off"></div>
+      <div><div class="form-label">Netmask</div><input id="ncf-mask" class="settings-input" placeholder="255.255.255.0 or 24" autocomplete="off"></div>
+      <div><div class="form-label">Gateway</div><input id="ncf-gw" class="settings-input" placeholder="192.168.1.1" autocomplete="off"></div>
+    </div>
+    <div class="net-row">
+      <div><div class="form-label">DNS server 1</div><input id="ncf-dns1" class="settings-input" placeholder="from DHCP" autocomplete="off"></div>
+      <div><div class="form-label">DNS server 2</div><input id="ncf-dns2" class="settings-input" placeholder="optional" autocomplete="off"></div>
+      <div><div class="form-label">Search domain</div><input id="ncf-domain" class="settings-input" placeholder="home.lan" autocomplete="off"></div>
+    </div>
+    <div class="net-note" id="ncf-dnsnow">${net.dns ? 'In use now: ' + _esc(net.dns.servers.join(', ') || 'none') : ''}</div>
+
+    <div class="net-sec">Advanced</div>
+    <div class="net-row">
+      <div><label style="font-size:12.5px"><input type="checkbox" id="ncf-jumbo" ${jumbo ? 'checked' : ''} onchange="netCfgToggle()"> Jumbo frames</label>
+        <div id="ncf-mtuwrap" ${jumbo ? '' : 'hidden'}><input id="ncf-mtu" class="settings-input" style="margin-top:6px" value="${jumbo ? _esc(c.mtu) : '9000'}" inputmode="numeric">
+          <div class="net-note">Every device on the path (switch, other machines) must use the same MTU, or traffic stalls.</div></div></div>
+      <div><div class="form-label">Name sent to the DHCP server</div><input id="ncf-dhcphost" class="settings-input" placeholder="the machine name" autocomplete="off"></div>
+      <div><div class="form-label">VLAN ID</div><input id="ncf-vlan" class="settings-input" inputmode="numeric" placeholder="0 = none"><div class="net-note">Adds a tagged interface on top of the main one.</div></div>
+    </div>
+    <div class="net-row">
+      <div><label style="font-size:12.5px"><input type="checkbox" id="ncf-bond" onchange="netCfgToggle()"> Bond several ports into one</label>
+        <div id="ncf-bondwrap" hidden style="margin-top:6px"><div class="form-label">Ports</div>
+          <div id="ncf-members" style="display:flex;gap:10px;flex-wrap:wrap">${net.physical.map(n => `<label style="font-size:12px"><input type="checkbox" class="ncf-mem" value="${_esc(n)}"> ${_esc(n)}</label>`).join('') || '<span class="net-note">No physical ports found</span>'}</div>
+          <div class="form-label" style="margin-top:6px">Mode</div><select id="ncf-bondmode" class="settings-input">${Object.entries(NET_BOND_MODES).map(([k, v]) => `<option value="${k}">${_esc(v)}</option>`).join('')}</select></div></div>
+      <div><label style="font-size:12.5px"><input type="checkbox" id="ncf-bridge" onchange="netCfgToggle()"> Bridge (br0)</label>
+        <div class="net-note">Lets virtual machines and containers get their own addresses on your network.</div></div>
+      <div><label style="font-size:12.5px"><input type="checkbox" id="ncf-avahi" onchange="netAvahiToggle(this)"> Announce on the network (mDNS)</label>
+        <div class="net-note" id="ncf-avahinote">Lets other computers reach this machine as <b>${_esc((net.dns && net.dns.hostname) || 'name')}.local</b>.</div></div>
+    </div>
+    <div id="ncf-err" class="net-bad"></div>
+    <div style="display:flex;gap:8px;margin-top:6px"><button class="settings-btn primary" onclick="netApply()">Apply…</button><button class="ctr-btn" onclick="netRenderCfgFresh()">Reset</button></div>`;
+  const $ = (id) => document.getElementById(id);
+  $('ncf-if').value = c.ifname; $('ncf-dhcp').value = c.use_dhcp; $('ncf-v6').value = c.use_dhcp6 === 'no' ? 'no' : 'auto';
+  $('ncf-ip').value = c.ipaddr; $('ncf-mask').value = c.netmask; $('ncf-gw').value = c.gateway;
+  $('ncf-dns1').value = c.dns_server1; $('ncf-dns2').value = c.dns_server2; $('ncf-domain').value = c.domain_name;
+  $('ncf-dhcphost').value = c.dhcp_hostname; $('ncf-vlan').value = c.vlan_id === '0' ? '' : c.vlan_id;
+  $('ncf-bond').checked = c.bonding === 'yes'; $('ncf-bondmode').value = c.bonding_mode; $('ncf-bridge').checked = c.bridging === 'yes';
+  const mem = c.bond_members.split(/\s+/); document.querySelectorAll('.ncf-mem').forEach(x => x.checked = mem.includes(x.value));
+  netCfgToggle(); netAvahiLoad();
+}
+async function netRenderCfgFresh() { await netLoadCfg(); }
+
+function netCfgToggle() {
+  const $ = (id) => document.getElementById(id);
+  const stat = $('ncf-dhcp').value === 'no';
+  $('ncf-static').hidden = !stat;
+  $('ncf-dns1').placeholder = stat ? 'e.g. 1.1.1.1' : 'from DHCP'; $('ncf-mtuwrap').hidden = !$('ncf-jumbo').checked;
+  $('ncf-bondwrap').hidden = !$('ncf-bond').checked; $('ncf-if').disabled = $('ncf-bond').checked;
+}
+
+function netCfgForm() {
+  const $ = (id) => document.getElementById(id), c = net.cfg;
+  const stat = $('ncf-dhcp').value === 'no';
+  return {
+    ifname: $('ncf-if').value, use_dhcp: $('ncf-dhcp').value, use_dhcp6: $('ncf-v6').value,
+    ipaddr: stat ? $('ncf-ip').value.trim() : '', netmask: stat ? ($('ncf-mask').value.trim() || '255.255.255.0') : c.netmask, gateway: stat ? $('ncf-gw').value.trim() : '',
+    dns_server1: $('ncf-dns1').value.trim(), dns_server2: $('ncf-dns2').value.trim(), domain_name: $('ncf-domain').value.trim(),
+    mtu: $('ncf-jumbo').checked ? $('ncf-mtu').value.trim() : '0', dhcp_hostname: $('ncf-dhcphost').value.trim(), vlan_id: $('ncf-vlan').value.trim() || '0',
+    bonding: $('ncf-bond').checked ? 'yes' : 'no', bond_members: [...document.querySelectorAll('.ncf-mem:checked')].map(x => x.value).join(' '),
+    bonding_mode: $('ncf-bondmode').value, bridging: $('ncf-bridge').checked ? 'yes' : 'no',
+  };
+}
+
+function netIp4(s) { const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s || ''); if (!m) return null; const p = m.slice(1).map(Number); return p.some(x => x > 255) ? null : (((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3]); }
+function netMaskBits(s) {
+  if (/^\/?\d{1,2}$/.test(s)) { const n = +s.replace('/', ''); return n >= 1 && n <= 32 ? n : null; }
+  const v = netIp4(s); if (v == null) return null; const inv = 4294967295 - v;
+  return (inv & (inv + 1)) === 0 && v !== 0 ? 32 - inv.toString(2).replace(/^0$/, '').length : null;
+}
+function netValidate(p) {
+  if (p.use_dhcp === 'no') {
+    const ip = netIp4(p.ipaddr); if (ip == null) return 'IP address: enter an IPv4 address such as 192.168.1.50';
+    const bits = netMaskBits(p.netmask); if (bits == null) return 'Netmask: enter a mask like 255.255.255.0 or a prefix like 24';
+    if (p.gateway) {
+      const gw = netIp4(p.gateway); if (gw == null) return 'Gateway: enter an IPv4 address';
+      const size = Math.pow(2, 32 - bits); if (Math.floor(gw / size) !== Math.floor(ip / size)) return `Gateway: ${p.gateway} is not on the same network as ${p.ipaddr}/${bits}, so this machine could not reach it`;
+      if (gw === ip) return 'Gateway: cannot be this machine\'s own address';
+    }
+  }
+  for (const [k, l] of [['dns_server1', 'DNS server 1'], ['dns_server2', 'DNS server 2']]) if (p[k] && netIp4(p[k]) == null && !/^[0-9a-fA-F:]+$/.test(p[k])) return `${l}: enter an IPv4 or IPv6 address`;
+  if (p.dns_server2 && !p.dns_server1) return 'DNS server 2: set DNS server 1 first';
+  if (p.mtu !== '0' && !(/^\d+$/.test(p.mtu) && +p.mtu >= 576 && +p.mtu <= 9216)) return 'MTU: use a value between 576 and 9216';
+  if (!/^\d+$/.test(p.vlan_id) || +p.vlan_id > 4094) return 'VLAN ID: use 0 (none) to 4094';
+  if (p.bonding === 'yes' && p.bond_members.split(' ').filter(Boolean).length < 2) return 'Bonding: tick at least two network ports';
+  return '';
+}
+
+function netDescribe(p) {
+  const c = net.cfg, out = [], addr = (x) => x.use_dhcp === 'yes' ? 'automatic (DHCP)' : `static ${x.ipaddr}/${netMaskBits(x.netmask) || x.netmask}${x.gateway ? ' via ' + x.gateway : ''}`;
+  if (addr(p) !== addr(c)) out.push(`IPv4: ${addr(c)} → <b>${_esc(addr(p))}</b>`);
+  if (p.ifname !== c.ifname) out.push(`Network port: ${_esc(c.ifname || 'automatic')} → <b>${_esc(p.ifname || 'automatic')}</b>`);
+  if (p.use_dhcp6 !== (c.use_dhcp6 === 'no' ? 'no' : 'auto')) out.push(`IPv6: <b>${p.use_dhcp6 === 'no' ? 'disabled' : 'automatic'}</b>`);
+  if (p.dns_server1 !== c.dns_server1 || p.dns_server2 !== c.dns_server2) out.push(`DNS: <b>${_esc([p.dns_server1, p.dns_server2].filter(Boolean).join(', ') || 'from DHCP')}</b>`);
+  if (p.domain_name !== c.domain_name) out.push(`Search domain: <b>${_esc(p.domain_name || 'none')}</b>`);
+  if (p.mtu !== c.mtu) out.push(`MTU: <b>${p.mtu === '0' ? 'default' : _esc(p.mtu)}</b>`);
+  if (p.bonding !== c.bonding || p.bond_members !== c.bond_members || p.bonding_mode !== c.bonding_mode) out.push(`Bonding: <b>${p.bonding === 'yes' ? _esc(p.bond_members.split(' ').join(' + ')) + ', mode ' + p.bonding_mode : 'off'}</b>`);
+  if (p.bridging !== c.bridging) out.push(`Bridge: <b>${p.bridging === 'yes' ? 'on' : 'off'}</b>`);
+  if (p.vlan_id !== c.vlan_id) out.push(`VLAN: <b>${p.vlan_id === '0' ? 'none' : _esc(p.vlan_id)}</b>`);
+  if (p.dhcp_hostname !== c.dhcp_hostname) out.push(`DHCP name: <b>${_esc(p.dhcp_hostname || 'default')}</b>`);
+  return out;
+}
+
+function netApply() {
+  const err = document.getElementById('ncf-err'), p = netCfgForm(); err.textContent = '';
+  const bad = netValidate(p); if (bad) { err.textContent = bad; return; }
+  const changes = netDescribe(p); if (!changes.length) { err.textContent = 'Nothing has changed.'; return; }
+  const cur = net.ifaces.find(i => i.name === net.primary), curIp = cur && cur.ipv4[0] ? cur.ipv4[0].split('/')[0] : '';
+  const newIp = p.use_dhcp === 'no' ? p.ipaddr : '';
+  const warns = [];
+  if (newIp && newIp !== curIp) warns.push(`This machine's address changes. This page will stop responding: open <b>http://${_esc(newIp)}/</b> and press <b>Keep</b> in the yellow bar.`);
+  else if (p.use_dhcp === 'yes' && net.cfg.use_dhcp === 'no') warns.push('The address will come from DHCP and may change. If this page stops responding, check your router or the console for the new address.');
+  if (p.bonding !== net.cfg.bonding || p.bridging !== net.cfg.bridging || p.vlan_id !== net.cfg.vlan_id || p.ifname !== net.cfg.ifname) warns.push('Docker containers, apps and VMs will briefly lose their network connection.');
+  showModal('Apply network settings?', `<div style="font-size:12.5px"><ul style="margin:0 0 8px 18px;padding:0">${changes.map(c => `<li>${c}</li>`).join('')}</ul>
+      ${warns.map(w => `<div style="color:var(--warn);margin-bottom:6px">⚠ ${w}</div>`).join('')}
+      <div class="net-note">Safety net: if you don't press <b>Keep</b> within 90 seconds, the previous settings come back by themselves.</div></div><div id="nap-err" class="net-bad"></div>`,
+    `<button class="ctr-btn" onclick="closeModal()">Cancel</button><button class="settings-btn primary" onclick='netApplyGo(${JSON.stringify(p).replace(/'/g, "&#39;")})'>Apply</button>`);
+}
+
+async function netApplyGo(p) {
+  try {
+    const r = await fetchJSON('/api/network/config', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...p, apply: true, safe: true})});
+    showModal('Applying…', `<div style="font-size:12.5px" id="nap-body">The new settings are being applied. If the connection drops, open the new address and press <b>Keep</b> within ${r.confirm_within || 90} seconds.</div>`,
+      `<button class="ctr-btn" onclick="closeModal()">Close</button>`);
+    setTimeout(netCheckPending, 3000); setTimeout(() => { netLoadCfg(); netRefresh(); netLoadRoutes(); netLoadDns(); }, 4000);
+  } catch (e) { const el = document.getElementById('nap-err'); if (el) el.textContent = errText(e).replace(/^HTTP \d+: ?/, ''); }
+}
+
+// ── confirm / revert banner (shown on every page) ─────────────────────────────
+async function netCheckPending() {
+  const bar = document.getElementById('net-pending'); if (!bar) return;
+  try {
+    const d = await apiFetch('/api/network/pending');
+    clearInterval(net.pendingT);
+    if (!d.pending) { bar.hidden = true; return; }
+    let left = d.seconds_left; bar.hidden = false;
+    const paint = () => { document.getElementById('net-pending-t').textContent = left > 0 ? `${left} s` : 'now'; };
+    paint(); net.pendingT = setInterval(() => { left = Math.max(0, left - 1); paint(); if (left === 0) { clearInterval(net.pendingT); setTimeout(() => { bar.hidden = true; location.reload(); }, 8000); } }, 1000);
+  } catch (_) { /* unreachable while the address changes */ }
+}
+async function netKeep() { try { await fetchJSON('/api/network/confirm', {method: 'POST'}); } catch (e) { alert(errText(e)); } document.getElementById('net-pending').hidden = true; clearInterval(net.pendingT); netLoadCfg(); }
+async function netUndo() { try { await fetchJSON('/api/network/revert', {method: 'POST'}); document.getElementById('net-pending-t').textContent = 'reverting…'; setTimeout(() => location.reload(), 6000); } catch (e) { alert(errText(e)); } }
+
+// ── mDNS ──────────────────────────────────────────────────────────────────────
+async function netAvahiLoad() {
+  try { net.avahi = await apiFetch('/api/network/avahi'); const cb = document.getElementById('ncf-avahi'); if (!cb) return;
+    cb.checked = !!net.avahi.active; cb.disabled = !net.avahi.installed;
+    if (!net.avahi.installed) document.getElementById('ncf-avahinote').textContent = 'The mDNS service is not installed on this system.'; } catch (_) {}
+}
+async function netAvahiToggle(cb) {
+  try { const r = await fetchJSON('/api/network/avahi/' + (cb.checked ? 'enable' : 'disable'), {method: 'POST'}); if (!r.ok) throw new Error(r.output || 'failed'); }
+  catch (e) { alert('mDNS: ' + errText(e)); cb.checked = !cb.checked; }
+}
+
+// ── routes ────────────────────────────────────────────────────────────────────
+async function netLoadRoutes() {
+  try { net.routes = (await apiFetch('/api/network/routes')).routes; netRenderRoutes(); netRenderSummary(); }
+  catch (e) { document.getElementById('net-routes').innerHTML = `<tr><td colspan="6" class="net-empty">Could not read the routes (${_esc(e.message)})</td></tr>`; }
+}
+function netRenderRoutes() {
+  document.getElementById('net-routes').innerHTML = net.routes.length ? net.routes.map((r, i) => `<tr>
+    <td class="net-mono">${r.dest === 'default' ? '<b>default</b>' : _esc(r.dest)}${r.family === 'IPv6' ? ' <span style="color:var(--fg-dim)">IPv6</span>' : ''}</td>
+    <td class="net-mono">${_esc(r.gateway || '—')}</td><td>${_esc(r.dev)}</td><td>${r.metric || ''}</td>
+    <td style="color:var(--fg-dim)">${_esc(r.static ? 'added here' : r.protocol)}</td>
+    <td>${r.static ? `<button class="ctr-btn" style="font-size:11px" onclick="netDelRoute(${i})">Remove</button>` : ''}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="net-empty">No routes</td></tr>';
+}
+async function netAddRoute() {
+  const msg = document.getElementById('nr-msg'); msg.textContent = '';
+  try {
+    await fetchJSON('/api/network/routes', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dest: document.getElementById('nr-dest').value, gateway: document.getElementById('nr-gw').value, metric: +document.getElementById('nr-metric').value || 0})});
+    ['nr-dest', 'nr-gw', 'nr-metric'].forEach(id => document.getElementById(id).value = ''); netLoadRoutes();
+  } catch (e) { msg.textContent = errText(e).replace(/^HTTP \d+: ?/, ''); }
+}
+async function netDelRoute(i) {
+  const r = net.routes[i]; if (!r || !confirm(`Remove the route to ${r.dest} via ${r.gateway}?`)) return;
+  try { await fetchJSON('/api/network/routes', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dest: r.dest, gateway: r.gateway, metric: r.metric || 0})}); netLoadRoutes(); }
+  catch (e) { alert(errText(e)); }
+}
+
+// ── diagnostics ───────────────────────────────────────────────────────────────
+async function netDiag(kind) {
+  const input = document.getElementById({ping: 'nd-ping', dns: 'nd-dns', trace: 'nd-trace'}[kind]), out = document.getElementById('nd-out');
+  const host = input.value.trim(); if (!host) { input.focus(); return; }
+  out.hidden = false; out.style.color = ''; out.textContent = 'Running…';
+  document.querySelectorAll('#network-section button').forEach(b => b.dataset.was = b.disabled);
+  try {
+    const d = await fetchJSON(`/api/network/diag/${kind}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(kind === 'dns' ? {name: host} : {host})});
+    if (kind === 'dns') {
+      const s = d.system;
+      out.textContent = `${d.name}\nThis machine's resolver: ${s.ok ? s.addresses.join(', ') : 'FAILED (' + s.error + ')'}  (${s.ms} ms)\n\n` +
+        (d.servers.length ? d.servers.map(x => `@${x.server}: ${x.ok ? x.answer.join(', ') : 'no answer' + (x.error ? ' (' + x.error + ')' : '')}  (${x.ms} ms)`).join('\n') : 'No DNS servers configured.');
+    } else { out.textContent = d.output || '(no output)'; out.style.color = d.ok ? '' : 'var(--err)'; }
+  } catch (e) { out.textContent = errText(e).replace(/^HTTP \d+: ?/, ''); out.style.color = 'var(--err)'; }
+}
+
+// ── listening ports ───────────────────────────────────────────────────────────
+async function netLoadListening() {
+  try { net.listening = (await apiFetch('/api/network/listening')).listening; netRenderListening(); }
+  catch (e) { document.getElementById('net-listen').innerHTML = `<tr><td colspan="5" class="net-empty">Could not read the open ports (${_esc(e.message)})</td></tr>`; }
+}
+function netRenderListening() {
+  const q = (document.getElementById('nl-filter').value || '').toLowerCase();
+  const rows = net.listening.filter(r => !q || `${r.port} ${r.proto} ${r.process} ${r.address} ${r.scope}`.toLowerCase().includes(q));
+  document.getElementById('net-listen').innerHTML = rows.length ? rows.map(r => `<tr><td><b>${r.port}</b></td><td>${_esc(r.proto)}</td>
+    <td${r.scope === 'every interface' ? ' style="color:var(--warn)"' : ''}>${_esc(r.scope)}</td><td class="net-mono">${_esc(r.address)}</td><td>${_esc(r.process || '—')}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="net-empty">Nothing matches</td></tr>';
 }
 
 // ── Backup Jobs ───────────────────────────────────────────────────────────────

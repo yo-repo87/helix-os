@@ -299,12 +299,31 @@ if [[ "$VLAN_ID" -gt 0 ]] 2>/dev/null; then
   UNITS["10-helix-vlan${VLAN_ID}.netdev"]=$(make_vlan_netdev)
 fi
 
+# VLAN: the parent must list the VLAN interface, and the VLAN interface needs its own .network to come up
+if [[ "$VLAN_ID" -gt 0 ]] 2>/dev/null; then
+  VLAN_IF="${FINAL_IF}.${VLAN_ID}"
+  if [[ -n "${UNITS[10-helix-${FINAL_IF}.network]+x}" ]]; then
+    UNITS["10-helix-${FINAL_IF}.network"]="${UNITS[10-helix-${FINAL_IF}.network]/\[Network\]/[Network]$'\n'VLAN=$VLAN_IF}"
+  fi
+  UNITS["10-helix-vlan${VLAN_ID}.network"]=$'[Match]\nName='"$VLAN_IF"$'\n\n[Network]\nDHCP=no\nIPv6AcceptRA=no\nLinkLocalAddressing=no'
+fi
+
 # MTU injection — append to whichever .network gets an IP
 IP_UNIT="10-helix-${FINAL_IF}.network"
 if [[ "${MTU:-0}" -gt 0 ]] 2>/dev/null; then
   if [[ -n "${UNITS[$IP_UNIT]+x}" ]]; then
     UNITS["$IP_UNIT"]+=$'\n[Link]\nMTUBytes='"$MTU"
   fi
+fi
+
+# Static routes added in the web UI ("DEST GATEWAY [METRIC]" per line) go on the interface that holds the IP
+ROUTES_CFG="$HELIX_CONFIG/network-routes.cfg"
+if [[ -f "$ROUTES_CFG" && -n "${UNITS[$IP_UNIT]+x}" ]]; then
+  while read -r rdest rgw rmetric _; do
+    [[ -z "$rdest" || "$rdest" == \#* || -z "$rgw" ]] && continue
+    UNITS["$IP_UNIT"]+=$'\n[Route]\nDestination='"$rdest"$'\nGateway='"$rgw"
+    [[ -n "${rmetric:-}" && "$rmetric" =~ ^[0-9]+$ && "$rmetric" -gt 0 ]] && UNITS["$IP_UNIT"]+=$'\nMetric='"$rmetric"
+  done < "$ROUTES_CFG"
 fi
 
 # ── Output ─────────────────────────────────────────────────────────────────────

@@ -43,7 +43,13 @@ PIA_IFACE      = "pia0"
 PIA_WG_CONF    = f"/etc/wireguard/{PIA_IFACE}.conf"
 PIA_DOCKER_NET = "helix_pia"
 PIA_SUBNET     = "172.28.0.0/16"
-PIA_TABLE      = 51821   # routing table / rule priority for the container bridge
+PIA_TABLE      = 51821   # routing table id for the container bridge
+# Rule PRIORITIES must be below the main table's 32766 or they are never consulted
+# (the table id 51821 had been reused as the priority, so the PIA rule sat behind
+# `main` and no container traffic ever entered the tunnel).
+PIA_PRIO       = 5182
+PIA_LAN_PRIO   = 5181    # LAN destinations stay on the main table
+PIA_MTU        = 1420    # WireGuard MTU; the Docker bridge must match or full-size replies are dropped
 PIA_BR         = "br_pia"
 
 PIA_TOKEN_URL   = "https://www.privateinternetaccess.com/gtoken/generateToken"
@@ -225,18 +231,19 @@ def _build_wg_conf(privkey: str, peer_ip: str, dns: str,
         f"[Interface]\n"
         f"PrivateKey = {privkey}\n"
         f"Address = {peer_ip}/32\n"
+        f"MTU = {PIA_MTU}\n"
         # Do NOT take over the host: no default-route hijack and no DNS rewrite.
         # Only traffic from the PIA Docker bridge subnet is routed through the tunnel.
         f"Table = off\n"
         # Replies to the LAN (e.g. a routed app's web UI) must not enter the tunnel:
         # LAN destinations use the main table (priority just before the PIA rule).
-        + "".join(f"PostUp = ip rule add from {PIA_SUBNET} to {lan} lookup main priority {PIA_TABLE - 1}\n"
+        + "".join(f"PostUp = ip rule add from {PIA_SUBNET} to {lan} lookup main priority {PIA_LAN_PRIO}\n"
                   for lan in _lan_prefixes()) +
         f"PostUp = ip route replace default dev {PIA_IFACE} table {PIA_TABLE}; "
-        f"ip rule add from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}\n"
-        f"PostDown = ip rule del from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_TABLE}; "
+        f"ip rule add from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_PRIO}\n"
+        f"PostDown = ip rule del from {PIA_SUBNET} table {PIA_TABLE} priority {PIA_PRIO}; "
         f"ip route flush table {PIA_TABLE}\n"
-        + "".join(f"PostDown = ip rule del from {PIA_SUBNET} to {lan} lookup main priority {PIA_TABLE - 1}\n"
+        + "".join(f"PostDown = ip rule del from {PIA_SUBNET} to {lan} lookup main priority {PIA_LAN_PRIO}\n"
                   for lan in _lan_prefixes()) + "\n"
         f"[Peer]\n"
         f"PublicKey = {server_key}\n"
@@ -249,13 +256,18 @@ def _build_wg_conf(privkey: str, peer_ip: str, dns: str,
 # ── Docker + iptables helpers ─────────────────────────────────────────────────
 
 def _ensure_docker_net():
-    rc, _, _ = _run("docker", "network", "inspect", PIA_DOCKER_NET)
+    rc, out, _ = _run("docker", "network", "inspect", PIA_DOCKER_NET, "--format",
+                      "{{index .Options \"com.docker.network.driver.mtu\"}}|{{len .Containers}}")
     if rc == 0:
-        return
+        mtu, _, attached = out.strip().partition("|")
+        if mtu == str(PIA_MTU) or attached not in ("0", ""):
+            return                      # right MTU already, or in use (do not pull it from under containers)
+        _run("docker", "network", "rm", PIA_DOCKER_NET)   # created by an older version without the MTU
     _run("docker", "network", "create",
          "--driver", "bridge",
          "--subnet", PIA_SUBNET,
          "--opt", f"com.docker.network.bridge.name={PIA_BR}",
+         "--opt", f"com.docker.network.driver.mtu={PIA_MTU}",
          PIA_DOCKER_NET)
 
 

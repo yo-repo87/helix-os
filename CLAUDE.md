@@ -1235,6 +1235,7 @@ Test VM: `http://192.168.50.12` (QEMU, 3 GB RAM, SSH as root). Disks: 2 × 14 TB
 
 Playwright here: Chromium is at `~/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome` (pass `executable_path`, `--no-sandbox`);
 run test scripts with plain `python3` (the `-I` flag hides the user site-packages where playwright lives).
+**Scope Playwright selectors** (`#modal-actions button:first-child`, `#ctr-manager tr:has-text("x") button:has-text("Remove")`): the single page contains many hidden sections, so a bare `button:has-text("Back")` matched a hidden duplicate and the click timed out — a test bug that looked like a product bug. Check `locator.count()` and `is_visible()` per match before blaming the app.
 The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list is cached ~1 min, so a fresh release can take a minute to appear.
 
 ### 29.2 Fix log (symptom → root cause → fix)
@@ -1316,6 +1317,7 @@ Open items:
 - **REST API is unauthenticated** (only `/mcp` checks the bearer). The UI sends no token. Needs login/session + first-boot password decision.
 - **VMs:** libvirt/qemu are not in the image (`/api/vms/` returns `available:false`); GPU passthrough UI is untested on hardware.
 - Portainer **stack templates (type 3)** — 36 of 297 Pi-Hosted entries — are skipped (no single image).
+- Apps installed before 2.0.7 (e.g. the Cloudflared tunnel installed from the UI) lost their saved settings when their definitions lived in RAM; the container survives (restart policy + Docker data on the cache disk) but shows as a plain container: remove and reinstall it from the catalog.
 - arm64 images/releases are stale (2.0.1+ are amd64-only).
 - OTA does not carry `grub.cfg`; consider adding it (with `.prev`) to the helper.
 - PIA `addKey` is called with TLS verification off (PIA ships a CA cert; pin it). PIA password and other secrets are plain text on `/boot`.
@@ -1324,3 +1326,408 @@ Open items:
 - Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI, split level, array autostart, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing.
 
 *Last updated: 2026-11-09 (2.0.13).*
+
+---
+
+## 30. Unraid Web UI Reference: layout, features, and what each click does
+
+Read this before changing Helix's layout or a feature that has an Unraid equivalent. Source: `bzmodules-emhttp/local/emhttp/` (Unraid 7.3.4; gitignored). `P=plugins/dynamix`, `DM=plugins/dynamix.docker.manager`, `VM=plugins/dynamix.vm.manager`. This section is a behaviour summary: **do not paste Unraid source into this repo** (it is public).
+
+**Not visible in this source:** `emhttp` is a compiled binary, so what happens inside a `cmd*` command is inferred from the UI and help text. The header and notification components are compiled Vue (`unraid-*` elements, Unraid API). Community Applications is a separately downloaded plugin; only its installer page ships here.
+
+### 30.1 How a page is built
+
+- Every screen is a `.page` file: an INI header, `---`, then Markdown/PHP/HTML. `PageBuilder.php` scans them all.
+- Header keys:
+
+| Key | Effect |
+|---|---|
+| `Menu="Parent:rank"` | Attaches to a parent, sorted naturally by rank. May list several parents, so one page appears in several places. |
+| `Type="xmenu"` | Parent that shows its children as sections or tabs |
+| `Type="menu"` | Parent that shows an icon grid (`Panel`s) |
+| `Tabs="true/false"` | Forces tabs on or off, overriding the user's "Page view" preference |
+| `Cond="php"` | Page exists only if true, e.g. Docker tab only when dockerd runs, Shares only when the array is started |
+| `Title`, `Icon`, `Tag`, `Code` | Text; panel icon; title icon; icon-font glyph for the nav |
+| `Nchan="a,b"` | Background publisher scripts to start while the page is open |
+| `Lock="true"` | Adds the padlock nav button that enables drag-sorting |
+| `Load="30"` | Reloads the page every N minutes |
+
+- **Consequence:** the menu is data, and conditions hide features that cannot work right now. Helix hard-codes its sidebar in `index.html`.
+
+### 30.2 The shell around every page (`P/include/DefaultPageLayout*`)
+
+Top to bottom: header banner (min-height 91px), nav bar, content (`#displaybox`, padding `1rem 1rem 4rem`), sticky footer.
+
+- **Primary nav order:** Dashboard, Main, Users (position is a preference), Favorites (only if any exist), Shares, Settings, Plugins, Docker (if enabled), VMs (if enabled), Apps, Tools.
+- **Right-side icon buttons:** search, language, logout, terminal, file manager, feedback, info, log, help, plus the padlock on sortable pages.
+- **Footer, on every page:** live array status (`Array Started/Stopped/Starting...`, coloured green/red/orange), running operation with percentage (`Parity-Check 41.2 %`, `Paused`), filesystem progress text, theme switcher, manual link, Wi-Fi indicator.
+- **Top-of-page alert banners:** warnings, e.g. notifications disabled, or "operation continues in background" with an abort icon.
+- **Tabs vs tabless:** with tabs, each child is a tab and the last-used one is remembered in a cookie. Tabless stacks every child vertically under a grey title bar with an icon.
+- **Settings and Tools** are `Panel` icon grids (max 120px wide) under section titles. Hovering a panel reveals a heart to add it to Favorites.
+
+**Settings form layout:** a `dl` grid with the label left and control right. Most fields have a help toggle revealing an inline explanation (`helptext.txt`, 392 entries). Forms end with **Apply + Done** (or Default). **Apply stays disabled until something changes.** Done returns to the parent.
+
+### 30.3 How actions flow
+
+| Mechanism | Used for | Behaviour |
+|---|---|---|
+| Form POST to `/update.htm` | Commands to emhttp: `cmdStart`, `cmdStop`, `cmdEditShare`, `cmdStartMover`, `changeDevice`... | Targets a hidden `progressFrame`, so the page does not navigate; the page then refreshes on the state change |
+| Form POST to `/update.php` | Settings | Merges fields into an INI file on the flash (`#file`, `#section`), atomically, keeping keys not submitted. Optional `#include` validates first (can veto the save); `#command` + `#arg[]` then applies it. `#default` restores defaults. |
+| `$.post` to `include/*.php` | Small actions and list fragments | Returns HTML or text that replaces a table body |
+| Nchan pub/sub over WebSocket `/sub/<channel>` | All live data | PHP scripts in `nchan/` loop and publish; each stops itself after about 30s with no subscribers |
+| `openPlugin` / `openDocker` / `openVMAction` | Long jobs | Starts the command, opens a modal with a live log and spinner. Closing it **does not stop the job**: it continues with a banner and abort icon. The Close button is disabled until `_DONE_`. |
+
+Other rules worth copying:
+- `csrf_token` is on every POST. A `session` channel forces back to login when the token changes.
+- State comes from emhttp-written INI files in `state/` (`var`, `disks`, `devs`, `shares`, `sec`, `sec_nfs`, `users`, `network`), read on every page load. No page keeps its own truth.
+- Spinners appear only if a request exceeds 500ms, so fast actions do not flicker.
+- Polling stops when the browser tab is hidden.
+- Destructive actions use a SweetAlert dialog ("Proceed?"). Reboot, power-off and array stop can be turned off in Settings → Confirmations. The riskiest ones need a separate "Yes, I want to do this" checkbox before the button enables.
+
+### 30.4 Dashboard (`P/DashStats.page`, read in full)
+
+Three columns (`#db_box1..3`), each a table whose `tbody` elements are tiles. Tiles start empty and are filled by live data. Plugins can inject tiles per column.
+
+**Every tile header:** large icon, title, one summary line, then right-aligned controls (cog to its settings page; chevron to collapse). When collapsed, the header swaps to a compact summary (e.g. CPU load bar, RAM bar, container counts), so collapsed tiles still show state.
+
+| Tile | Header | Body and actions |
+|---|---|---|
+| **Server** (always first; cannot be dismissed) | Name, description, clock when collapsed. Buttons: start/stop array (`busy` and unclickable during parity, mover or btrfs), sleep (if plugin), reboot, shutdown; cog; wrench (Tile Management); eject (collapse all) | Time (links to Date & Time; hover shows NTP/PTP sync status), date, Model, Registration, Uptime; case image opens a case picker |
+| Motherboard | Temperature | Board, BIOS vendor/version, BIOS date; info button opens system info |
+| Processor | Model; cog to CPU Pinning | Total power and temp; overall load bar; "Show details" expands per-thread bars paired `CPU n - HT m`, with core type on hybrid Intel; time-range select 10s/30s/1m/2m/5m; bar-chart toggle; 96px streaming line chart |
+| System | Memory size, type, ECC; info to Processes | Usable and maximum RAM; legend; four CSS `conic-gradient` pies: RAM (segmented by consumer), Boot device, Log filesystem, Docker vdisk/folder. Hovering a pie swaps percent for absolute value. |
+| Interface | NIC select and view select (General, Counters, Errors, Network traffic); Inbound/Outbound | Table per NIC (`bondN/ethN/wlanN/lo`) for mode, packets or errors; Traffic view is a 120px chart in brand red (in) and orange (out) |
+| VPN (if WireGuard) | Active and inactive tunnel counts | Each tunnel has a click-to-toggle icon; peers show RX/TX and last handshake age |
+| Power (if UPS) | Status, model, load | Status, Load, Battery charge, Runtime left, Nominal power, Output voltage |
+| Airflow (if fans) | Fan count | Three fans per row with RPM |
+| Docker Containers | "All Apps / Started only" switch; counts when collapsed | Icon grid; left-click gives the same context menu as the Docker page |
+| Virtual Machines | Same switch | Same, plus optional **VM Usage** tile |
+| Shares | SMB/NFS select; "Share count: N with X public SMB and Y public NFS" | Name (link), Description, Security, active stream count (orange when above 0) |
+| Users | "User count: N with X unprotected" | Name (**orange if no password**), Description, Write and Read share counts |
+| Parity | Status text | Last check result, and next scheduled check |
+| Array / each pool / Unassigned | "X used of Y (Z %)", "(stopped)" | Warning summary line ("Array has 2 heat warnings."), then Device, Status, Temp, SMART, Utilization |
+
+**SMART icon click** opens a menu: Attributes, Capabilities, Identity (jumping to that disk tab), plus **Acknowledge** when not healthy, which turns it to a green "healthy" thumb. Live rendering pauses for 15s after the click so the menu stays open.
+
+**Layout management:**
+- Padlock (`Lock="true"` page) toggles drag mode for the session: `tbody` tiles sort between all three columns, a close (X) button appears on each tile. Dismissing hides the tile.
+- Wrench opens Tile Management: a checkbox for every tile, with Reset, All, None, Apply, Cancel. A column with no visible tiles disappears.
+- **Persistence is server-side:** a JSON file on the flash (`/boot/config/dashboard_settings.json`, via `InitCharts.php`). It holds column order, dismissed tiles, collapsed tiles, chart ranges, selected NIC and views. Tile IDs are the MD5 of the title. **So layout follows the server, not the browser.** Only the unlock state is a session cookie and is cleared on load.
+
+**Data channels:** `update1` every 5s (RAM, pies, fans, SMB streams), `update2` every 2s (disks, pools, parity, schedule), `update3` every 1s (NIC rates, counters, clock), `wireguard`, `apcups`, `vm_dashusage`; CPU load and power come from a GraphQL subscription with capped exponential backoff.
+
+**Colour rule for all load bars:** at or above critical (default 90) red bar and `#f0000c` text; at or above warning (default 70) orange bar and `#e68a00`; otherwise `#4f8a10`. Threshold 0 disables that level.
+
+**Efficiency:** charts render only values that changed; per-core bars update only when visible (IntersectionObserver). A ping channel lets publisher scripts stop when nobody is viewing.
+
+**Clone VM dialog:** target name (`<name>_clone`), Overwrite, Regenerate MACs (default on), Check free space. **Snapshot dialog:** name (`--generate` default), description, memory dump (running VMs only), native-FS snapshot or QEMU external. Both can be started from Dashboard because the VM scripts are loaded there.
+
+### 30.5 Main tab (`P/ArrayDevices`, `CacheDevices`, `BootDevice`, `OpenDevices`, `ArrayOperation`)
+
+Tabs or stacked sections: **Array Devices, Pool Devices, Boot Device, Unassigned Devices, Array Operation**. Pool and Unassigned hide when empty.
+
+**Disk table columns:** Device, Identification, Temp, Reads, Writes, Errors, FS, Size, Used, Free, with a totals row. Rows are pushed live over the `devices` channel (`nchan/device_list`), which swaps the whole table body.
+
+**Status orb** (shape and colour together, so it reads without colour vision):
+
+| Orb | Meaning |
+|---|---|
+| Green circle | Active, normal |
+| Grey circle | Spun down |
+| Blue square | New device |
+| Yellow warning | Contents emulated or invalid; parity invalid |
+| Red X | Disabled or missing |
+| Grey square | Not present |
+
+- Clicking an orb spins that device up or down; the icon becomes a spinner until the feed updates.
+- Device name links to the disk's settings page. A folder icon opens it in the file manager. A log icon opens the disk log.
+- A toggle swaps Reads/Writes between counts and live speed.
+
+**Assigning disks (array stopped only):** each slot's Identification cell becomes a dropdown of free devices. **Choosing one submits immediately**, with no Save button. A `Slots` dropdown at the table bottom sets the slot count. Pools have an Add Pool button, a Slots control, Add Subpool, and a Remove Pool on the pool's page.
+
+**Array Operation is a state machine** (`ArrayOperation.page`, read in full). Each row is status, button, then a sentence saying exactly what the button will do. Driven by `fsState`, then `mdState`, then `mdResyncAction`.
+
+| `fsState` / `mdState` | Status text | Controls and explanation |
+|---|---|---|
+| Started, idle | Started (+ "Maintenance Mode") | **Stop**; Check or Sync or Clear depending on `mdResyncAction`; History with last-check summary (date, duration + speed, errors, or "incomplete" + error code) |
+| Started, Unmountable disks | Lists each disk (name, ID, device) | **Format**, disabled until "Yes, I want to do this". Ticking it pops a warning that format is never part of data recovery. |
+| Started, check available | "Parity is valid" | **Check** with "Write corrections to parity" ticked by default, plus a Schedule link. With no parity, Check is a Read-Check. |
+| Operation running | "Parity-Check in progress" etc. (Parity-Sync, Data-Rebuild, Disk-Clear, Read-Check) | **Pause/Resume** and **Cancel**, enabled 250ms after load. Cancelling a sync warns it may leave the array unprotected. Live rows: Total size, Elapsed, Current position, Estimated speed, Estimated finish, errors detected/corrected. When finished, Cancel becomes **Done** and finish reads "completed". |
+| Starting / Stopping / Formatting | "Starting...", "Started, formatting..." | Button present but disabled; page refreshes on `arraymonitor`/`fsState` |
+| Copying / Clearing | With live progress text | Cancel |
+| Stopped + licence state error (`configValid`) | Stopped | Start disabled, reason with a link |
+| STARTED or STOPPED | "Configuration valid" | Start, "will bring the array online" |
+| STOPPED, recon pending | Configuration valid | Start "...and start Parity-Sync / Data-Rebuild" |
+| STOPPED, clear pending | New data disk(s) detected | Start "...and start Disk-Clear" |
+| STOPPED, unclean (`sbClean!=yes`) | Unclean shutdown detected | Start "...and start Parity-Check" + write-corrections box; without parity just Start |
+| STOPPED, pool disk missing | Missing pool disk | Start disabled until confirm; "will remove the missing pool disk" |
+| NEW_ARRAY, no parity | Configuration valid | Start: "immediately available, but **unprotected**, since parity has not been assigned" |
+| NEW_ARRAY, with parity | Configuration valid | Start; "start Parity-Sync"; "Parity is already valid" box. A dialog states the consequence either way (parity will be overwritten, or all disks must hold original content/slots). |
+| DISABLE_DISK | Missing disk | Start disabled until confirm; "will disable the missing disk... install a replacement as soon as possible" |
+| RECON_DISK | Replacement disk installed | Start "will start Parity-Sync and/or Data-Rebuild" |
+| SWAP_DSBL, copy not done | Upgrading disk/swapping parity | Copy, gated by confirm |
+| SWAP_DSBL, copy 100% | Upgrading disk/swapping parity | Start "expand the file system... then Data-Rebuild" |
+| `ERROR:INVALID_EXPANSION` | Invalid expansion | Disabled: cannot add and remove disks together |
+| `ERROR:NEW_DISK_TOO_SMALL` | Replacement disk is too small | Disabled, must be as big or bigger |
+| `ERROR:PARITY_NOT_BIGGEST` | Disk in parity slot is not biggest | Disabled; move largest disk to parity or try Parity-Swap |
+| `ERROR:TOO_MANY_MISSING_DISKS` | Invalid configuration | Disabled |
+| `ERROR:NO_DATA_DISKS` / `NO_DEVICES` | No data disks / No devices | Disabled |
+
+Every startable state also shows a **Maintenance mode** checkbox ("Start array but do not mount disks"). When LUKS is in play, extra rows appear: status (Enter new key / Missing key / Wrong key), Passphrase or Keyfile selector, show-passphrase, retype when creating, and "permit reformat" when wrong. Start stays disabled until valid.
+
+**Secondary rows while started:** Spin Up / Spin Down (all); Clear Stats (visible only in counters view); Move, or **Empty** if there are no pools (only when user shares are on); Reboot / Shutdown with a Safe Mode checkbox.
+
+**Blocked actions explain themselves.** A `mymonitor` channel reports 0 normal, 1 parity, 2 mover, 3 btrfs. While busy, Stop and Move disable and the sentence changes to e.g. "Disabled -- Parity operation is running". Spin buttons also disable during a parity run.
+
+**Start click:** button disables, server checks pool state (`Report.php`); on a problem shows "Wrong Pool State" and re-enables. A passphrase is checked as printable ASCII. Keyfiles upload first. Then `cmdStart` is submitted with the current `mdState` as `startState`.
+
+**Stop/Cancel:** confirm dialog (if enabled), then submit. Declining removes the hidden command field.
+
+**Pause/Resume:** logs a timestamp in `ParityControl.php` so elapsed time excludes pauses, then submits. The button label also self-corrects from the live feed.
+
+**Reboot/Shutdown:** confirm, then POST to `Boot.php` (progress page). Safe mode warns that Tailscale/Connect access will be lost and highlights if you are connected through it.
+
+**Device rows in detail** (`nchan/device_list`, read in full; republished every 1s):
+- Sections are built separately and sent as one JSON object keyed by element ID (`array_devices`, `boot_device`, `pool_deviceN`, `open_devices`), each replacing that table body.
+- **Stopped layout:** parity slots, a thin divider, data slots, then `Slots:` dropdown (min is the larger of current disks or 3). The Identification cell is the assignment dropdown listing free devices sorted by size, then model; first option is the current disk, then `unassigned` or `no device`.
+- **Inline row warnings while stopped:** "All existing data on this device will be OVERWRITTEN when array is Started" in red, replacing that row's stats. It shows for a new-array parity disk, for invalid/replacement disks being rebuilt, and new disks to be cleared. `Missing` or `Wrong` tags appear under the name, with the previously recorded ID beside the dropdown. Duplicate serials get an orange clone icon listing the other devices.
+- **Started layout:** folder (browse) icon only if mounted, orb, name link, description with a device-type icon (usb, disk, nvme, disk-encrypted) that opens the disk log. Tooltips explain each orb and add "Click to spin up/down device". Orbs are clickable only while started and not on boot devices.
+- Description format: `ModelSerial - 14 TB (sdb)`, with `*` temperature when unknown.
+- Reads/Writes hold both a live speed and a count; a toggle in the section title switches them, remembered in a cookie, and Clear Stats appears only in count view.
+- Errors combine device errors and ZFS/btrfs member errors; a non-zero count gets an orange triangle whose tooltip breaks it down by pool and type.
+- Used/Free are text or a coloured bar per the Display preference, coloured by the disk's warning and critical thresholds. Encrypted filesystems show a padlock (to be encrypted, encrypted + unlocked, encrypted, wrong key, unknown error).
+- **Totals row:** "Array of N devices" with spin-down and spin-up icons for the group, average temperature, summed I/O and errors, summed capacity.
+- **Pools:** a `pool_header` row (Data Partition, or Boot Partition for bootable pools) with pool status in brackets (`(ONLINE)`, or degraded plus a warning icon, linking to the pool's status). Members follow, indented, as `Device 1`, `Device 2`. ZFS subpools show as `» Special Device 1`. Slot count locks once members change on a formatted pool. Dropdown max is 1 for single-device filesystems.
+- Unassigned: blue orb; preclear status text fills the last four columns if a preclear is running.
+- A public SMB export of the boot device gets an orange warning icon on its row.
+
+**Pool actions** (`CacheDevices.page`, read in full), shown only while stopped:
+- **Add Pool** dialog: Name (lowercase, starts with a letter, not reserved, not an existing share or pool; default name `cache` for the first pool) and Slots. A specific error message explains each rejection.
+- **Add Subpool** on ZFS pools: special, logs, dedup, cache, spares (disabled); already-used types are removed.
+- **Add Bootable Pool** (when eligible): Name, 1 or 2 slots, device per slot (no USB, each unique), reserved boot size (16 to 128 GB, or custom 4 GB up to 50% of the smallest drive), update BIOS order. A confirmation lists everything and states in red that the devices will be formatted.
+
+**Per-disk page** (`/Main/Device?name=diskN`, tabs: Settings, Attributes, Capabilities, Identity, Self-Test):
+- Identification, comments, spin-down delay, spin-up group, filesystem type (stopped only), share inclusion, minimum free space, warning and critical thresholds.
+- Filesystem tools by type: `xfs_repair`, `btrfs scrub/balance/check`, `zfs scrub`, each with status output and a "check only" or repair option. Pools add schedules, compression, autotrim, rename, erase, remove.
+- SMART: attributes table, capabilities, identity, short and extended tests with live progress, downloadable report, per-attribute notification selection.
+
+### 30.6 Shares (`P/ShareList`, `ShareEdit`, `SecuritySMB`, `SecurityNFS`, `DiskList`)
+
+Requires a started array; otherwise a notice explains why. **User Shares** and **Disk Shares** tabs.
+
+**List columns:** Name, Comment, SMB, NFS, Storage, Size, Free.
+- Orb: green "all files protected" / yellow "some or all unprotected"; padlock for encryption; folder icon browses it.
+- Storage shows the path, e.g. `cache → array` with an arrow for mover direction.
+- **Size is not computed by default**, because it means spinning up every disk. The cell is a `Compute...` link that also expands a per-disk breakdown; `Compute All` does every share. Buttons: Compute All, Add Share, Clean Up (enabled only when stale config files exist).
+
+**Editing a share:** name, comment, then:
+
+| Setting | Options and rules |
+|---|---|
+| Minimum free space | Stop writing to a disk below this; suggested value based on disk size |
+| Primary storage | Array or a pool: where new files go |
+| Secondary storage | None, Array or a pool: overflow, and the mover's other end |
+| Mover action | Direction dropdown, labelled with real names (`cache ⮕ Array`) plus a sentence: "Mover takes no action" or "Mover transfers files from Primary to Secondary" |
+| Exclusive access | Read-only status: a direct bind to a pool, bypassing the merge layer. Min free is ignored. |
+| Allocation method | **High-water** (default: lowest disk above a mark that starts at half the largest disk, halving when none qualifies), **Fill-up**, **Most-free** |
+| Split level | Auto any directory, or split only the top 1 to 5 levels, or manual |
+| Included / Excluded disks | Multi-select |
+| Copy-on-write | Pool shares on Btrfs only |
+
+- The legacy `shareUseCache` value (`no/yes/prefer/only`) is derived from Primary + Secondary + Direction. Sections show and hide as these change.
+- **Delete:** a checkbox turns the Apply button into Delete. It is **disabled while the share contains data**, with a tooltip saying why; hidden dotfiles count.
+- A row of **read/write settings copy** buttons clones settings to or from another share.
+- Tabs: Share Settings, SMB Security, NFS Security. Global settings are at Settings → Global Share Settings.
+
+**SMB security:** Export No / Yes / Yes (hidden) / Yes with Time Machine; case-sensitive names; **Public** (everyone read/write), **Secure** (everyone read, chosen users write), **Private** (no guests, per-user no access / read-only / read-write).
+**NFS:** Export; Public, Secure, Private (per-host rule lines).
+
+### 30.7 File manager (`P/Browse.page`, `include/Control.php`, `nchan/file_manager`)
+
+Opens from any folder icon; the nav button opens it at `/mnt`. Path breadcrumbs; sortable table; per-row checkboxes; right-click menus for files and folders.
+
+Actions: create folder, delete, rename, copy, move, owner, permission, calculate size, search, upload, download. Copy and Move use a folder-tree target picker. **Jobs run in the background with live progress in a minimisable dialog and survive leaving the page.** Further jobs go in a queue; the Jobs button can start or remove queued items. Text files open in an editor.
+
+### 30.8 Docker (`DM/DockerContainers.page`, `docker.js`, `CreateDocker.php`)
+
+**Columns:** Application (icon, name, status), Version, Network, Container IP, Container Port, LAN IP:Port, Volume Mappings, Autostart, Uptime; **Advanced view** switch adds MAC, CPU & memory load and wait time.
+
+**Bottom buttons:** Add Container, Start All, Stop All, Pause All, Resume All, Check for Updates, Update All (only with updates), Container Size.
+
+**Left-clicking the icon** opens a context menu built from state:
+
+| Condition | Items |
+|---|---|
+| Running, not paused | WebUI, Tailscale WebUI, Console |
+| Update available | Update |
+| Running | Stop, Pause, Restart |
+| Paused | Resume, Restart |
+| Stopped | Start |
+| Always | Logs, Edit (if it has a template), Remove |
+| Template metadata exists | Read Me First, Project Page, Support, More Info, Donate |
+
+- Clicking the **name** opens Edit. The update column shows `up-to-date`, `apply update`, or `not available`.
+- **Start/Stop/etc.** call `Events.php`, then refresh the list.
+- **Remove:** confirm dialog with "also remove image" ticked by default.
+- **Autostart** switch saves instantly; Advanced view adds a per-container wait in seconds. Drag order (padlock) is the start order.
+- **Update:** confirm, then a live modal: pull with per-layer progress, stop, remove, recreate from the saved template, restart only if it was running.
+- **Check for Updates:** compares registry digests, then redraws.
+
+**Add/Edit form:** Template dropdown; Name, Overview, Repository, Categories, Registry/Support/Project/Read Me links, Icon URL, WebUI URL pattern, Extra Parameters, Post Arguments, CPU pinning, Network type, Privileged, Console shell, Tailscale options. Then **a dynamic list of Config items, each one of Path, Port, Variable, Label or Device**, with Add/Edit/Remove popups; Path has a file picker, Port has TCP/UDP. "Show docker allocations" lists ports and paths already used by other containers.
+
+**Apply click:** form becomes XML and is **saved as `my-<name>.xml` on the flash before anything runs**, so the container can always be re-added with the same settings. Generates the `docker run`, shows the exact command in a progress log, pulls the image only if absent, gracefully stops and removes any old container, creates the new one.
+
+**Settings → Docker:** enable; vDisk image vs directory; storage driver; default appdata path; log rotation size and count; custom network type (ipvlan/macvlan); host access to custom networks; preserve user networks; PID limit. Changing most requires Docker stopped; locked fields show current values.
+
+### 30.9 VMs (`VM/VMMachines.page`, `vmmanager.js`, `VMajax.php`)
+
+Same pattern as Docker: list, left-click icon menu; clicking the name expands a row of disks and devices, with an eject control for mounted ISOs. Buttons: Add VM, Start All, Stop All.
+
+| State | Menu |
+|---|---|
+| Running | VM Console (VNC/SPICE), remote-viewer, RDP, WebUI, Stop, Pause, Restart, Hibernate, Force Stop, Create Snapshot |
+| Paused or suspended | Resume, Force Stop |
+| Stopped | Start, Start with console or remote-viewer, Edit, Clone, Remove VM, Remove VM & Disks |
+| Snapshots present | Revert, Remove, Block Commit, Block Pull |
+
+Start is hidden if the VM references a missing PCI device.
+
+**Add VM:** template gallery by OS, then a form: name, CPU pinning grid, memory initial/max, machine, BIOS, Hyper-V, install ISO, VirtIO ISO, vdisks (location, size, type, bus), Unraid shares (virtiofs), graphics card, ROM BIOS, sound, network bridge/MAC/model, USB and other PCI devices. A toggle switches to raw XML. **Settings → VM Manager:** enable, libvirt storage, default VM and ISO paths, default bridge, host-shutdown behaviour, timeout.
+
+### 30.10 Settings map (`Menu=` groups)
+
+| Section | Pages |
+|---|---|
+| System Settings | CPU Pinning, Date and Time, Disk Settings, Docker, Identification, Management Access, Network Settings, Global Share Settings, UPS Settings, VM Manager, Boot Parameters |
+| Network Services | NFS, SMB, FTP Server, Syslog Server, Tailscale, VPN Manager, Outgoing Proxy |
+| User Preferences | Confirmations, Console Settings, Display Settings, Notification Settings, Scheduler (Parity Check, Mover, TRIM) |
+| User Utilities | Plugin-added pages |
+
+Details that matter:
+- **Disk Settings:** auto-start, default spin-down, default filesystem, tunables, encryption key, default SMART handling, temperature and utilisation thresholds.
+- **Network Settings:** tabs per interface. Bonding, bridging, IPv4/IPv6 assignment, MTU, VLAN list. Fields are locked while Docker or VMs are running, with a message saying which service to stop.
+- **Management Access:** root password link, start page, SSH/Telnet with ports, UPnP, HTTP/HTTPS ports, certificate management, local URLs.
+- **Display Settings:** width, language, font size, number format, page view (tabs or stacked), used/free as bar or text, temperature unit, theme, banner, custom header colours.
+- **Scheduler:** each uses one pattern: schedule dropdown; day, date and time fields enable only when relevant.
+- **Parity:** write corrections; cumulative check (pause outside a window, resume later).
+
+**Notifications:** Display position and formats; per-event toggles for notices, warnings and alerts by channel (Browser / Email / Agents); update checks for OS, plugins, Docker and language; array status report schedule. SMTP has provider presets and a Test button. **Notification Agents:** Bark, Boxcar, Discord, Gotify, Join, Prowl, PushBits, Pushbullet, Pushover, Pushplus, ServerChan, Slack, Telegram, ntfy.sh, each with fields, Enable and Test, from one XML file per agent.
+
+**Users:** icon grid of users. Add/Edit: name, description, image, password + retype; root also gets SSH keys. Share access is per-user on the same page, mirroring the per-share view.
+
+### 30.11 Tools, Plugins, Apps
+
+- **Tools:** System Log, Log Viewer, Diagnostics (anonymise option, downloads a ZIP), Hardware Profile, New Config, New Permissions, Processes, System Devices, System Drivers, Open Terminal; webGUI: Language, PHP Settings, Page Map, Vars; About: Update/Downgrade OS, Credits, EULA, Registration.
+- **New Config:** resets assignments; can preserve array and/or pool slots; requires a checkbox.
+- **New Permissions:** select disks or shares; runs with a live log.
+- **System Devices:** IOMMU groups with per-device VFIO checkboxes, Apply, reboot prompt.
+- **Plugins:** Installed list with update status (Check for Updates, Update All, Remove), Install Plugin (URL or file), History, Errors. Install and remove run in the live-log modal.
+- **Apps:** Community Applications after a one-click install of its plugin.
+
+### 30.12 Visual system (`P/styles/`)
+
+CSS layers: `default-color-palette.css` (raw colours), `default-base.css` (layout), `default-dynamix.css` (widgets), `themes/{azure,black,gray,white}.css` (semantic variables). Default theme is **white**. **Black and white use a top nav bar; azure and gray use a left sidebar** (`.Theme--sidebar`, `.Theme--nav-top`).
+
+| Token | Value |
+|---|---|
+| Brand orange / red | `#ff8c2f` / `#e22828` |
+| Black background / table | `#1d1b1b` / `#212121` |
+| Tile, title bar (black theme) | `#303030`, `#262626` |
+| Text (black theme) | `#f2f2f2` |
+| Green / link blue | `#17bf0b` / `#486dba` |
+| Fonts | clear-sans (UI), bitstream, Font Awesome plus a custom `font-unraid` icon font |
+| Root size | `html` 62.5%, so `1rem = 10px`; body 1.3rem, title bars 1.4rem, table headers 1.1rem |
+
+**Buttons are outlines, not filled:** a 2px orange-to-red gradient border with orange text; on hover the gradient fills and text turns white. Tables have alternating rows and a subtle hover. Title bars are a full-width grey strip with an icon and right-aligned controls. Page `<title>` is `ServerName/PageName`.
+
+### 30.13 Where Helix differs (checked against `webui/frontend/index.html`, 2.0.13)
+
+Helix uses a 21-item left sidebar of hash routes with everything top-level. Unraid has about 10 top-level items with the rest in Settings and Tools grids.
+
+Patterns worth adopting, highest value first:
+1. **Array panel as a state machine:** only valid buttons, each with a sentence explaining it, reason shown when disabled.
+2. **Global footer** with live array and operation status.
+3. **Long jobs in a modal live log that survives closing**, with a banner and abort.
+4. **One icon context menu** shared by Dashboard and list pages, built from container state.
+5. **Apply disabled until a form changes; Done returns to the parent.**
+6. **Shape-plus-colour status orbs** for disks, click to spin.
+7. **Inline disk assignment** in the table while stopped.
+8. **Share editor** with Primary/Secondary/Mover wording and on-demand size.
+9. **Hide or explain features that cannot work now**, driven by state.
+10. **Save a container's definition before touching the running one.**
+11. **Group the sidebar:** move config-style pages into Settings and diagnostics into Tools grids; add Favorites.
+12. **Dashboard:** drag-sortable tiles with a tile manager and padlock.
+
+Mapping is a recommendation; none of this has been built yet.
+
+### 30.14 Exact rules and behaviours (from the full `helptext.txt`)
+
+**Validation limits**
+
+| Field | Rule |
+|---|---|
+| Share name | Up to 40 chars, case-sensitive; starts with a letter; then letters, digits, `.`, `_`, `-`; cannot end in `.`. Reserved: homes, global, printers, flash, boot, user, user0, dev, remotes, RecycleBin, rootshare, addons, mirror, raidz*, draid, spare, log, disk*, parity* |
+| Share comment | Up to 256 chars |
+| Username | Up to 40 chars; starts lowercase letter or `_`; then lowercase, digits, `_`, `-`; may end in `$` |
+| User description | Up to 64 chars; no `&`, `"`, `:` |
+| Password | Up to 128 chars |
+| User image | Scaled to 48x48; max 95 kB on add, 512 kB on edit |
+| Banner image | Scaled to 1920x90; max 512 kB |
+| Hostname | NetBIOS limit of 15 chars; alphanumeric, `-`, `.`; first and last alphanumeric |
+| Container name | Min 2 chars; first `a-zA-Z0-9`; then also `.`, `-`, `_` |
+| Container MAC | Valid unicast (first octet even) |
+| VLAN | 1 to 4095 |
+| Encryption passphrase | Up to 512 chars, printable ASCII advised; keyfile max 8 MB. Loss means data is unrecoverable; changing the key means reformatting. |
+| Free-space values | Suffix `KB/MB/GB/TB` = powers of 1000, `K/M/G/T` = powers of 1024, none = 1024-byte blocks |
+| Docker vDisk path | Must end `.img`; appdata path must end `/`. Invalid input is **marked red and not accepted**. |
+| Docker PID limit | Default 2048; 0 is unlimited |
+
+**Array and disks**
+- Temperature shows `*` for spun-down drives, because reading it would wake them.
+- Reads/Writes count I/O requests. Errors count *unrecoverable* errors only; a failed read is rebuilt from parity and written back; **any unrecoverable write error disables the disk**.
+- Array needs at least one device; minimum 2 array slots. Assignment is written to config on each dropdown change. Hot-plugged disks appear after a Main page refresh while stopped.
+- Default multi-device pool is btrfs raid1 (data and metadata).
+- Default thresholds apply to all disks, overridable per disk. **0 disables a threshold. If warning >= critical, only critical fires.**
+- SMART notifies on a rising RAW value or a NORMALIZED value reaching the maker's threshold, with a tolerance setting. Attributes with raw value above zero show orange.
+- Self-tests only run while the disk is active; spinning down aborts them, so the spin-down timer should be off for an extended test.
+- Each filesystem check pre-fills safe options: xfs `-n` (check only; clear to repair), btrfs `--readonly`, ext `-p`, ntfs `-d`, exfat `-p`. Checks can take hours; progress shows as rising read counters.
+
+**Shares and mover**
+- A share is simply a top-level directory across volumes; the view is the composite.
+- Legacy use-cache meaning: **No** never uses cache, mover ignores. **Yes** writes cache, overflows to array, mover moves to array. **Only** must be on cache, fails when full, mover ignores. **Prefer** writes cache, overflows to array, mover moves back to cache.
+- **Mover never moves files in use**, so Docker/VM data needs those services stopped. Hard links are preserved.
+- Split levels: 'any' creates parents wherever the allocator picks; 'top N' splits only down to level N, deeper files follow the parent's disk; Manual only uses disks where the parent exists.
+- Included/Excluded empty means all disks; each share's lists are a subset of the global ones.
+- Exclusive shares require: Primary is a pool, Secondary none, share on a single volume. Benefit is bypassing FUSE.
+- Disk shares Auto: only disks not participating in user shares may export. Copying between a disk share and a user share can lose data.
+- SMB Case-sensitive: auto, Yes, Forced lower. Time Machine needs a volume size limit. NFS public rule is `*(rw,sec=sys,insecure,anongid=100,anonuid=99,no_root_squash)`, plus `async,no_subtree_check` by default. NFS rules are one host per line.
+- Boot device is FAT, so SMB export only.
+
+**Services**
+- Docker starts automatically after the array starts once enabled. Stopped containers are changed at once; **running ones are stopped first and restarted** when pinning changes, in parallel. Pinning no cores means all cores; do not pin to isolated cores.
+- Template types: Default (app store) and User-defined (saved on the boot device, used to rebuild).
+- WebUI field substitutes `[IP]` and `[PORT:####]`. Only the host side of a port mapping should be changed.
+- Stopping VM Manager attempts shutdown of all VMs, then kills after 60 seconds. On server shutdown: Stop or Hibernate, with a timeout.
+- FTP setting is not persistent; listed users get full access. SSH host keys persist in `config/ssh`.
+- Bonding modes 0 to 6, default 1 (active-backup). Bond and bridge can be combined; VLANs share the parent's MAC. IPv4/IPv6 assignment: Automatic, Static, or None (VLANs only); fields grey out on Automatic.
+- `network-rules.cfg` maps MAC to ethN; deleting it restores auto-assignment.
+- WireGuard: passive mode when peer endpoint empty, active when set; NAT on avoids router changes but breaks containers with custom IPs; firewall default rule "deny" blocks listed addresses, "allow" inverts; default keepalive suggestion 20s; peers viewed with an eye icon (disabled while unapplied changes exist), keys shown with a key icon.
+- Use SSL/TLS: No, Yes, Strict; redirects follow from it. Self-signed cert regenerates when hostname or TLD changes.
+- Syslog: local server mode, remote server, mirror to flash (wear warning), copy to flash on shutdown (default yes, appears as `syslog-previous`).
+- Physical power button: Shut down (default), Reboot, Do nothing.
+
+**Scheduling and notifications**
+- Parity schedule presets: daily, weekly, monthly, yearly, custom; fields unused by the chosen preset are disabled; time in half-hour steps. Cumulative: daily or weekly continuation, with a duration in hours.
+- Mover hourly schedule: the time field becomes an interval starting at minute 0.
+- Notification classes: **notice** (informative), **warning** (future problem), **alert** (immediate). Each chooses Browser/Email/Agents. Disabled by default. Stored in RAM unless "Store notifications to boot drive". Detailed view shows popups with auto-close seconds (0 disables) and stacking by position; Summarized shows counts per category in the header.
+- SMTP password stored unencrypted; UI says so.
+
+**Display preferences**
+- Width Boxed (max 1920px) or Unlimited. Font size is per device. Listing height Automatic or Fixed (scrolling window). Device name, WWN, totals, used/free display, temperature unit (changing it converts thresholds).
+- Users menu position: header or inside Settings.
+
+**System Devices:** selecting a device binds all devices in its IOMMU group to vfio-pci at boot. Greyed checkbox means in use by the OS; green orb means bound; retweet icon means FLR-capable; downgraded PCIe speed or width shows orange; filters switch "Show all" to "filtered".
+
+**Coverage so far:** `helptext.txt` fully read. The rest of §30 is being re-verified from complete file reads.
+
+*Section 30 added 2026-11-09 from static reading of the Unraid 7.3.4 web UI source; nothing was exercised on a live Unraid server.*

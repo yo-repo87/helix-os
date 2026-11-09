@@ -2033,6 +2033,64 @@ new MutationObserver(() => {
   window._tipTimer = setTimeout(() => attachTips(document), 60);
 }).observe(document.body, {childList: true, subtree: true});
 
+// ── Input rules (mirror of backend/services/validation.py — CLAUDE.md §30.14) ──────────
+// The server is the authority; these warn while typing so the user is never surprised on submit.
+let _shareNames = [];
+const VALID = {
+  share(v, existing = _shareNames) {
+    if (!v) return 'Share name is required.';
+    if (v.length > 40) return 'Share name can be at most 40 characters.';
+    if (!/^[A-Za-z]/.test(v)) return 'Share name must start with a letter.';
+    if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(v)) return "Share name may only contain letters, digits, '.', '_' and '-'.";
+    if (v.endsWith('.')) return 'Share name cannot end with a period.';
+    if (['homes','global','printers','flash','boot','user','user0','dev','remotes','recyclebin','rootshare','addons','mirror','draid','spare','log'].includes(v.toLowerCase())
+        || /^(disk|parity|raidz|cache)\d*$/i.test(v)) return `'${v}' is a reserved name.`;
+    if (existing.some(e => e.toLowerCase() === v.toLowerCase())) return `A share named '${v}' already exists.`;
+    return '';
+  },
+  comment: v => (v || '').length > 256 ? 'Comment can be at most 256 characters.' : '',
+  hostname(v) {
+    if (!v) return 'Server name is required.';
+    if (v.length > 15) return 'Server name can be at most 15 characters (NetBIOS limit).';
+    if (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(v)) return "Letters, digits, '-' and '.'; must start and end with a letter or digit.";
+    return '';
+  },
+  username(v) {
+    if (!v) return 'User name is required.';
+    if (v.length > 40) return 'User name can be at most 40 characters.';
+    if (!/^[a-z_][a-z0-9_-]*\$?$/.test(v)) return "Start with a lowercase letter or '_', then lowercase letters, digits, '_' or '-'.";
+    return '';
+  },
+  userDesc(v) { return (v || '').length > 64 ? 'Description can be at most 64 characters.' : /[&":]/.test(v || '') ? "Description cannot contain '&', '\"' or ':'." : ''; },
+  password: v => (v || '').length > 128 ? 'Password can be at most 128 characters.' : '',
+};
+
+// fetchJSON throws 'HTTP 400: {"detail": "..."} for /path'; show just the reason.
+function errText(e) {
+  const m = /\{[\s\S]*\}/.exec((e && e.message) || '');
+  if (m) { try { const d = JSON.parse(m[0]).detail; return typeof d === 'string' ? d : JSON.stringify(d); } catch (_) {} }
+  return (e && e.message) || String(e);
+}
+
+// Show the rule's message under an input as the user types; el._validate() re-checks on submit.
+function bindValidator(id, fn) {
+  const el = document.getElementById(id);
+  if (!el || el.dataset.vBound) return;
+  el.dataset.vBound = '1';
+  const msg = document.createElement('div');
+  msg.style.cssText = 'font-size:11px;color:var(--err);margin-top:3px';
+  el.insertAdjacentElement('afterend', msg);
+  const show = e => { msg.textContent = e; el.style.borderColor = e ? 'var(--err)' : ''; return e; };
+  el.addEventListener('input', () => show(el.value ? fn(el.value) : ''));
+  el._validate = () => show(fn(el.value.trim ? el.value.trim() : el.value));
+}
+
+// Static inputs exist already (the script is at the end of <body>); modal inputs bind when their dialog opens.
+bindValidator('cfg-hostname', VALID.hostname);
+bindValidator('new-username', VALID.username);
+bindValidator('new-desc', VALID.userDesc);
+bindValidator('new-password', VALID.password);
+
 // ── Render functions ────────────────────────────────────────────
 function fmtUptime(sec) {
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600),
@@ -2169,6 +2227,7 @@ function renderDrives(drives, arrayDisks) {
 }
 
 function renderShares(shares) {
+  _shareNames = shares.map(x => x.name);
   document.getElementById('shares-list').innerHTML = shares.map(s => {
     const pct = s.total_gb ? Math.round(s.used_gb / s.total_gb * 100) : 0;
     const usedStr = s.used_gb != null ? (s.used_gb >= 1000 ? (s.used_gb/1024).toFixed(1)+'TB' : s.used_gb+'GB') : '—';
@@ -2295,6 +2354,8 @@ async function showNewShare() {
     {label:'Create', primary:true, onclick:'createNewShare()'},
     {label:'Cancel', onclick:'closeModal()'},
   ]);
+  bindValidator('ns-name', v => VALID.share(v.trim()));
+  bindValidator('ns-comment', v => VALID.comment(v));
   document.getElementById('ns-name').focus();
 }
 
@@ -2303,7 +2364,8 @@ async function createNewShare() {
   const comment = document.getElementById('ns-comment').value.trim();
   const smb     = document.getElementById('ns-smb').checked;
   const nfs     = document.getElementById('ns-nfs').checked;
-  if (!name) { alert('Share name required'); return; }
+  const bad = document.getElementById('ns-name')._validate() || document.getElementById('ns-comment')._validate();
+  if (bad) return;
   const params = new URLSearchParams({name, comment, smb, nfs});
   try {
     await fetchJSON(`/api/shares/?${params}`, {method:'POST'});
@@ -3557,18 +3619,23 @@ document.addEventListener('DOMContentLoaded', _restoreBanner);
 
 async function saveIdentity() {
   if (!liveMode) { alert('Demo mode — connect backend to save.'); return; }
-  await fetch(API + '/api/settings/identity', {
-    method: 'PUT', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      name:        document.getElementById('cfg-hostname').value,
-      description: document.getElementById('cfg-desc').value,
-      timezone:    document.getElementById('cfg-tz').value,
-    }),
-  }).catch(()=>{});
+  const host = document.getElementById('cfg-hostname');
+  if (host._validate && host._validate()) return;
   const msg = document.getElementById('identity-save-msg');
-  msg.style.display = 'inline'; setTimeout(() => { msg.style.display = 'none'; }, 3000);
-  // Update header hostname
-  document.getElementById('hdr-hostname').textContent = document.getElementById('cfg-hostname').value;
+  try {
+    await fetchJSON('/api/settings/identity', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name:        host.value.trim(),
+        description: document.getElementById('cfg-desc').value,
+        timezone:    document.getElementById('cfg-tz').value,
+      }),
+    });
+    msg.textContent = '✓ Saved'; msg.style.color = ''; document.getElementById('hdr-hostname').textContent = host.value.trim();
+  } catch (e) {
+    msg.textContent = '✗ ' + errText(e); msg.style.color = 'var(--err)';
+  }
+  msg.style.display = 'inline'; setTimeout(() => { msg.style.display = 'none'; }, 5000);
 }
 
 async function saveSamba() {
@@ -3684,12 +3751,13 @@ function toggleAddUser() {
 
 async function createUser() {
   if (!liveMode) { alert('Demo mode — connect backend.'); return; }
+  const bad = ['new-username', 'new-desc', 'new-password'].map(i => document.getElementById(i)._validate && document.getElementById(i)._validate()).find(Boolean);
+  if (bad) return;
   const username = document.getElementById('new-username').value.trim();
   const password = document.getElementById('new-password').value;
   const desc     = document.getElementById('new-desc').value.trim();
-  if (!username) { alert('Username is required'); return; }
   try {
-    await fetch(API + '/api/users/', {
+    await fetchJSON('/api/users/', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({username, password, description: desc}),
     });
@@ -3698,7 +3766,9 @@ async function createUser() {
     document.getElementById('new-desc').value = '';
     toggleAddUser();
     loadUsers();
-  } catch (e) { alert('Create failed: ' + e.message); }
+  } catch (e) {
+    alert('Create failed: ' + errText(e));       // the form stays open so nothing typed is lost
+  }
 }
 
 async function deleteUser(username) {

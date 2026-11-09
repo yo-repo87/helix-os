@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os, re, subprocess
 from config import SHARES_CFG, HELIX_CONFIG, USER_SHARE
+from services import validation
 
 # Installed to /usr/local/sbin by the build (hook 03). The old relative path
 # resolved to a non-existent /shares in the built image, so share apply silently
@@ -79,8 +80,14 @@ def list_shares():
 
 @router.post("/")
 def create_share(name: str, comment: str = "", smb: bool = True, nfs: bool = False):
-    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
-        raise HTTPException(400, "Invalid share name")
+    existing = list(_parse_shares().keys())
+    try:       # a differently-cased folder would clash for SMB clients even if no share is configured
+        existing += [d for d in os.listdir(USER_SHARE) if d != name and os.path.isdir(os.path.join(USER_SHARE, d))]
+    except OSError:
+        pass
+    err = validation.share_name(name, existing) or validation.share_comment(comment)
+    if err:
+        raise HTTPException(400, err)
     # Read raw config to detect duplicates that survive parse de-duplication
     try:
         raw = open(SHARES_CFG).read()
@@ -157,7 +164,11 @@ def update_share(name: str, body: ShareUpdate):
     if name not in shares:
         raise HTTPException(404, f"Share '{name}' not found")
     cfg = shares[name]
-    if body.comment      is not None: cfg["comment"]       = body.comment
+    if body.comment is not None:
+        err = validation.share_comment(body.comment)
+        if err:
+            raise HTTPException(400, err)
+        cfg["comment"] = body.comment
     if body.smb          is not None: cfg["smb"]           = "yes" if body.smb else "no"
     if body.nfs          is not None: cfg["nfs"]           = "yes" if body.nfs else "no"
     if body.smb_security is not None: cfg["smb_security"]  = body.smb_security

@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from config import HELIX_CONFIG
 from services import privileged as priv
+from services import validation
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -84,8 +85,10 @@ class UserCreate(BaseModel):
 @router.post("/")
 def create_user(req: UserCreate):
     username = req.username.strip()
-    if not username or not username.replace("-", "").replace("_", "").isalnum():
-        raise HTTPException(400, "Invalid username (alphanumeric, hyphens, underscores only)")
+    err = (validation.username(username) or validation.user_description(req.description)
+           or validation.password(req.password))
+    if err:
+        raise HTTPException(400, err)
     try:
         pwd.getpwnam(username)
         raise HTTPException(409, f"User '{username}' already exists")
@@ -150,6 +153,8 @@ def set_password(username: str, req: PasswordUpdate):
         raise HTTPException(404, f"User '{username}' not found")
     if not req.password:
         raise HTTPException(400, "Password cannot be empty")
+    if validation.password(req.password):
+        raise HTTPException(400, validation.password(req.password))
     _set_password(username, req.password)
     _persist()
     return {"ok": True}

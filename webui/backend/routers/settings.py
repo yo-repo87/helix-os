@@ -22,6 +22,8 @@ from pydantic import BaseModel
 
 from config import HELIX_CONFIG
 
+from services import validation
+
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 IDENT_CFG = os.path.join(HELIX_CONFIG, "ident.cfg")
@@ -69,7 +71,7 @@ def get_identity():
         "description":  cfg.get("COMMENT", "Helix OS"),
         "timezone":     cfg.get("TIMEZONE", _detect_timezone()),
         "model":        platform.machine(),
-        "os_version":   "0.1.0",
+        "os_version":   _os_version(),
     }
 
 
@@ -87,6 +89,14 @@ def _detect_timezone() -> str:
         return "UTC"
 
 
+def _os_version() -> str:
+    """The installed Helix OS version (stamped into /etc/helix-version at build time)."""
+    try:
+        return open("/etc/helix-version").read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 class IdentityUpdate(BaseModel):
     name:        str | None = None
     description: str | None = None
@@ -95,6 +105,12 @@ class IdentityUpdate(BaseModel):
 
 @router.put("/identity")
 def update_identity(req: IdentityUpdate):
+    if req.name is not None:
+        err = validation.hostname(req.name.strip())
+        if err:
+            raise HTTPException(400, err)
+    if req.description is not None and len(req.description) > 256:
+        raise HTTPException(400, "Description can be at most 256 characters.")
     updates: dict[str, str] = {}
     if req.name is not None:
         updates["NAME"] = req.name.strip()

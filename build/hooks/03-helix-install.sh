@@ -128,7 +128,14 @@ if ! have_cert; then
         fi
     fi
 fi
-chmod 600 "$ETC_DIR/helix.key" 2>/dev/null || true
+# nginx's master reads the key as root, but the unprivileged backend runs
+# `nginx -t` for proxy/status and needs read access too (group helix).
+if getent group helix >/dev/null 2>&1; then
+    chgrp helix "$ETC_DIR/helix.key" 2>/dev/null || true
+    chmod 640 "$ETC_DIR/helix.key" 2>/dev/null || true
+else
+    chmod 600 "$ETC_DIR/helix.key" 2>/dev/null || true
+fi
 chmod 644 "$ETC_DIR/helix.crt" 2>/dev/null || true
 
 # Enable the HTTPS server block ONLY if we actually have a cert.

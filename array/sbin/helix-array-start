@@ -108,6 +108,19 @@ for i in "${!CACHE_DISKS[@]}"; do
     fi
 done
 
+# ── Mount-root ownership ──────────────────────────────────────────────────────
+# A freshly formatted filesystem's root is root:root 0755, so the unprivileged
+# web backend (user helix) could not create shares or upload files under
+# /mnt/user. Hand the top level of each mount to helix (non-recursive).
+if id helix >/dev/null 2>&1; then
+    for m in "${MOUNTED_MNTS[@]}" "${CACHE_MNTS[@]}"; do
+        mountpoint -q "$m" || continue
+        if [ "$(stat -c %U "$m")" = "root" ]; then
+            chown helix:helix "$m" && chmod 0775 "$m"
+        fi
+    done
+fi
+
 # ── Record state ──────────────────────────────────────────────────────────────
 echo "started" > "$ARRAY_STATE"
 date -Iseconds >> "$ARRAY_STATE"

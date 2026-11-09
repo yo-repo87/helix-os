@@ -53,8 +53,19 @@ def array_stop(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_sbin, "helix-array-stop")
     return {"ok": True, "message": "Array stop initiated"}
 
+def _snapraid_running() -> bool:
+    """True while any snapraid process is alive (covers the POST-started sync,
+    the SSE-started one, and anything started from a shell)."""
+    try:
+        return subprocess.run(["pgrep", "-x", "snapraid"],
+                              capture_output=True, timeout=5).returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
 @router.post("/parity-check")
 def parity_check(scrub: bool = False, background_tasks: BackgroundTasks = None):
+    if _snapraid_running():
+        return {"ok": True, "message": "A parity operation is already running"}
     if _array_state() != "started":
         raise HTTPException(400, "Array is not started")
     args = ["--scrub"] if scrub else []
@@ -193,6 +204,11 @@ async def parity_stream(scrub: bool = False):
         async def _not_started():
             yield "data: ERROR:Array is not started\n\n"
         return StreamingResponse(_not_started(), media_type="text/event-stream")
+
+    if _snapraid_running():
+        async def _busy():
+            yield "data: ERROR:A parity operation is already running\n\n"
+        return StreamingResponse(_busy(), media_type="text/event-stream")
 
     op = "scrub" if scrub else "sync"
 

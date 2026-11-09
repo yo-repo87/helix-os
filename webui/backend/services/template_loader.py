@@ -146,17 +146,31 @@ def _slugify(s: str) -> str:
 
 
 def _extract_port_number(port_str: str) -> int | None:
-    """'8096/tcp' → 8096"""
+    """'8096/tcp' → 8096; '5006:5006/tcp' → 5006 (host port of a host:container pair)"""
     try:
-        return int(str(port_str).split("/")[0])
+        return int(str(port_str).split("/")[0].split(":")[0])
     except (ValueError, AttributeError):
         return None
+
+
+def _localize_host_path(host: str) -> str:
+    """Pi-Hosted templates bind to '/portainer/Files/AppData/Config/<app>/...',
+    a root-level path the unprivileged backend can't create. Map it under the
+    appdata share ('/mnt/user/appdata/<app>/...'); other paths pass through."""
+    if not host:
+        return host
+    m = re.match(r"^/portainer/Files/AppData/Config/(.*)$", host) or \
+        re.match(r"^/portainer/(.*)$", host)
+    return f"/mnt/user/appdata/{m.group(1)}" if m else host
 
 
 def _portainer_to_unified(item: dict, source_id: str) -> dict | None:
     """Convert a Portainer v1/v2 template entry to our unified format."""
     item_type = item.get("type", 1)
-    if item_type not in (1, 3):  # 1=container, 3=standalone (skip stacks/swarm)
+    # 1=container. Type 3 is normally a compose *stack* (deployed from a git
+    # repository, no single image) which this loader cannot build yet, so those
+    # fall out below when they carry no image; type 2 is swarm.
+    if item_type not in (1, 3):
         return None
 
     title = item.get("title", "")
@@ -196,7 +210,7 @@ def _portainer_to_unified(item: dict, source_id: str) -> dict | None:
         host      = vol.get("bind", "")
         label     = vol.get("label", f"Path for {container}")
         key       = "VOL_" + re.sub(r"[^A-Z0-9]", "_", container.upper()).strip("_")
-        default   = host or f"/mnt/user/appdata/{name}{container.replace('/','_')}"
+        default   = _localize_host_path(host) or f"/mnt/user/appdata/{name}{container.replace('/','_')}"
         vars_list.append({"key": key, "label": label, "default": default, "type": "path"})
         compose_vols.append(f"{{{{{key}}}}}:{container}")
 

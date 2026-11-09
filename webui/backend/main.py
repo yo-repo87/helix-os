@@ -23,7 +23,15 @@ async def lifespan(app: FastAPI):
     task2.cancel()
 
 
-app = FastAPI(title="Helix OS", version="0.1.0", docs_url="/api/docs", lifespan=lifespan)
+def _helix_version() -> str:
+    """Installed OS version (stamped into /etc/helix-version at build time)."""
+    try:
+        return open("/etc/helix-version").read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+app = FastAPI(title="Helix OS", version=_helix_version(), docs_url="/api/docs", lifespan=lifespan)
 
 app.add_middleware(AuditMiddleware)
 app.add_middleware(
@@ -87,7 +95,7 @@ if os.path.isdir(FRONTEND):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": _helix_version()}
 
 
 from fastapi.responses import JSONResponse

@@ -217,6 +217,14 @@ def _write_compose(app_dir: Path, template: dict, vars_map: dict) -> Path:
     return dest
 
 
+def _require_docker() -> None:
+    """Fail fast with a clear 503 instead of reporting success for work that
+    can never happen (start/stop/update/install all shell out to docker)."""
+    import shutil
+    if not shutil.which("docker"):
+        raise HTTPException(503, "Docker is not installed on this system")
+
+
 def _docker_compose(app_dir: str | Path, *args, timeout: int = 60) -> tuple[int, str, str]:
     r = subprocess.run(
         ["docker", "compose", *args],
@@ -278,6 +286,7 @@ def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
         raise HTTPException(404, f"Template '{req.name}' not found")
     if req.name in _installed_apps():
         raise HTTPException(409, f"'{req.name}' is already installed")
+    _require_docker()
     background_tasks.add_task(_do_install, req.name, req.vars)
     return {"ok": True, "message": f"Installing {templates[req.name]['title']}…"}
 
@@ -295,6 +304,7 @@ def start_app(name: str, background_tasks: BackgroundTasks):
     installed = _installed_apps()
     if name not in installed:
         raise HTTPException(404)
+    _require_docker()
     background_tasks.add_task(_docker_compose, installed[name]["dir"], "start")
     return {"ok": True}
 
@@ -304,6 +314,7 @@ def stop_app(name: str, background_tasks: BackgroundTasks):
     installed = _installed_apps()
     if name not in installed:
         raise HTTPException(404)
+    _require_docker()
     background_tasks.add_task(_docker_compose, installed[name]["dir"], "stop")
     return {"ok": True}
 
@@ -313,6 +324,7 @@ def update_app(name: str, background_tasks: BackgroundTasks):
     installed = _installed_apps()
     if name not in installed:
         raise HTTPException(404)
+    _require_docker()
     background_tasks.add_task(_docker_compose, installed[name]["dir"], "pull")
     background_tasks.add_task(
         _docker_compose, installed[name]["dir"], "up", "-d", "--force-recreate"
@@ -325,9 +337,13 @@ def remove_app(name: str, purge: bool = False):
     installed = _installed_apps()
     if name not in installed:
         raise HTTPException(404)
-    _docker_compose(installed[name]["dir"], "down", "--remove-orphans")
-    if purge:
-        import shutil
+    import shutil
+    has_docker = bool(shutil.which("docker"))
+    if has_docker:
+        _docker_compose(installed[name]["dir"], "down", "--remove-orphans")
+    # Without docker nothing can be running, so drop the state entry too —
+    # otherwise a failed install can never be cleared from the app list.
+    if purge or not has_docker:
         shutil.rmtree(installed[name]["dir"], ignore_errors=True)
         return {"ok": True, "message": f"Removed {name} and deleted compose files"}
     return {"ok": True, "message": f"Stopped {name}"}

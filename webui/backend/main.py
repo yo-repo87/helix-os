@@ -91,7 +91,11 @@ if os.path.isdir(FRONTEND):
 
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(os.path.join(FRONTEND, "index.html"))
+        # no-cache = "revalidate every load" (cheap 304 via the ETag). Without it
+        # browsers heuristically cache the page, so after an OS update they kept
+        # showing the previous version's UI (e.g. a stale "Demo mode" banner).
+        return FileResponse(os.path.join(FRONTEND, "index.html"),
+                            headers={"Cache-Control": "no-cache"})
 
 @app.get("/api/health")
 def health():

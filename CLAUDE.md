@@ -846,6 +846,28 @@ The initramfs previously used `/run/hive/` as its working directory. All paths w
 
 ---
 
+### 19.5 Debugging protocol for initramfs boot failures
+
+**What happened:** The HELIXBOOT-not-found error was investigated across three separate attempts, each fixing a different symptom while missing the real cause, wasting significant time and tokens.
+
+- **Attempt 1:** Added `modprobe` calls for USB/VirtIO/SATA drivers to `build/initramfs/init`. Did not read `build-initramfs.sh`. The `.ko` files were never packed into the cpio, so `modprobe` silently failed and nothing changed.
+- **Attempt 2:** Diagnosed the wrong secondary problem (ISO 9660 vs vfat mount type). Fixed a real bug but not the root cause. Rebuilt and published twice more without the boot working.
+- **Attempt 3:** Finally read `build-initramfs.sh` and found that the module packing list had never been updated. Fixed in one line.
+
+**Rule — before touching any initramfs file, read ALL THREE:**
+1. `build/initramfs/init` — what the runtime does
+2. `build/initramfs/build-initramfs.sh` — what gets packed into the cpio
+3. Cross-check that every `modprobe <name>` in `init` has a matching `install_module "<name>"` in `build-initramfs.sh`
+
+**Rule — when a boot fix does not work after rebuild:**
+Do not diagnose a new symptom. First verify the fix actually took effect:
+- For module changes: after build, run `lsinitrd output/boot/initrd.img | grep <module>` or `zstd -d output/boot/initrd.img -o - | cpio -t | grep <module>` to confirm the `.ko` is in the cpio before publishing.
+- For init script changes: inspect `output/boot/initrd.img` to confirm the updated `init` is packed.
+
+**Rule — never publish a release as "fixed" without confirming the fix is in the binary output**, not just in the source file.
+
+---
+
 ### 19.4 App install failures were silently swallowed
 
 **Incident:** Clicking Install on any app showed "Installing…" then reverted to "Install" with no error message. Docker socket permission errors, missing images, and all other failures were invisible.

@@ -1665,7 +1665,7 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
     <div class="panel">
       <div class="panel-header">
         Containers
-        <span class="panel-action" id="docker-action">Manage</span>
+        <span class="panel-action" id="docker-action" onclick="openContainerManager()" style="cursor:pointer">Manage</span>
       </div>
       <div id="containers-list"><!-- populated by JS --></div>
     </div>
@@ -2312,25 +2312,36 @@ async function createNewShare() {
   } catch(e) { alert('Error: ' + e.message); }
 }
 
+let _containers = [];
 function renderContainers(containers) {
+  _containers = containers;
   const running = containers.filter(c=>c.state==='running').length;
   document.getElementById('docker-val').innerHTML =
     `${running}<span style="font-size:14px;color:var(--fg-muted)">/${containers.length}</span>`;
   document.getElementById('docker-sub').textContent =
     `${running} running · ${containers.length-running} stopped`;
 
-  document.getElementById('containers-list').innerHTML = containers.map(c => `
+  document.getElementById('containers-list').innerHTML = containers.length ? containers.map(c => `
     <div class="container-row">
-      <span class="ctr-dot ${c.state}"></span>
-      <span class="ctr-name">${c.name}</span>
-      <span class="ctr-image" style="max-width:120px">${(c.image||'').split(':')[0].split('/').pop()}</span>
-      <span class="ctr-state ${c.state}">${c.state}</span>
-      <div class="ctr-actions">
-        ${c.state==='running'
-          ? `<button class="ctr-btn" onclick="ctrAction('${c.name}','stop')">Stop</button>`
-          : `<button class="ctr-btn" onclick="ctrAction('${c.name}','start')">Start</button>`}
-      </div>
-    </div>`).join('');
+      <span class="ctr-dot ${_esc(c.state)}"></span>
+      <span class="ctr-name">${_esc(c.name)}</span>
+      <span class="ctr-image" style="max-width:120px">${_esc((c.image||'').split(':')[0].split('/').pop())}</span>
+      <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
+      <div class="ctr-actions">${ctrButtons(c, true)}</div>
+    </div>`).join('')
+    : '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">No containers yet. Install one from the Apps page.</div>';
+}
+
+// Action buttons for one container (compact on the dashboard, labelled in the Manage dialog).
+function ctrButtons(c, compact) {
+  const n = _esc(c.name), up = c.state === 'running';
+  const b = (act, label, tip, extra = '') =>
+    `<button class="ctr-btn" ${extra} title="${tip}" onclick="ctrAction('${n}','${act}')">${label}</button>`;
+  return (up ? b('stop', 'Stop', 'Stop the container') : b('start', 'Start', 'Start the container'))
+    + b('restart', compact ? '↻' : 'Restart', 'Restart the container')
+    + `<button class="ctr-btn" title="Show the container's log" onclick="ctrLogs('${n}')">${compact ? '☰' : 'Logs'}</button>`
+    + (c.app ? `<button class="ctr-btn" title="Edit this app's settings (tokens, folders, variables)" onclick="closeModal();openAppForm('configure','${n}')">⚙${compact ? '' : ' Configure'}</button>` : '')
+    + `<button class="ctr-btn" style="color:var(--err)" title="Remove this container" onclick="ctrRemove('${n}',${!!c.app})">${compact ? '✕' : 'Remove'}</button>`;
 }
 
 function fmtBytes(mb) {
@@ -2354,8 +2365,49 @@ function renderNetwork(status) {
 
 async function ctrAction(name, action) {
   if (!liveMode) { alert('Demo mode — connect backend for live control.'); return; }
-  await apiFetch(`/api/docker/containers/${name}/${action}`, {method:'POST'}).catch(()=>{});
-  refresh();
+  // apiFetch() takes only a path and ignores options, so this used to send a GET to a
+  // POST-only endpoint and the error was swallowed: Start/Stop never worked from here.
+  try { await fetchJSON(`/api/docker/containers/${encodeURIComponent(name)}/${action}`, {method: 'POST'}); }
+  catch (e) { alert(`${action} failed: ${e.message}`); }
+  await refresh();
+  if (document.getElementById('ctr-manager')) openContainerManager(true);
+}
+
+async function ctrLogs(name) {
+  let text;
+  try { text = (await fetchJSON(`/api/docker/containers/${encodeURIComponent(name)}/logs?lines=300`)).lines.join('\n') || '(no output)'; }
+  catch (e) { text = 'Could not read the log: ' + e.message; }
+  showModal(`Log — ${name}`, `<pre style="max-height:60vh;overflow:auto;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin:0">${_esc(text)}</pre>`,
+    `<button class="ctr-btn" onclick="openContainerManager()">← Back</button><button class="settings-btn" onclick="closeModal()">Close</button>`);
+}
+
+async function ctrRemove(name, isApp) {
+  const msg = isApp
+    ? `Remove ${name}?\n\nThe container and its saved settings are deleted. Your data folders are kept.`
+    : `Remove container ${name}?\n\nThe container is deleted. Volumes and folders it used are kept.`;
+  if (!confirm(msg)) return;
+  try { await fetchJSON(`/api/docker/containers/${encodeURIComponent(name)}`, {method: 'DELETE'}); }
+  catch (e) { alert('Remove failed: ' + e.message); }
+  await refresh();
+  if (document.getElementById('ctr-manager')) openContainerManager(true);
+}
+
+async function openContainerManager(keepOpen) {
+  if (!liveMode) { alert('Demo mode — connect backend.'); return; }
+  let list;
+  try { list = (await fetchJSON('/api/docker/containers')).containers || []; }
+  catch (e) { alert('Could not load containers: ' + e.message); return; }
+  const rows = list.map(c => `<tr>
+      <td style="padding:6px 8px"><span class="ctr-dot ${_esc(c.state)}"></span> <strong>${_esc(c.name)}</strong>${c.app ? ' <span title="Installed from the Apps page" style="font-size:10px;color:var(--accent)">app</span>' : ''}
+          <div style="font-size:11px;color:var(--fg-dim)">${_esc(c.image)}</div></td>
+      <td style="padding:6px 8px;font-size:12px">${_esc(c.status)}</td>
+      <td style="padding:6px 8px;font-size:11px;color:var(--fg-muted);max-width:170px;word-break:break-word">${_esc(c.ports || '—')}</td>
+      <td style="padding:6px 8px;white-space:nowrap"><div class="ctr-actions" style="display:flex;gap:4px">${ctrButtons(c, false)}</div></td></tr>`).join('');
+  showModal('Containers',
+    `<div id="ctr-manager" style="max-height:62vh;overflow:auto">${list.length
+      ? `<table style="width:100%;border-collapse:collapse"><tr style="text-align:left;color:var(--fg-muted);font-size:11px"><th style="padding:4px 8px">Container</th><th style="padding:4px 8px">Status</th><th style="padding:4px 8px">Ports</th><th></th></tr>${rows}</table>`
+      : '<div style="color:var(--fg-dim);padding:16px">No containers yet.</div>'}</div>`,
+    `<button class="ctr-btn" onclick="closeModal();location.hash='#apps'">Browse apps…</button><button class="settings-btn" onclick="closeModal()">Close</button>`);
 }
 
 // ── Data refresh ────────────────────────────────────────────────

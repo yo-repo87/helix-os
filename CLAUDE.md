@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.10)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.13)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1272,6 +1272,11 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | vnstat history 500 | `vnstat --json -d` prints text; `vnstat -d --json` prints JSON | argument order; `vnstat` added to the image |
 | **Unraid CA catalog empty** | feed URL `applicationFeed.json.gz` now 404 (file is `applicationFeed.json`, 21 MB); parser assumed `applist` was a dict (it is a list), used `Category` (real: `CategoryList`), mapped ports `Target:Target` (real: host=`Default`, container=`Target`), ignored `Device` | rewritten against the real feed: 4 809 container apps, host ports from `Default`, devices, `required`/`description`, secrets masked; list endpoint is slim and the UI pages 60 at a time |
 | IOMMU: `amd_iommu=on` "Unknown option" | not a valid option; AMD's IOMMU is on by default (BIOS) | flags are `intel_iommu=on iommu=pt`; GRUB reads `/boot/config/boot-params.cfg` (`helix_iommu=auto|off`); UI toggle `GET/POST /api/vfio/iommu`; real state from `/sys/kernel/iommu_groups` |
+| System users, Samba passwords, cron jobs and WireGuard interfaces vanished on reboot; user/WireGuard APIs answered "requires the backend to run as root" | `/etc/passwd`, `/etc/shadow`, Samba's tdb, the crontab and `/etc/wireguard` are all in the RAM root; routers refused to run as the unprivileged `helix` user | `services/privileged.py` (`run`/`read_file`/`write_file` via `sudo -n`); `users.py` records accounts (uid/gid/shell/hash/SSH keys) in `HELIX_CONFIG/users.json` and `pdbedit -L -w` in `smbpasswd`; scheduler copies the crontab to `HELIX_CONFIG/crontab`; WireGuard confs live in `HELIX_CONFIG/wireguard/` (`wg-quick up <full path>`, `wg syncconf` fed by `wg-quick strip`); `webui/backend/helpers/helix-restore-state` (root, idempotent, `--dry-run`) rebuilds them, called from `helix-firstboot` |
+| Disabling a scheduled job deleted it (later DELETE → 404) | `_parse_jobs` skipped every line starting with `#` *before* recognising the `#PAUSED#` marker, so paused jobs left the list and the next rebuild dropped them (`lstrip("#PAUSED# ")` is also a char-set strip) | detect `#PAUSED#` first; `removeprefix` semantics |
+| Array stayed stopped after every reboot | no autostart | `array.cfg` (`autostart=yes`), `GET/POST /api/array/autostart`, "Start array on boot" checkbox, `helix-array-autostart` + `helix-array-autostart.service` (waits up to ~90 s for the assigned by-id disks) |
+| Files deleted over SMB never appeared in the Recycle Bin page | Samba used `recycle:repository = .Recycle.Bin`; the UI scans `.recycle/<user>/…`; scan list also had `/mnt/cache` (real: `cache1…`) | Samba now `.recycle/%U`; roots cover `disk1-28`, `cache1-4`. (The web file manager's delete is permanent by design.) |
+| Dashboard "Manage" link did nothing; containers could not be removed; Start/Stop in that panel never worked | `Manage` was a `<span>` with no handler; no DELETE endpoint; `ctrAction` called `apiFetch(url, {method:'POST'})` but **`apiFetch(path)` ignores options → a GET to a POST-only route**, error swallowed; also `docker stop` > 10 s timeout and `docker logs` dropped stderr | `DELETE /api/docker/containers/{name}` (Helix apps go through `remove_app(purge=True)` so compose + settings go too), `GET /containers/{name}` details (env *names* only), longer timeouts, merged stderr; UI: per-row Start/Stop/Restart/Logs/⚙Configure/Remove, Manage dialog, `ctrAction` uses `fetchJSON` |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)
@@ -1288,6 +1293,8 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **Debian bookworm facts:** no `docker-compose-plugin`/v2; `docker.io` 20.10; `samba` 4.17; `wireguard-tools` ok. Containers need `apparmor` + `iptables`.
 - **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
 - **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
+- **`apiFetch(path)` is GET-only (it ignores a second argument). Use `fetchJSON(path, {method, body})` for POST/PUT/DELETE** — misuse fails silently.
+- **RAM-root state checklist:** `/etc/passwd|shadow|group`, Samba passdb, crontab, `/etc/wireguard`, `/etc/docker/daemon.json`, anything under `/var`. If a feature writes there, it needs a copy in `HELIX_CONFIG` and a restore step (`helix-restore-state`).
 - **`ip rule` priorities must be < 32766** (`main`). Never reuse a routing-table id as a priority. Check with `ip route get <dst> from <src> iif <bridge>`.
 - **A Docker bridge routed into a tunnel must use the tunnel's MTU** (`com.docker.network.driver.mtu`). Symptom of a mismatch: ping works, TCP connects, data stalls / TLS "unexpected eof".
 - **A container on two networks keeps its first default route** — to force egress via a network, detach the others.
@@ -1301,13 +1308,12 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 
 ### 29.4 State at time of writing, open items, ideas
 
-Released and verified on the VM: **2.0.10** (every version 2.0.1 → 2.0.10 was applied by the VM's own updater, rebooted into, and re-tested; last full sweep: 21 UI pages with no JS errors or failed API calls, 94/95 parameterless GET endpoints 200 — the 95th, `/api/files/download`, needs a path).
+Released and verified on the VM: **2.0.13** (every version 2.0.1 → 2.0.13 was applied by the VM's own updater, rebooted into, and re-tested; last full sweep: 21 UI pages with no JS errors or failed API calls, 94/95 parameterless GET endpoints 200 — the 95th, `/api/files/download`, needs a path).
 
 Verified working end to end on the VM: Unraid CA catalog (4 809 apps) + a custom Pi-Hosted source (261) in one catalog, both persisting across reboots, PIA connect + container routing (exit IP differs from the host; host route/DNS/IP untouched; routed app still reachable from the LAN), app install/Configure/extras/Remove, array (data+parity+cache by serial), parity sync with data, SMB + NFS read/write interchange, Docker app install/logs/stop/start/remove with image data on the cache disk, settings persistence across reboots, IOMMU boot flags, all 21 UI pages without JS errors.
 
 Open items:
 - **REST API is unauthenticated** (only `/mcp` checks the bearer). The UI sends no token. Needs login/session + first-boot password decision.
-- Array does not **auto-start** after a reboot (Unraid has "start array on boot").
 - **VMs:** libvirt/qemu are not in the image (`/api/vms/` returns `available:false`); GPU passthrough UI is untested on hardware.
 - Portainer **stack templates (type 3)** — 36 of 297 Pi-Hosted entries — are skipped (no single image).
 - arm64 images/releases are stale (2.0.1+ are amd64-only).
@@ -1317,4 +1323,4 @@ Open items:
 - `apps` update/`up --pull` on compose v1 is emulated; moving to Docker's own apt repo would give v2.
 - Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI, split level, array autostart, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing.
 
-*Last updated: 2026-11-09 (2.0.10).*
+*Last updated: 2026-11-09 (2.0.13).*

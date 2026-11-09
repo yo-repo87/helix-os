@@ -190,7 +190,7 @@ main {
 .stats-row {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px; margin-bottom: 2px;
+  gap: 14px 12px; margin-bottom: 2px;
 }
 .stat-tile {
   background: var(--surface); border: 1px solid var(--border);
@@ -253,8 +253,12 @@ main {
 .drives-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  gap: 16px 12px;                      /* more air between rows of drive tiles */
+  margin-bottom: 22px;
 }
+/* The blocks keep their own distance even when no heading sits between them. */
+.stats-row + .drives-grid { margin-top: 22px; }
+.drives-grid + .array-op, .drives-grid + .section-title + .array-op { margin-top: 22px; }
 .drive-tile {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 14px 16px;
@@ -589,9 +593,9 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
 }
 
 /* ── Array operation panel + global footer ─────────────────────────── */
-.array-op { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.array-op { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
 .aop-row { display: grid; grid-template-columns: minmax(170px, 230px) minmax(110px, auto) 1fr; gap: 6px 14px; align-items: center;
-           padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; }
+           padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; }
 .aop-row.aop-ok { border-left-color: var(--ok); } .aop-row.aop-warn { border-left-color: var(--warn); }
 .aop-row.aop-error { border-left-color: var(--err); } .aop-row.aop-busy { border-left-color: var(--accent); }
 .aop-status { font-size: 13px; font-weight: 600; }

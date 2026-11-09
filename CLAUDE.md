@@ -1210,7 +1210,7 @@ Consolidated since 0.1.1:
 
 ---
 
-## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.23)
+## 29. Smoke-test & OTA campaign — 2026-11-09 (versions 2.0.1 → 2.0.24)
 
 > **Working agreement (from the user):** keep this file current — add what was learned and what was fixed *and how*,
 > in the same session the fix is made. When something here is contradicted by a later section, the later one wins.
@@ -1295,6 +1295,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Opening or reloading the page on `#files` / `#network` (any route whose loader uses variables defined in a later script block) failed with "Cannot access 'x' before initialization" | `updateSections()` ran at script *parse* time, before the later blocks had defined their `const`s | it now runs on `DOMContentLoaded`. Rule: never call route loaders while the script is still being evaluated |
 | Static-IP fields always visible; "Keep/Undo" bar could never hide | `.net-row{display:flex}` and `#net-pending{display:flex}` beat the `hidden` attribute (same trap as the demo banner) | `[hidden]{display:none}` rules for each class that sets `display`; found by the browser test, not by reading |
 | Array, Shares and Docker sidebar links showed the same page as Dashboard | they had no section in `SECTION_IDS`, so every one of them fell through to the dashboard (which already holds the array, shares and containers tiles) | links removed. Audit method: click every `a.nav-item` on the VM and fingerprint the visible `main > *` ids; any two links with the same fingerprint are duplicates (only that one group existed). Re-run it whenever a link is added |
+| Dashboard: Array Operation rows touched the bottom of the drive tiles, drive tiles almost touched the stat tiles (user screenshot with no "Drives"/"Array Operation" headings between them; could not reproduce the missing headings on the VM at 1700 px, dark or light) | the blocks relied on the section headings' margins for their distance | `.drives-grid` has its own margin and `gap:16px 12px`, `.stats-row + .drives-grid` / `.drives-grid + .array-op` add 22 px when no heading sits between them, `.array-op` gap 10 px and larger row padding. Measured: 22 px without headings (was ~3), 51-61 px with |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
 
 ### 29.3 Rules learned (read before changing these areas)

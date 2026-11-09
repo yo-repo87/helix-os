@@ -63,20 +63,25 @@ find_boot_dev() {
     dev=$(blkid 2>/dev/null | grep -i "LABEL=" | grep -i "$BOOT_LABEL" | head -1 | cut -d: -f1)
     [ -n "$dev" ] && { echo "$dev"; return; }
 
-    # Method 4: brute-force — try mounting every partition as vfat/iso9660
-    # and check for the squashfs file. Covers any device type.
+    # Method 4: brute-force — try blkid then mount-probe every partition.
+    # CD-ROM devices (/dev/sr*) are excluded from the mount probe: an empty
+    # drive causes the kernel to print "can't open blockdev" to the console
+    # (a printk, not stderr — cannot be suppressed from shell). They are
+    # already covered by methods 1-3 above when a disc is inserted.
     mkdir -p /run/probe
-    for d in /dev/sr[0-9] \
-              /dev/sd[a-z][0-9] /dev/sd[a-z] \
+    for d in /dev/sd[a-z][0-9] /dev/sd[a-z] \
               /dev/vd[a-z][0-9] /dev/vd[a-z] \
               /dev/hd[a-z][0-9] /dev/hd[a-z] \
               /dev/mmcblk[0-9]p[0-9] \
-              /dev/nvme[0-9]n[0-9]p[0-9]; do
+              /dev/nvme[0-9]n[0-9]p[0-9] \
+              /dev/sr[0-9]; do
         [ -b "$d" ] || continue
-        # Try blkid on the specific device (handles both busybox and util-linux output)
+        # blkid per-device: suppress both stdout and stderr to avoid noise
         lbl=$(blkid "$d" 2>/dev/null | grep -i "LABEL=" | grep -i "$BOOT_LABEL")
         [ -n "$lbl" ] && { echo "$d"; return; }
-        # Last resort: mount it and look for the squashfs
+        # Skip CD-ROM mount probe (kernel prints errors for empty drives)
+        case "$d" in /dev/sr*) continue ;; esac
+        # Mount probe: look for the squashfs file as proof of HELIXBOOT
         for fstype in vfat iso9660 auto; do
             if mount -t "$fstype" -o ro,noatime "$d" /run/probe 2>/dev/null; then
                 if [ -f "/run/probe/$SQUASHFS_PATH" ]; then

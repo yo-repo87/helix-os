@@ -810,22 +810,19 @@ This section documents bugs that caused production incidents. **Read before modi
 
 **Root cause:** `build/initramfs/init` only loaded filesystem modules (`squashfs`, `vfat`, `overlay`, etc.) but **not** the storage bus drivers needed to enumerate hardware. Without them the kernel never creates block device nodes in `/dev/`.
 
-**Fix (commit `4f2dea4`):** Added explicit `modprobe` calls in the kernel modules section plus a 2-second enumeration delay:
+**Root cause (deeper):** `init` calls `modprobe ehci_hcd`, `modprobe usb_storage`, etc. — but those `.ko` files were **never copied into the initramfs cpio**. `modprobe` silently returns 0 (no error), the kernel never binds to the hardware, `/dev/` stays empty. Adding `modprobe` calls to `init` without also adding the modules to `build-initramfs.sh` does nothing.
+
+**Fix:** Added the driver list to BOTH files:
+- `build/initramfs/init` — `modprobe` calls (commit `4f2dea4`, updated later)
+- `build/initramfs/build-initramfs.sh` — `install_module` calls so the `.ko` files are actually packed into the cpio:
 ```sh
-# USB host controllers
 ehci_hcd  ohci_hcd  xhci_hcd  xhci_pci  usbcore
-# USB storage
 usb_storage  uas  scsi_mod  sd_mod  sr_mod
-# VirtIO (Proxmox / QEMU / KVM)
 virtio  virtio_pci  virtio_blk  virtio_scsi
-# SATA / NVMe
 ahci  libahci  ata_piix  nvme  nvme_core
-sleep 2   # USB enumeration delay
 ```
 
-Also added a `/dev/sd*` / `/dev/vd*` / `/dev/mmcblk*` brute-force fallback loop in `find_boot_dev()` so HELIXBOOT is located even if `blkid`/`findfs` are absent in the minimal initramfs environment.
-
-**Rule:** Any change to `build/initramfs/init` must preserve all driver groups above. If new hardware targets are added (e.g. USB4, Thunderbolt, e.MMC), add their modules to this list too. The initramfs must be self-contained — it cannot rely on udev or a full module tree.
+**Rule:** Any storage driver added to `init` MUST also be added to `build-initramfs.sh`'s module list, and vice versa. The initramfs cpio is self-contained — `modprobe` can only load modules that were packed into the cpio at build time. If a module is listed in `init` but missing from `build-initramfs.sh`, `modprobe` silently succeeds with no effect. If new hardware targets are added (USB4, Thunderbolt, eMMC), add their modules to both files.
 
 ---
 

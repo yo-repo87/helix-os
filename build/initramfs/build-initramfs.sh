@@ -101,8 +101,13 @@ install_module() {
 
 if [ -d "$SRC_MODS" ]; then
     echo "  Modules from: $SRC_MODS"
-    for modname in squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8 isofs \
-                   crc32c_generic libcrc32c; do
+    for modname in \
+        squashfs overlay loop vfat nls_cp437 nls_ascii nls_utf8 isofs \
+        crc32c_generic libcrc32c \
+        ehci_hcd ohci_hcd xhci_hcd xhci_pci usbcore \
+        usb_storage uas scsi_mod sd_mod sr_mod \
+        virtio virtio_pci virtio_blk virtio_scsi \
+        ahci libahci ata_piix nvme nvme_core; do
         install_module "$modname"
     done
     # Fresh dependency index for the flattened module set.

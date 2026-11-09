@@ -117,14 +117,28 @@ def _save_state(state: dict):
 
 # ── PIA API helpers ───────────────────────────────────────────────────────────
 
+def _curl_quote(s: str) -> str:
+    """Quote a value for a curl config file (-K): backslash and double quote."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _get_token(username: str, password: str) -> str:
-    data = urllib.parse.urlencode({"username": username, "password": password}).encode()
-    req = urllib.request.Request(PIA_TOKEN_URL, data=data, method="POST")
+    # PIA's token endpoint sits behind Cloudflare, which answers 403 to Python's
+    # urllib/requests TLS fingerprint even with valid credentials (curl gets 200).
+    # So shell out to curl, and pass the credentials on stdin so they never appear
+    # in a process listing.
+    cfg = f'user = "{_curl_quote(username)}:{_curl_quote(password)}"\n'
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read())
-    except Exception as e:
+        r = subprocess.run(["curl", "-sS", "-m", "20", "-K", "-", PIA_TOKEN_URL],
+                           input=cfg, capture_output=True, text=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         raise RuntimeError(f"PIA token request failed: {e}")
+    if r.returncode != 0:
+        raise RuntimeError(f"PIA token request failed: {r.stderr.strip() or 'curl exit ' + str(r.returncode)}")
+    try:
+        result = json.loads(r.stdout)
+    except ValueError:
+        raise RuntimeError(f"PIA token request failed: unexpected reply {r.stdout[:80]!r}")
     if result.get("status") != "OK":
         raise RuntimeError(f"PIA login failed: {result.get('message', 'invalid credentials')}")
     return result["token"]
@@ -326,7 +340,7 @@ def get_settings():
     return {
         "username":    cfg.get("USERNAME", ""),
         "password":    "••••••" if cfg.get("PASSWORD") else "",
-        "region":      cfg.get("REGION", "us_east"),
+        "region":      cfg.get("REGION", "us-newjersey"),
     }
 
 
@@ -361,7 +375,7 @@ def pia_connect(req: ConnectRequest):
     if not username or not password:
         raise HTTPException(400, "PIA credentials not configured — open Settings first.")
 
-    region_id = req.region or cfg.get("REGION", "us_east")
+    region_id = req.region or cfg.get("REGION", "us-newjersey")
 
     try:
         regions = _fetch_regions()

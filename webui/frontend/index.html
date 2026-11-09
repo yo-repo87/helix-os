@@ -4441,11 +4441,17 @@ async function showPiaSettings() {
   // Group by country so ~100 locations stay navigable; the saved region stays selected.
   const byCountry = {};
   _piaRegions.forEach(r => (byCountry[r.country || 'Other'] = byCountry[r.country || 'Other'] || []).push(r));
-  const regionOptions = Object.keys(byCountry).sort().map(c =>
-    `<optgroup label="${_esc(c)}">` + byCountry[c].sort((a, b) => a.name.localeCompare(b.name)).map(r =>
-      `<option value="${_esc(r.id)}" ${r.id === settings.region ? 'selected' : ''}>${_esc(r.name)}</option>`).join('') + '</optgroup>'
+  let countryName = c => c;
+  try { const dn = new Intl.DisplayNames(['en'], {type: 'region'}); countryName = c => { try { return dn.of(c) || c; } catch (_) { return c; } }; } catch (_) {}
+  // A saved region that PIA no longer lists (e.g. the old 'us_east') must not leave the
+  // dialog pointing at nothing: fall back to "US East" (us-newjersey), else the first entry.
+  const ids = new Set(_piaRegions.map(r => r.id));
+  const chosen = ids.has(settings.region) ? settings.region : (ids.has('us-newjersey') ? 'us-newjersey' : (_piaRegions[0] || {}).id);
+  const regionOptions = Object.keys(byCountry).sort((a, b) => countryName(a).localeCompare(countryName(b))).map(c =>
+    `<optgroup label="${_esc(countryName(c))}">` + byCountry[c].sort((a, b) => a.name.localeCompare(b.name)).map(r =>
+      `<option value="${_esc(r.id)}" ${r.id === chosen ? 'selected' : ''}>${_esc(r.name)}</option>`).join('') + '</optgroup>'
   ).join('');
-  const fallback = `<option value="${_esc(settings.region || 'us_east')}">${_esc(settings.region || 'us_east')} (saved default)</option>`;
+  const fallback = `<option value="us-newjersey">US East (default)</option>`;
 
   showModal('PIA Settings',
     `<div style="display:flex;flex-direction:column;gap:10px">

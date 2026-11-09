@@ -36,6 +36,8 @@ TEMPLATES_DIR = os.path.normpath(
 CACHE_DIR   = os.path.join(STATE_DIR, "template_cache")
 # Persistent (/boot/config): custom sources were in RAM and vanished on every reboot.
 SOURCES_CFG = os.path.join(HELIX_CONFIG, "template_sources.json")
+SOURCES_SEEN = os.path.join(HELIX_CONFIG, "template_sources.seen")   # default sources already offered once
+CATALOG_DIR = Path(__file__).resolve().parent.parent / "data" / "catalogs"
 CACHE_TTL   = 86400  # 24 h
 
 DEFAULT_SOURCES = [
@@ -54,18 +56,56 @@ DEFAULT_SOURCES = [
         "enabled": True,
         "description": "Full Unraid CA catalog (fetched + cached on first use)",
     },
+    {
+        "id":      "pi-hosted",
+        "name":    "Pi-Hosted",
+        "type":    "portainer",
+        # bundled with the OS: the Pi-Hosted catalog with its paths mapped to Helix shares
+        # (appdata / downloads / media) by build/tools/convert-portainer-catalog.py
+        "url":     "bundled:pi-hosted-helix.json",
+        "enabled": True,
+        "description": "Pi-Hosted app catalog with folders mapped to Helix shares",
+    },
 ]
 
 
 # ── Source config management ──────────────────────────────────────────────────
 
+_LEGACY_DEFAULTS = ("builtin", "unraid-ca")      # the default sources before "seen" tracking existed
+
+
 def load_sources() -> list[dict]:
     Path(SOURCES_CFG).parent.mkdir(parents=True, exist_ok=True)
     try:
-        return json.loads(Path(SOURCES_CFG).read_text())
+        sources = json.loads(Path(SOURCES_CFG).read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        Path(SOURCES_CFG).write_text(json.dumps(DEFAULT_SOURCES, indent=2))
-        return list(DEFAULT_SOURCES)
+        sources = [dict(d) for d in DEFAULT_SOURCES]
+        Path(SOURCES_CFG).write_text(json.dumps(sources, indent=2))
+        _remember_defaults([d["id"] for d in DEFAULT_SOURCES])
+        return sources
+    # A default source added in a later release must appear on systems that already have a
+    # saved list — but only once: if the user removed it, it must stay removed.
+    try:
+        seen = set(json.loads(Path(SOURCES_SEEN).read_text()))
+    except (OSError, ValueError):
+        # First run of this logic on an existing system: the defaults that existed BEFORE this
+        # feature count as already offered, so one the user removed earlier is not resurrected,
+        # while newer defaults (pi-hosted) are added.
+        seen = set(_LEGACY_DEFAULTS) | {s["id"] for s in sources}
+    have = {s["id"] for s in sources}
+    new = [dict(d) for d in DEFAULT_SOURCES if d["id"] not in have and d["id"] not in seen]
+    if new:
+        sources += new
+        Path(SOURCES_CFG).write_text(json.dumps(sources, indent=2))
+    _remember_defaults(list(seen | have | {d["id"] for d in DEFAULT_SOURCES}))
+    return sources
+
+
+def _remember_defaults(ids) -> None:
+    try:
+        Path(SOURCES_SEEN).write_text(json.dumps(sorted(set(ids))))
+    except OSError:
+        pass
 
 
 def save_sources(sources: list[dict]) -> None:
@@ -273,10 +313,16 @@ def _load_portainer(source: dict) -> list[dict]:
         return []
 
     try:
-        raw = _fetch(url)
+        if url.startswith("bundled:"):                    # shipped inside the OS image
+            name = os.path.basename(url[len("bundled:"):])        # no path traversal
+            raw = (CATALOG_DIR / name).read_bytes()
+        elif url.startswith("/"):                         # a file on this machine
+            raw = Path(url).read_bytes()
+        else:
+            raw = _fetch(url)
         data = json.loads(raw)
     except Exception as e:
-        log.warning("Failed to fetch Portainer templates from %s: %s", url, e)
+        log.warning("Failed to load Portainer templates from %s: %s", url, e)
         return []
 
     # Support v1 (list), v2 ({version, templates:[]}), and plain list

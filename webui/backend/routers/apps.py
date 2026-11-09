@@ -212,6 +212,46 @@ def _substitute_vars(obj: Any, vars_map: dict) -> Any:
     return obj
 
 
+def _check_host_path(label: str, val: str) -> str:
+    """A host path from the install form. It is substituted into a compose volume spec
+    ('<host>:<container>'), so a ':' or newline would let a value rewrite the mapping."""
+    val = (val or "").strip()
+    if not val:
+        return val
+    if not val.startswith("/"):
+        raise HTTPException(400, f"{label}: the folder must be an absolute path (start with /), got {val!r}")
+    if any(c in val for c in (":", "\n", "\r", "\0")):
+        raise HTTPException(400, f"{label}: the folder path cannot contain ':' or line breaks")
+    if ".." in val.split("/"):
+        raise HTTPException(400, f"{label}: the folder path cannot contain '..'")
+    return os.path.normpath(val) if val != "/" else val
+
+
+def _validate_path_vars(template: dict, vars_map: dict) -> dict:
+    """Return vars_map with every folder-type value validated/normalised (raises 400)."""
+    out = dict(vars_map)
+    for v in template.get("vars", []):
+        if v.get("type") == "path":
+            k = v["key"]
+            out[k] = _check_host_path(v.get("label") or k, out.get(k, v.get("default", "")))
+    return out
+
+
+def _ensure_dirs(template: dict, vars_map: dict) -> None:
+    """Create the folders an app will mount, as the Helix user (so they are owned by Helix and
+    shared apps/SMB/NFS can all write them). Docker would otherwise create missing bind sources
+    as root. Only under /mnt: system paths such as /var/run/docker.sock must never be created."""
+    for v in template.get("vars", []):
+        if v.get("type") != "path":
+            continue
+        val = vars_map.get(v["key"], "")
+        if val.startswith("/mnt/"):
+            try:
+                Path(val).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise RuntimeError(f"cannot create the folder {val} for '{v.get('label') or v['key']}': {e.strerror or e}")
+
+
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -345,12 +385,7 @@ def _do_install(name: str, vars_map: dict, extras: dict | None = None) -> None:
             except OSError:
                 pass   # e.g. an existing media mount we cannot create into; docker will report real problems
 
-        # Ensure required host dirs
-        for v_def in t.get("vars", []):
-            if v_def.get("type") == "path":
-                val = final_vars.get(v_def["key"], "")
-                if val:
-                    Path(val).mkdir(parents=True, exist_ok=True)
+        _ensure_dirs(t, final_vars)
 
         _write_compose(app_dir, t, final_vars, extras)
         rc, out, err = _docker_compose(app_dir, "up", "-d", "--pull", "always", timeout=300)
@@ -379,7 +414,8 @@ def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
         raise HTTPException(409, f"'{req.name}' is already installed")
     _require_docker()
     _clean_extras(req.extras)    # fail fast (400) on bad input, before the background task
-    background_tasks.add_task(_do_install, req.name, req.vars, req.extras)
+    clean_vars = _validate_path_vars(templates[req.name], {**{v["key"]: v["default"] for v in templates[req.name].get("vars", [])}, **req.vars})
+    background_tasks.add_task(_do_install, req.name, {**req.vars, **{k: clean_vars[k] for k in req.vars if k in clean_vars}}, req.extras)
     return {"ok": True, "message": f"Installing {templates[req.name]['title']}…"}
 
 
@@ -417,7 +453,7 @@ def set_app_config(name: str, req: ConfigUpdate, background_tasks: BackgroundTas
     extras = _clean_extras(req.extras)
     _require_docker()
     app_dir = Path(installed[name]["dir"])
-    merged = {**installed[name].get("vars", {}), **req.vars}
+    merged = _validate_path_vars(t, {**installed[name].get("vars", {}), **req.vars})
     background_tasks.add_task(_reconfigure, name, app_dir, t, merged, extras)
     return {"ok": True, "message": f"Applying configuration to {t['title']}…"}
 
@@ -427,12 +463,7 @@ def _reconfigure(name: str, app_dir: Path, t: dict, vars_map: dict, extras: dict
     try:
         (app_dir / "vars.json").write_text(json.dumps(vars_map, indent=2))
         (app_dir / "extras.json").write_text(json.dumps(extras, indent=2))
-        for v_def in t.get("vars", []):
-            if v_def.get("type") == "path" and vars_map.get(v_def["key"]):
-                try:
-                    Path(vars_map[v_def["key"]]).mkdir(parents=True, exist_ok=True)
-                except OSError:
-                    pass
+        _ensure_dirs(t, vars_map)
         for ev in extras["volumes"]:
             try:
                 Path(ev["host"]).mkdir(parents=True, exist_ok=True)

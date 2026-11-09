@@ -2681,7 +2681,7 @@ function filterApps(q) {
 // one-click install posted {vars: {}}, so there was nowhere to enter e.g. a
 // Cloudflare tunnel token or a Plex media folder, and no way to change them later.
 const _APP_VAR_TIPS = {
-  path:     'A folder on this server. It is created if it does not exist. Put data under /mnt/user/<share> so it lives on the array.',
+  path:     'Pick the share, then a folder inside it. A folder name that does not exist yet is created when you install. Use "Other path…" for anything outside the shares.',
   env:      'Passed to the container as an environment variable.',
   password: 'Passed to the container as an environment variable. It is stored in this app\'s compose file on this server.',
   port:     'The port published on this server. Pick a free one — Helix itself uses 80, 443 and 8082.',
@@ -2706,6 +2706,100 @@ function appfAddVol(h = '', c = '', ro = false) {
        <button class="ctr-btn" onclick="this.parentElement.remove()" title="Remove">✕</button></div>`);
 }
 
+// ── Folder picker for an app's folder fields ────────────────────────────────────
+// Unraid uses a plain text box that opens a folder tree; typing a new name there creates the
+// folder implicitly (Docker makes it as root). Here: pick the SHARE from a list, then type
+// or choose a folder inside it. A name that doesn't exist yet is created by Helix (owned by the
+// Helix user) when the app is installed. "Other path…" allows anything else, e.g. a cache disk.
+let _pickerShares = null;
+async function loadPickerShares() {
+  try {
+    const names = (await apiFetch('/api/shares/')).map(s => s.name);
+    _pickerShares = [...new Set(['appdata', ...names])].sort((a, b) => a.localeCompare(b));
+  } catch (_) { _pickerShares = _pickerShares || ['appdata']; }
+  return _pickerShares;
+}
+
+function splitUserPath(p) {            // '/mnt/user/media/Plex' -> ['media', 'Plex']; null if not inside a share
+  const m = /^\/mnt\/user\/([^\/]+)(?:\/(.*))?$/.exec(p || '');
+  return m ? [m[1], (m[2] || '').replace(/\/+$/, '')] : null;
+}
+
+function pathPickerHtml(v, shares) {
+  const sp = splitUserPath(v.value);
+  const known = new Set(shares);
+  const list = (sp && !known.has(sp[0])) ? [...shares, sp[0]].sort((a, b) => a.localeCompare(b)) : shares;
+  const mode = sp ? sp[0] : '__custom__';
+  const opts = list.map(n => `<option value="${_esc(n)}" ${n === mode ? 'selected' : ''}>${_esc(n)}${known.has(n) ? '' : ' (not created yet)'}</option>`).join('')
+             + `<option value="__custom__" ${mode === '__custom__' ? 'selected' : ''}>Other path…</option>`;
+  const k = _esc(v.key);
+  return `<div class="appf-path" data-key="${k}" style="flex:1;min-width:0">
+      <div style="display:flex;gap:6px;align-items:center">
+        <select class="settings-select appf-ps" style="flex:0 0 auto;max-width:44%">${opts}</select>
+        <span class="appf-slash" style="color:var(--fg-dim)">/</span>
+        <input class="settings-input appf-pf" list="dl-${k}" autocomplete="off" style="flex:1;min-width:0"
+               value="${_esc(sp ? sp[1] : (v.value || ''))}">
+        <datalist id="dl-${k}"></datalist>
+      </div>
+      <div class="appf-pp" style="font-size:11px;margin-top:3px;color:var(--fg-muted);word-break:break-all"></div>
+      <input type="hidden" class="appf-var" data-key="${k}" value="${_esc(v.value)}">
+    </div>`;
+}
+
+function pathPickerUpdate(box) {
+  const ps = box.querySelector('.appf-ps').value, pf = box.querySelector('.appf-pf');
+  const custom = ps === '__custom__';
+  box.querySelector('.appf-slash').style.display = custom ? 'none' : '';
+  pf.placeholder = custom ? '/full/path/on/this/server' : 'folder inside the share — type a new name to create it';
+  let full = '', err = '';
+  if (custom) {
+    full = pf.value.trim();
+    if (full && !full.startsWith('/')) err = 'Enter an absolute path starting with /';
+  } else {
+    const sub = pf.value.trim().replace(/^\/+|\/+$/g, '');
+    full = '/mnt/user/' + ps + (sub ? '/' + sub : '');
+  }
+  if (/(^|\/)\.\.(\/|$)/.test(full) || /[:\n\r]/.test(full)) err = "A folder path cannot contain '..' or ':'";
+  box.querySelector('.appf-var').value = full;
+  box.dataset.invalid = err ? '1' : '';
+  const sub = pf.value.trim().replace(/^\/+|\/+$/g, '');
+  const isNew = !custom && sub && box._known && !box._known.has(sub);
+  const noShare = !custom && _pickerShares && !_pickerShares.includes(ps);
+  box.querySelector('.appf-pp').innerHTML = err
+    ? `<span style="color:var(--err)">${_esc(err)}</span>`
+    : (full ? `→ <span class="mono">${_esc(full)}</span>` : '')
+      + (isNew ? ' <span style="color:var(--accent)">· new folder, created on install</span>' : '')
+      + (noShare ? `<br><span style="color:var(--warn)">The share '${_esc(ps)}' doesn't exist yet. The folder will still be created, but it isn't shared over SMB/NFS until you create that share on the Shares page.</span>` : '');
+}
+
+async function pathPickerSuggest(box) {      // suggest the folders that already exist at the level being typed
+  const ps = box.querySelector('.appf-ps').value;
+  const dl = box.querySelector('datalist');
+  if (ps === '__custom__') { dl.innerHTML = ''; box._known = null; pathPickerUpdate(box); return; }
+  const sub = box.querySelector('.appf-pf').value.trim().replace(/^\/+/, '');
+  const parent = sub.includes('/') ? sub.slice(0, sub.lastIndexOf('/')) : '';
+  const dir = '/mnt/user/' + ps + (parent ? '/' + parent : '');
+  let names = [];
+  try {
+    const d = await apiFetch('/api/files/list?path=' + encodeURIComponent(dir));
+    // the endpoint falls back to another folder when the path is missing — only trust an exact match
+    if (d.path === dir) names = d.entries.filter(e => e.is_dir && !e.name.startsWith('.')).map(e => (parent ? parent + '/' : '') + e.name);
+  } catch (_) { /* share not created yet / not readable: no suggestions */ }
+  dl.innerHTML = names.map(n => `<option value="${_esc(n)}">`).join('');
+  box._known = new Set(names);
+  pathPickerUpdate(box);
+}
+
+function initPathPickers() {
+  document.querySelectorAll('.appf-path').forEach(box => {
+    let t;
+    const later = () => { clearTimeout(t); t = setTimeout(() => pathPickerSuggest(box), 250); };
+    box.querySelector('.appf-ps').addEventListener('change', () => { pathPickerUpdate(box); pathPickerSuggest(box); });
+    box.querySelector('.appf-pf').addEventListener('input', () => { pathPickerUpdate(box); later(); });
+    pathPickerUpdate(box); pathPickerSuggest(box);
+  });
+}
+
 async function openAppForm(mode, name) {
   if (!liveMode) { alert('Demo mode — connect backend.'); return; }
   let title, vars, extras = {env: {}, volumes: []}, note = '';
@@ -2719,12 +2813,14 @@ async function openAppForm(mode, name) {
       if (!c.template_available) note = 'This app\'s template source is no longer available, so its settings cannot be changed. Re-enable the source first.';
     }
   } catch (e) { alert('Could not load the app settings: ' + e.message); return; }
+  const shares = await loadPickerShares();
 
   const rows = vars.map(v => {
     const type = v.type === 'password' ? 'password' : v.type === 'port' ? 'number' : 'text';
     const tip = v.description || _APP_VAR_TIPS[v.type] || _APP_VAR_TIPS.env;
     const req = v.required ? '<span style="color:var(--err)" title="Required"> *</span>' : '';
-    const control = (v.choices && v.choices.length)
+    const control = v.type === 'path' ? pathPickerHtml(v, shares)
+      : (v.choices && v.choices.length)
       ? `<select class="settings-select appf-var" data-key="${_esc(v.key)}">${v.choices.map(c =>
            `<option value="${_esc(c)}" ${String(c) === String(v.value) ? 'selected' : ''}>${c === '' ? '(none)' : _esc(c)}</option>`).join('')}</select>`
       : `<input class="settings-input appf-var" data-key="${_esc(v.key)}" type="${type}" value="${_esc(v.value)}"
@@ -2753,6 +2849,7 @@ async function openAppForm(mode, name) {
        <button class="ctr-btn" onclick="closeModal()">Cancel</button>
        <button class="settings-btn primary" onclick="appfSubmit('configure','${name}')" ${note ? 'disabled' : ''}>Save &amp; restart</button>`;
   showModal(title, body, actions);
+  initPathPickers();
   Object.entries(extras.env || {}).forEach(([k, v]) => appfAddEnv(k, v));
   (extras.volumes || []).forEach(v => appfAddVol(v.host, v.container, v.ro));
 }
@@ -2772,8 +2869,9 @@ function appfCollect() {
 }
 
 async function appfSubmit(mode, name) {
-  const {vars, extras} = appfCollect();
   const msg = document.getElementById('appf-msg');
+  if ([...document.querySelectorAll('.appf-path')].some(b => b.dataset.invalid)) { msg.textContent = 'Fix the folder path marked in red first.'; return; }
+  const {vars, extras} = appfCollect();
   try {
     const r = mode === 'install'
       ? await fetch(API + '/api/apps/install', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, vars, extras})})

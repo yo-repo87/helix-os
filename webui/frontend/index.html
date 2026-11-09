@@ -571,6 +571,23 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
 }
 .form-btn:hover { background: var(--accent); color: #fff; }
 
+/* ── Field tooltips (ⓘ) ─────────────────────────────────────────── */
+.tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; margin-left: 5px; border-radius: 50%;
+  border: 1px solid var(--fg-dim); color: var(--fg-muted);
+  font: 700 9px/1 sans-serif; text-transform: none; letter-spacing: 0;
+  cursor: help; vertical-align: middle; user-select: none;
+}
+.tip:hover, .tip:focus-visible, .tip.open { color: var(--accent); border-color: var(--accent); outline: none; }
+#tip-bubble {
+  position: fixed; z-index: 10000; max-width: 270px; padding: 7px 10px;
+  background: var(--surface-hi); color: var(--fg); border: 1px solid var(--border-str);
+  border-radius: 6px; font-size: 12px; line-height: 1.4; font-weight: 400;
+  text-transform: none; letter-spacing: 0; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  pointer-events: none; display: none;
+}
+
 /* ── Demo banner ───────────────────────────────────────────────── */
 .demo-banner {
   background: var(--accent-dim); border: 1px solid var(--accent);
@@ -1853,6 +1870,164 @@ async function fetchJSON(path, opts) {
   const body = await r.text();
   return body ? JSON.parse(body) : {};
 }
+
+// ── Field tooltips ───────────────────────────────────────────────
+// Add an entry to FIELD_TIPS (keyed by the control's id) and an ⓘ appears next to
+// its label — in static pages and in modals built later (see the observer below).
+const FIELD_TIPS = {
+ "app-search": "Filter the catalog by name, title or category.",
+ "src-name": "A short label for this template source. It also becomes the source's ID, so pick something stable.",
+ "src-type": "portainer = a Portainer v2/v3 template JSON (e.g. Pi-Hosted). unraid-xml = one Unraid template XML. unraid-ca-feed = the full Unraid Community Applications feed.",
+ "src-url": "Web address of the template file. It must be reachable from this server; raw GitHub URLs work well.",
+ "cfg-hostname": "This server's name on the network (letters, digits and hyphens). Used for SMB/mDNS discovery and the console banner.",
+ "cfg-desc": "Free-text description shown in the UI and when browsing the network.",
+ "cfg-tz": "Used for logs, schedules and cron jobs.",
+ "smb-workgroup": "Windows workgroup name. Almost always WORKGROUP.",
+ "smb-min-proto": "The oldest SMB protocol clients may use. Keep SMB2 or newer; SMB1 is insecure.",
+ "smb-macos": "Adds Apple extensions so macOS Finder and Time Machine behave better over SMB.",
+ "smb-recycle": "Deleted files move to a hidden recycle folder inside the share instead of being removed at once.",
+ "ddns-provider": "The dynamic-DNS service that keeps your domain pointed at this server's public IP.",
+ "ddns-enabled": "Periodically update the DNS record with this server's current public IP.",
+ "ddns-domain": "The full hostname to keep updated, e.g. home.example.com.",
+ "ddns-token": "API token or password for your DNS provider. It is stored on this server.",
+ "ddns-cf-zone": "The Cloudflare Zone ID of the domain (shown on the domain's overview page).",
+ "ddns-custom-url": "The IP-update URL your provider documents.",
+ "ftp-enabled": "Start the FTP server. Plain FTP is unencrypted, so use it on a trusted LAN only.",
+ "ftp-anon": "Allow logging in without a password.",
+ "ftp-write": "Allow uploads, deletes and renames. Off means read-only.",
+ "ftp-chroot": "Lock each user into their own folder.",
+ "ftp-port": "FTP control port. The default is 21.",
+ "ftp-pasv-min": "Start of the passive-mode data port range. Open the same range in any firewall.",
+ "ftp-pasv-max": "End of the passive-mode data port range.",
+ "osu-repo": "GitHub repository to fetch OS updates from, as owner/name.",
+ "osu-channel": "stable = full releases only. beta also offers pre-releases.",
+ "osu-token": "Optional read-only GitHub token. Only needed if the repository is private.",
+ "login-new-role": "What the account may do. Use the lowest role that works.",
+ "banner-color": "Hex colour of the top header bar.",
+ "banner-img-input": "Optional image shown in the header. It is stored in this browser only.",
+ "new-username": "The user name for SMB and shell access: lowercase letters, digits, - and _.",
+ "new-password": "Used for SMB access. Choose a strong one.",
+ "es-smb-sec": "public = anyone on your network can use the share without a password. private = only users you allow.",
+ "es-recycle": "Keep deleted files in a recycle folder instead of removing them at once.",
+ "es-nfs-sec": "Hosts allowed to mount the share, e.g. 192.168.1.0/24(rw,sync). Blank allows everyone, which is risky on untrusted networks.",
+ "ns-name": "Letters, digits, - and _ only. The share appears at /mnt/user/<name>.",
+ "ns-comment": "Optional note shown next to the share when browsing.",
+ "ns-smb": "Export this share over SMB (Windows and macOS file sharing).",
+ "ns-nfs": "Export this share over NFS (Linux and Unix clients).",
+ "ssl-hostname": "The name browsers use to reach this server. It goes in the certificate.",
+ "ssl-days": "How long the self-signed certificate stays valid.",
+ "ssl-upload-cert": "Your certificate in .crt or .pem format.",
+ "ssl-upload-key": "The matching private key. Keep it secret.",
+ "le-domain": "A public domain name that points at this server. Let's Encrypt must be able to reach it to validate.",
+ "le-email": "Expiry notices from Let's Encrypt are sent here.",
+ "wg-new-name": "Interface name, e.g. wg0.",
+ "wg-new-addr": "This server's address inside the VPN, as CIDR, e.g. 10.253.0.1/24.",
+ "wg-new-port": "UDP port to listen on (default 51820). Forward it on your router.",
+ "wg-new-dns": "DNS server handed to VPN clients.",
+ "peer-name": "A label for this device, e.g. phone or laptop.",
+ "peer-endpoint": "The public host:port clients connect to: your WAN IP or DDNS name plus the listen port.",
+ "ts-auth-key": "A Tailscale auth key from the admin console. Needed only for first setup or re-auth.",
+ "ts-hostname": "The name this machine appears as in your tailnet.",
+ "pia-user": "Your Private Internet Access account name.",
+ "pia-pass": "Your Private Internet Access password.",
+ "pia-region": "The PIA server location to connect to.",
+ "vm-name": "A unique name for the VM, without spaces.",
+ "vm-os": "Picks sensible defaults (drivers, firmware) for that operating system.",
+ "vm-mem": "Memory reserved for the VM. The host cannot use it while the VM runs.",
+ "vm-cpus": "Virtual CPU cores given to the VM.",
+ "vm-disk": "Size of the new virtual disk in GB. It grows as the VM uses it.",
+ "vm-iso": "Installer ISO to boot from first.",
+ "vm-net": "The network the VM attaches to. A bridge such as br0 puts it on your LAN.",
+ "job-name": "A label for this scheduled job.",
+ "job-preset": "Pick a common schedule, or choose custom and write the cron expression yourself.",
+ "job-schedule": "Cron format: minute hour day month weekday. Example: 0 3 * * * runs daily at 03:00.",
+ "job-command": "The shell command to run on that schedule.",
+ "bj-name": "A label for this backup job.",
+ "bj-src": "The folder to back up.",
+ "bj-dest": "Where to copy it: a local path or an rsync/rclone target.",
+ "bj-delete": "Mirror mode: delete files at the destination that no longer exist in the source. Use with care.",
+ "bj-compress": "Compress data in transit. Helps over slow links, wastes CPU on a LAN.",
+ "bj-exclude": "Patterns to skip, separated by spaces, e.g. *.tmp cache/.",
+ "bj-schedule": "Optional cron schedule. Leave blank to run it only by hand.",
+ "zp-name": "Name of the new ZFS pool.",
+ "zp-devs": "Whole-disk devices, space-separated, e.g. /dev/sdb /dev/sdc. Everything on them is destroyed.",
+ "zp-raid": "How the devices are combined. Mirror and RAID-Z survive a drive failure; stripe does not.",
+ "zp-mnt": "Where the pool is mounted. Leave blank for the default.",
+ "pr-domain": "The hostname this route answers for, e.g. app.example.com.",
+ "pr-upstream": "Where traffic is forwarded, as host:port, e.g. 127.0.0.1:8080.",
+ "pr-ssl": "Turn on if the upstream service itself speaks HTTPS.",
+ "pr-ws": "Allow WebSocket connections through this route (needed by many web apps).",
+ "pr-en": "Enable or disable this route without deleting it.",
+ "pr-headers": "Extra nginx proxy_set_header lines, one per line.",
+ "wol-dname": "A label for the device.",
+ "wol-dmac": "The device's MAC address, e.g. AA:BB:CC:DD:EE:FF.",
+ "wol-dbcast": "Broadcast address of the device's network, e.g. 192.168.1.255.",
+ "fmt-fs": "XFS suits array data disks. Btrfs or ZFS are for pools. Formatting erases everything on the drive.",
+ "fmt-label": "An optional name for the filesystem.",
+ "vfio-vm-sel": "The VM that will get exclusive use of the selected GPU.",
+ "scan-subnet": "The network to scan, in CIDR form, e.g. 192.168.1.0/24."
+};
+
+// Markup for places that build HTML strings (modal tables etc.).
+function tipHtml(text) {
+  const t = String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<span class="tip" tabindex="0" role="note" data-tip="${t}">ⓘ</span>`;
+}
+
+function attachTips(root) {
+  (root || document).querySelectorAll('input[id],select[id],textarea[id]').forEach(el => {
+    if (el.dataset.tipDone) return;
+    const text = FIELD_TIPS[el.id];
+    if (!text) return;
+    el.dataset.tipDone = '1';
+    const tip = document.createElement('span');
+    tip.className = 'tip'; tip.tabIndex = 0; tip.setAttribute('role', 'note');
+    tip.dataset.tip = text; tip.textContent = 'ⓘ';
+    let label = null;
+    try { label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); } catch (_) {}
+    if (!label) {
+      const prev = el.previousElementSibling;
+      if (prev && prev.matches('label,.form-label,.settings-label')) label = prev;
+    }
+    if (label) label.appendChild(tip); else el.insertAdjacentElement('afterend', tip);
+  });
+}
+
+// One shared bubble, positioned with fixed coordinates so scrolling modals can't clip it.
+(function () {
+  const bubble = document.createElement('div');
+  bubble.id = 'tip-bubble'; bubble.setAttribute('role', 'tooltip');
+  document.body.appendChild(bubble);
+  let current = null;
+  function show(el) {
+    current = el; bubble.textContent = el.dataset.tip; bubble.style.display = 'block';
+    const r = el.getBoundingClientRect(), b = bubble.getBoundingClientRect();
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - b.width / 2), innerWidth - b.width - 8);
+    let top = r.top - b.height - 8;
+    if (top < 8) top = r.bottom + 8;
+    bubble.style.left = left + 'px'; bubble.style.top = top + 'px';
+    el.classList.add('open');
+  }
+  function hide() { if (current) current.classList.remove('open'); current = null; bubble.style.display = 'none'; }
+  const tipOf = e => e.target.closest && e.target.closest('.tip[data-tip]');
+  document.addEventListener('mouseover', e => { const t = tipOf(e); if (t) show(t); });
+  document.addEventListener('mouseout',  e => { if (tipOf(e)) hide(); });
+  document.addEventListener('focusin',   e => { const t = tipOf(e); if (t) show(t); });
+  document.addEventListener('focusout',  e => { if (tipOf(e)) hide(); });
+  // Touch: tap the ⓘ to toggle; tap anywhere else to close.
+  document.addEventListener('click', e => {
+    const t = tipOf(e);
+    if (t) { e.preventDefault(); e.stopPropagation(); current === t ? hide() : show(t); } else hide();
+  }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
+  addEventListener('scroll', hide, true);
+})();
+
+attachTips(document);
+new MutationObserver(() => {
+  clearTimeout(window._tipTimer);
+  window._tipTimer = setTimeout(() => attachTips(document), 60);
+}).observe(document.body, {childList: true, subtree: true});
 
 // ── Render functions ────────────────────────────────────────────
 function fmtUptime(sec) {
@@ -3518,7 +3693,7 @@ async function assignDisksModal() {
     <div style="overflow:auto;max-height:50vh"><table style="width:100%;border-collapse:collapse;font-size:12px">
       <tr style="text-align:left;color:var(--fg-muted)">
         <th style="padding:4px 8px">Device</th><th style="padding:4px 8px">Size</th>
-        <th style="padding:4px 8px">Type</th><th style="padding:4px 8px">Model</th><th style="padding:4px 8px">Role</th></tr>
+        <th style="padding:4px 8px">Type</th><th style="padding:4px 8px">Model</th><th style="padding:4px 8px">Role${tipHtml('parity = protects the array (must be at least as large as the largest data disk). data = holds your files. cache = a fast SSD/NVMe pool written first, then moved to the array by the mover. Leave blank to keep the disk unused.')}</th></tr>
       ${disks.map(row).join('')}
     </table></div>
     <div id="assign-result" style="margin-top:10px;font-size:12px"></div>`;

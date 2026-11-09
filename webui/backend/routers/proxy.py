@@ -120,12 +120,21 @@ def _write_nginx_conf(routes: list[dict]):
     Path(HELIX_PROXY).write_text(conf)
 
 
+def _nginx(*args: str) -> subprocess.CompletedProcess:
+    """Run nginx as root. The backend is the unprivileged helix user, and even
+    `nginx -t` opens /run/nginx.pid for writing, so it fails without sudo."""
+    cmd = ["nginx", *args]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
 def _nginx_reload() -> tuple[bool, str]:
     # Test config first
-    r = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    r = _nginx("-t")
     if r.returncode != 0:
         return False, r.stderr
-    r2 = subprocess.run(["nginx", "-s", "reload"], capture_output=True, text=True)
+    r2 = _nginx("-s", "reload")
     return r2.returncode == 0, r2.stderr or "ok"
 
 
@@ -182,7 +191,7 @@ def apply_routes():
 
 @router.get("/status")
 def proxy_status():
-    r = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    r = _nginx("-t")
     r2 = subprocess.run(["pgrep", "-x", "nginx"], capture_output=True)
     return {
         "running": r2.returncode == 0,

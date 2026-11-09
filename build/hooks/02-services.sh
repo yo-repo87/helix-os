@@ -72,4 +72,75 @@ ExecStart=
 ExecStart=/lib/systemd/systemd-networkd-wait-online --any --timeout=30
 WOEOF
 
+# ── Keep the root password on the boot device, as Unraid does ─────────────────
+# Only root's entry is stored: restoring a whole shadow file could drop service
+# accounts added by a later OS update.
+cat > /usr/local/sbin/helix-root-password <<'PWEOF'
+#!/bin/sh
+set -u
+STORE=/boot/config/shadow
+
+stored_line() { grep -m1 '^root:' "$STORE" 2>/dev/null; }
+
+case "${1:-}" in
+restore)
+    line=$(stored_line) || exit 0
+    usermod -p "$(printf '%s' "$line" | cut -d: -f2)" root
+    ;;
+save)
+    line=$(grep -m1 '^root:' /etc/shadow) || exit 1
+    [ "$(stored_line | cut -d: -f2)" = "$(printf '%s' "$line" | cut -d: -f2)" ] \
+        && [ -e "$STORE" ] && exit 0
+    if [ ! -w /boot/config ]; then
+        echo "boot device is read-only; root password will not persist"
+        exit 0
+    fi
+    umask 077
+    printf '%s\n' "$line" > "$STORE.tmp" && mv -f "$STORE.tmp" "$STORE" && sync
+    ;;
+*)
+    echo "usage: helix-root-password restore|save" >&2
+    exit 2
+    ;;
+esac
+PWEOF
+chmod 0755 /usr/local/sbin/helix-root-password
+
+cat > /etc/systemd/system/helix-root-password-restore.service <<'EOF'
+[Unit]
+Description=Restore root password from /boot/config/shadow
+After=local-fs.target
+Before=systemd-user-sessions.service ssh.service helix-root-password-save.path
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-root-password restore
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/helix-root-password-save.service <<'EOF'
+[Unit]
+Description=Save root password to /boot/config/shadow
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/helix-root-password save
+EOF
+
+cat > /etc/systemd/system/helix-root-password-save.path <<'EOF'
+[Unit]
+Description=Watch /etc/shadow for root password changes
+
+[Path]
+PathChanged=/etc/shadow
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable helix-root-password-restore.service helix-root-password-save.path
+
 echo "==> [hook 02] Done."

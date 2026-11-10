@@ -17,6 +17,9 @@ load_disk_config
 
 ERRORS=0
 
+# ── VMs first: they use the drives and the user share ─────────────────────────
+[ -x "$(dirname "$0")/helix-vm-stop" ] && "$(dirname "$0")/helix-vm-stop" || true
+
 # ── Stop things that use the drives ───────────────────────────────────────────
 systemctl stop docker.socket docker nfs-server smbd nmbd 2>/dev/null || true
 

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth
+from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth, vmconsole
 from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp
 from services.drive_health import poll_loop
 from services.drive_history import history_poll_loop
@@ -55,6 +55,7 @@ app.include_router(wireguard.router)
 app.include_router(tailscale.router)
 app.include_router(pia.router)
 app.include_router(vms.router)
+app.include_router(vmconsole.router)
 app.include_router(terminal.router)
 app.include_router(ups.router)
 app.include_router(gpu.router)
@@ -88,6 +89,8 @@ app.include_router(mcp.router)
 FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.isdir(FRONTEND):
     app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
+    if os.path.isdir("/usr/share/novnc"):          # browser VM console client (Debian package novnc)
+        app.mount("/novnc", StaticFiles(directory="/usr/share/novnc"), name="novnc")
 
     @app.get("/", include_in_schema=False)
     def index():

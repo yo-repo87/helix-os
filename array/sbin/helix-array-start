@@ -150,6 +150,11 @@ if [ -x /usr/local/sbin/helix-shares-apply ]; then
         && helix_log "Share services applied" || helix_log "WARN: helix-shares-apply reported errors"
 fi
 
+# ── VM Manager (libvirt, state on persistent storage) — only when enabled ───────
+if [ -x "$(dirname "$0")/helix-vm-start" ]; then
+    "$(dirname "$0")/helix-vm-start" --from-array-start || helix_log "WARN: VM Manager did not start (see /var/log/helix-array.log)"
+fi
+
 set -e
 
 # ── Record state ──────────────────────────────────────────────────────────────

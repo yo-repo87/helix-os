@@ -1,0 +1,46 @@
+#!/bin/bash
+# helix-vm-stop — shut VM Manager down: ask every running VM to shut down (or hibernate it, per the setting), wait up to
+# the configured time, force off whatever is left, then stop libvirt and release the bind mounts.
+# Called by helix-array-stop before anything is unmounted, and when VM Manager is disabled.
+set -uo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+command -v virsh >/dev/null 2>&1 || exit 0
+
+vm_setting() { python3 - "$HELIX_CONFIG/vm.cfg" "$1" "$2" <<'PY'
+import json, sys
+try: v = json.load(open(sys.argv[1])).get(sys.argv[2], sys.argv[3])
+except Exception: v = sys.argv[3]
+print(str(v).lower() if isinstance(v, bool) else v)
+PY
+}
+V() { virsh -c qemu:///system "$@"; }
+
+if systemctl is-active --quiet libvirtd || mountpoint -q /var/lib/libvirt; then
+    if V uri >/dev/null 2>&1; then
+        action="$(vm_setting shutdown_action stop)"
+        timeout="$(vm_setting shutdown_timeout 60)"
+        running=$(V list --name 2>/dev/null | sed '/^$/d')
+        if [ -n "$running" ]; then
+            helix_log "Stopping VMs ($action): $(echo $running | tr '\n' ' ')"
+            while read -r vm; do
+                [ -n "$vm" ] || continue
+                if [ "$action" = "hibernate" ]; then V managedsave "$vm" >/dev/null 2>&1 || V shutdown "$vm" >/dev/null 2>&1
+                else V shutdown "$vm" >/dev/null 2>&1; fi
+            done <<<"$running"
+            end=$(( $(date +%s) + timeout ))
+            while [ "$(date +%s)" -lt "$end" ]; do
+                [ -z "$(V list --name 2>/dev/null | sed '/^$/d')" ] && break
+                sleep 2
+            done
+            left=$(V list --name 2>/dev/null | sed '/^$/d')
+            for vm in $left; do helix_log "WARN: $vm did not shut down in ${timeout}s: forcing it off"; V destroy "$vm" >/dev/null 2>&1; done
+        fi
+    fi
+fi
+systemctl stop libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd 2>/dev/null || true
+for m in /etc/libvirt/qemu /var/lib/libvirt; do
+    mountpoint -q "$m" && { umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null; }
+done
+helix_log "VM Manager stopped"
+exit 0

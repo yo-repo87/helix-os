@@ -1,0 +1,69 @@
+#!/bin/bash
+# helix-vm-start — bring VM Manager (libvirt) up.
+#
+# libvirt keeps its state (VM definitions, networks, snapshots, UEFI variables, TPM state) in /var/lib/libvirt and
+# /etc/libvirt/qemu. Both are in the RAM root, so they are bind-mounted from a folder on the cache drive (else the
+# first data disk) before libvirtd starts, the same way Docker's data-root is kept off the RAM root.
+#
+#   helix-vm-start                    start now (array must be started and VM Manager enabled)
+#   helix-vm-start --from-array-start called by helix-array-start (the array state file is written a moment later)
+#   helix-vm-start --force            ignore the "enabled" setting (used by tests)
+set -uo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+
+FROM_ARRAY=""; FORCE=""
+for a in "$@"; do case "$a" in --from-array-start) FROM_ARRAY=1 ;; --force) FORCE=1 ;; esac; done
+
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+command -v virsh >/dev/null 2>&1 || { echo "libvirt is not installed on this system"; exit 1; }
+
+vm_setting() { python3 - "$HELIX_CONFIG/vm.cfg" "$1" "$2" <<'PY'
+import json, sys
+try: v = json.load(open(sys.argv[1])).get(sys.argv[2], sys.argv[3])
+except Exception: v = sys.argv[3]
+print(str(v).lower() if isinstance(v, bool) else v)
+PY
+}
+
+if [ -z "$FORCE" ] && [ "$(vm_setting enabled false)" != "true" ]; then
+    [ -n "$FROM_ARRAY" ] || echo "VM Manager is disabled. Enable it in VM Manager settings."
+    exit 0
+fi
+if [ -z "$FROM_ARRAY" ]; then
+    [ -f "$ARRAY_STATE" ] && [ "$(head -1 "$ARRAY_STATE")" = "started" ] || { echo "The array is not started"; exit 1; }
+fi
+[ -e /dev/kvm ] || helix_log "WARN: /dev/kvm is missing: VMs cannot start without hardware virtualization."
+
+load_disk_config
+base=""
+for m in "${CACHE_MNTS[@]:-}" "${DATA_MNTS[@]:-}"; do
+    [ -n "$m" ] && mountpoint -q "$m" && { base="$m"; break; }
+done
+[ -n "$base" ] || { echo "No formatted disk is mounted to keep the VM state on"; exit 1; }
+dest="$base/system/libvirt"
+
+systemctl stop libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd 2>/dev/null || true
+mkdir -p "$dest"
+if [ ! -d "$dest/lib" ]; then      # first run: seed from what the image ships
+    cp -a /var/lib/libvirt "$dest/lib" && cp -a /etc/libvirt/qemu "$dest/etc" || { echo "Could not seed $dest"; exit 1; }
+fi
+mkdir -p "$dest/etc"
+mountpoint -q /var/lib/libvirt     || mount --bind "$dest/lib" /var/lib/libvirt || { echo "bind mount of /var/lib/libvirt failed"; exit 1; }
+mountpoint -q /etc/libvirt/qemu    || mount --bind "$dest/etc" /etc/libvirt/qemu || { echo "bind mount of /etc/libvirt/qemu failed"; exit 1; }
+
+# the folders new VMs and install images go in (default: shares called domains and isos)
+for key in storage isos; do
+    case "$key" in storage) def=/mnt/user/domains ;; isos) def=/mnt/user/isos ;; esac
+    d="$(vm_setting "$key" "$def")"
+    case "$d" in /mnt/*) mkdir -p "$d" && id helix >/dev/null 2>&1 && chown helix:helix "$d" ;; esac
+done
+
+systemctl start libvirtd || { echo "libvirtd failed to start (journalctl -u libvirtd)"; exit 1; }
+for _ in $(seq 1 30); do virsh -c qemu:///system uri >/dev/null 2>&1 && break; sleep 1; done
+virsh -c qemu:///system uri >/dev/null 2>&1 || { echo "libvirt did not come up"; exit 1; }
+if virsh -c qemu:///system net-info default >/dev/null 2>&1; then
+    virsh -c qemu:///system net-autostart default >/dev/null 2>&1
+    virsh -c qemu:///system net-start default >/dev/null 2>&1 || true
+fi
+helix_log "VM Manager started (state in $dest)"
+exit 0

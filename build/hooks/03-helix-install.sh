@@ -313,6 +313,7 @@ for helper in \
     /build/array/sbin/helix-parity-check /build/array/sbin/helix-parity-rebuild \
     /build/array/sbin/helix-disk-format \
     /build/array/sbin/helix-mover \
+    /build/array/sbin/helix-vm-start /build/array/sbin/helix-vm-stop \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
     /build/gpu/setup-ai-gpu.sh; do
     if [ -f "$helper" ]; then

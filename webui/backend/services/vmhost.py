@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from config import HELIX_CONFIG
+from config import HELIX_CONFIG, USER_SHARE
 
 SETTINGS_FILE = os.path.join(HELIX_CONFIG, "vm.cfg")
 DEFAULT_SETTINGS = {
@@ -43,12 +43,35 @@ def _read(path: str) -> str:
 
 # ── settings ─────────────────────────────────────────────────────────────────
 
+def user_shares() -> list[str]:
+    try:
+        return sorted(d for d in os.listdir(USER_SHARE) if not d.startswith(".") and os.path.isdir(os.path.join(USER_SHARE, d)))
+    except OSError:
+        return []
+
+
+def default_folder(kind: str) -> str:
+    """Where VM disks / ISOs go when nothing is saved. The Helix boot drive is a small flash drive, so this is always
+    on the array: a share called domains/isos if there is one, else the first share that is not a system folder,
+    else /mnt/user/<domains|isos> (created when VM Manager starts)."""
+    shares = user_shares()
+    want = "domains" if kind == "storage" else "isos"
+    if want in shares:
+        return f"{USER_SHARE}/{want}"
+    spare = [s for s in shares if s not in ("appdata", "system", "domains", "isos")]
+    return f"{USER_SHARE}/{spare[0]}" if spare else f"{USER_SHARE}/{want}"
+
+
 def load_settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
     try:
-        s.update({k: v for k, v in json.loads(Path(SETTINGS_FILE).read_text()).items() if k in DEFAULT_SETTINGS})
+        saved = json.loads(Path(SETTINGS_FILE).read_text())
     except (OSError, ValueError):
-        pass
+        saved = {}
+    s.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
+    for k in ("storage", "isos"):
+        if k not in saved:
+            s[k] = default_folder(k)
     return s
 
 

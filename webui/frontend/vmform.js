@@ -235,14 +235,15 @@ async function vfXmlSave(name) {
 async function loadVmSettings() {
   const root = document.getElementById('vmset-body'); if (!root) return;
   try {
-    const [s, st] = await Promise.all([vmApi('/settings'), vmApi('/')]);
+    const [s, st, shr] = await Promise.all([vmApi('/settings'), vmApi('/'), fetchJSON('/api/files/list?path=/mnt/user').catch(() => ({entries: []}))]);
+    vs.shares = shr.entries.filter(x => x.is_dir && !x.name.startsWith('.') && x.name !== 'system').map(x => x.name);   // top-level folders of the user share = shares
     const run = st.running;
     root.innerHTML = `<div class="vf-card"><div class="vf-grid">
       <div class="vf-field"><label>Enable VMs</label><label class="vf-check"><input type="checkbox" id="vs-en" ${s.enabled ? 'checked' : ''}> VM Manager on</label>
         <div class="vf-help">VMs only start after the array is started. ${st.kvm ? 'Hardware virtualization: available.' : '<b style="color:var(--err)">Hardware virtualization: not available</b>'}${st.installed ? '' : ' <b style="color:var(--err)">libvirt is not installed.</b>'}</div></div>
       <div class="vf-field"><label>libvirt</label><div style="font-size:12px">${_esc(s.libvirt_version || (run ? '' : 'not running'))}</div></div>
-      <div class="vf-field wide"><label>Default VM storage location</label><input class="settings-input" id="vs-storage" value="${_esc(s.storage)}"><div class="vf-help">New vDisks are created in a folder per VM below this path.</div></div>
-      <div class="vf-field wide"><label>Default ISO storage location</label><input class="settings-input" id="vs-isos" value="${_esc(s.isos)}"></div>
+      <div class="vf-field wide"><label>Default VM storage location</label>${vsFolder('vs-storage', s.storage)}<div class="vf-help">New vDisks are created in a folder per VM below this. Pick a share: the Helix boot drive is a small flash drive and is not used.</div></div>
+      <div class="vf-field wide"><label>Default ISO storage location</label>${vsFolder('vs-isos', s.isos)}</div>
       <div class="vf-field"><label>VirtIO drivers ISO</label>${s.virtio_iso_present ? `<div class="mono" style="font-size:12px">${_esc(s.virtio_iso)}</div><a class="panel-action" style="color:var(--err)" onclick="vsVirtio('DELETE')">Remove</a>` : `<a class="panel-action" onclick="vsVirtio('POST')">Download virtio-win.iso</a><div class="vf-help">Drivers for Windows guests, from the Fedora project (about 700 MB).</div>`}</div>
       <div class="vf-field"><label>Default network for new VMs</label><input class="settings-input" id="vs-net" value="${_esc(s.default_network)}"></div>
       <div class="vf-field"><label>When the array stops, running VMs</label><select class="settings-input" id="vs-act"><option value="stop" ${s.shutdown_action === 'stop' ? 'selected' : ''}>shut down</option><option value="hibernate" ${s.shutdown_action === 'hibernate' ? 'selected' : ''}>hibernate</option></select></div>
@@ -255,10 +256,41 @@ async function loadVmSettings() {
 async function vsSave() {
   const g = (id) => document.getElementById(id);
   try {
-    const r = await vmApi('/settings', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: g('vs-en').checked, storage: g('vs-storage').value.trim(), isos: g('vs-isos').value.trim(), default_network: g('vs-net').value.trim(), shutdown_action: g('vs-act').value, shutdown_timeout: +g('vs-to').value, usage_stats: g('vs-us').checked})});
+    const r = await vmApi('/settings', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: g('vs-en').checked, storage: vsVal('vs-storage'), isos: vsVal('vs-isos'), default_network: g('vs-net').value.trim(), shutdown_action: g('vs-act').value, shutdown_timeout: +g('vs-to').value, usage_stats: g('vs-us').checked})});
     showToast(r.message || 'VM Manager settings saved', r.message ? 'warn' : 'ok'); loadVmSettings();
   } catch (e) { g('vs-err').textContent = vmErr(e); }
 }
 async function vsVirtio(method) {
   try { await vmApi('/virtio-iso', {method}); showToast(method === 'POST' ? 'Downloading in the background' : 'Removed', 'ok'); setTimeout(loadVmSettings, 800); } catch (e) { alert(vmErr(e)); }
+}
+
+// folder control: a drop-down of the shares, plus "Choose folder…" which opens a folder picker
+const vs = {shares: [], custom: {}};
+function vsFolder(id, value) {
+  const root = '/mnt/user/', isShare = vs.shares.some(n => root + n === value);
+  if (!isShare) vs.custom[id] = value;
+  const opts = vs.shares.map(n => `<option value="${_esc(root + n)}" ${root + n === value ? 'selected' : ''}>${_esc(n)} (share)</option>`);
+  if (!isShare) opts.push(`<option value="${_esc(value)}" selected>${_esc(value)}</option>`);
+  opts.push('<option value="__pick">Choose folder…</option>');
+  return `<select class="settings-input" id="${id}" data-prev="${_esc(value)}" onchange="vsFolderChanged('${id}')">${opts.join('')}</select>`;
+}
+const vsVal = (id) => document.getElementById(id).value;
+function vsFolderChanged(id) {
+  const sel = document.getElementById(id);
+  if (sel.value === '__pick') { const prev = sel.dataset.prev; sel.value = prev; vsPick(id, prev || '/mnt/user'); } else sel.dataset.prev = sel.value;
+}
+async function vsPick(id, path) {
+  let d;
+  try { d = await fetchJSON('/api/files/list?path=' + encodeURIComponent(path)); } catch (e) { alert(vmErr(e)); return; }
+  const dirs = d.entries.filter(x => x.is_dir);
+  showModal('Choose a folder', `<div style="font-size:12px;margin-bottom:8px" class="mono">${d.crumbs.map(c => `<a class="panel-action" onclick="vsPick('${id}','${_esc(c.path)}')">${_esc(c.name)}</a>`).join(' / ')}</div>
+    <div style="max-height:44vh;overflow:auto;border:1px solid var(--border);border-radius:6px">${dirs.length ? dirs.map(x => `<div class="fm-pickrow" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border)" onclick="vsPick('${id}','${_esc(x.path)}')">📁 ${_esc(x.name)}</div>`).join('') : '<div class="vm-dim" style="padding:10px">No subfolders</div>'}</div>
+    <div class="vf-help" style="margin-top:6px">Selected: <b class="mono">${_esc(d.path)}</b>${d.path.startsWith('/mnt/') && d.path.length > 5 ? '' : ' (pick a folder inside /mnt)'}</div>`,
+    `<button class="ctr-btn" onclick="closeModal()">Cancel</button><button class="settings-btn primary" ${d.path.startsWith('/mnt/') ? '' : 'disabled'} onclick="vsChosen('${id}','${_esc(d.path)}')">Use this folder</button>`);
+}
+function vsChosen(id, path) {
+  const sel = document.getElementById(id);
+  let o = [...sel.options].find(x => x.value === path);
+  if (!o) { o = new Option(path, path); sel.insertBefore(o, sel.lastElementChild); }
+  sel.value = path; sel.dataset.prev = path; closeModal();
 }

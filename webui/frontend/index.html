@@ -5866,7 +5866,7 @@ async function loadTerminal() {
 
 function _connectTermWs() {
   if (!_term) return;
-  const base = API.replace(/^https?:\/\//, '');
+  const base = API.replace(/^https?:\/\//, '') || location.host;   // API is '' when Helix serves the page itself
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${proto}//${base}/api/terminal/ws`;
 

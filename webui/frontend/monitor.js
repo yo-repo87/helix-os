@@ -50,6 +50,7 @@ async function monOverview(st) {
     ${monDot(ok(st.agent_socket))}Agent on this machine: ${st.agent_socket ? 'answering' : 'not running'}<br>
     ${monDot(ok(st.sync))}Automatic updates: ${st.sync ? 'watching for new or removed containers, VMs and disks' : 'not running'}
     ${st.last_sync && st.last_sync.at ? `<span class="vm-dim"> · last change ${new Date(st.last_sync.at * 1000).toLocaleTimeString()} (+${st.last_sync.added.length} / −${st.last_sync.removed.length})</span>` : ''}</div>
+    ${st.container === 'absent' ? `<div class="fm-warn" style="margin-top:8px">Checkmk's container is missing. <button class="ctr-btn" onclick="monEnable()">Repair</button> recreates it; your saved Checkmk data is reused when it still exists.</div>` : ''}
     <div class="vf-foot"><a class="settings-btn primary" style="text-decoration:none" href="#monitoring/checkmk">Open Checkmk</a><button class="ctr-btn" onclick="monShowLogin()">Show login</button><span style="flex:1"></span><button class="ctr-btn" onclick="monDisable()">Turn off</button></div></div>
     <div class="vf-card"><div class="vm-h">What is being monitored</div><div id="mon-svcs" class="vm-dim">Loading…</div></div>`;
   if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
@@ -131,3 +132,20 @@ async function monBadge() {
   } catch (_) {}
 }
 document.addEventListener('DOMContentLoaded', () => { setTimeout(monBadge, 3000); setInterval(() => { if (!document.hidden) monBadge(); }, 30000); });
+
+// ── first-setup invitation: a one-time dialog once the array is started, then a banner on the dashboard ──
+async function monPromoCheck() {
+  let d; try { d = await monApi('/prompt'); } catch (_) { return; }
+  const promo = document.getElementById('mon-promo');
+  if (promo) { promo.dataset.on = d.show && d.state === 'later' ? '1' : '0'; promo.hidden = !(promo.dataset.on === '1' && !(location.hash && location.hash !== '#dashboard' && location.hash !== '#')); }
+  if (d.show && d.state === 'pending' && !document.getElementById('modal-overlay').style.display.includes('flex')) {
+    showModal('Turn on monitoring?', `<p style="font-size:13px;margin:0 0 10px">Your array is up. Helix can now watch this server for you with <b>Checkmk</b>:</p>
+      <ul style="font-size:12.5px;margin:0 0 10px 18px;line-height:1.7"><li>disk health, the array, containers, VMs, shares, CPU and memory</li><li>new containers and VMs are added by themselves</li><li>problems show up on the notification bell (and email/Discord if you set those up)</li></ul>
+      <p style="font-size:11.5px;color:var(--fg-muted);margin:0">It runs in a container on your array (about 1 GB of disk and memory). The first start downloads it, which takes a few minutes. You can also do this later from the Monitoring tab.</p>`,
+      '<button class="ctr-btn" onclick="monPromoLater()">Not now</button><button class="settings-btn primary" onclick="monPromoEnable()">Enable monitoring</button>');
+  }
+}
+async function monPromoLater() { try { await monApi('/prompt/later', {method: 'POST'}); } catch (_) {} closeModal(); monPromoCheck(); }
+async function monPromoEnable() { closeModal(); location.hash = '#monitoring'; try { await monApi('/enable', {method: 'POST'}); } catch (e) { alert(errText(e)); } if (location.hash.startsWith('#monitoring')) loadMonitoring(); }
+document.addEventListener('DOMContentLoaded', () => { setTimeout(monPromoCheck, 4000); setInterval(() => { if (!document.hidden) monPromoCheck(); }, 60000); });
+window.addEventListener('hashchange', () => { const p = document.getElementById('mon-promo'); if (p && p.dataset.on === '1') p.hidden = !(!location.hash || location.hash === '#dashboard' || location.hash === '#'); });

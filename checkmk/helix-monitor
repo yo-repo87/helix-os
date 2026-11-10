@@ -184,12 +184,19 @@ def container_state():
 def cmd_enable():
     if run(["docker", "info"], timeout=20).returncode != 0:
         raise SystemExit("Docker is not running. Start the array first (Docker starts with it).")
+
+    if not os.path.exists(CREDS) and container_state() != "absent":
+        # A container from an earlier install whose password we no longer have: start clean rather than lock ourselves out.
+        say("removing a leftover Checkmk from an earlier install")
+        run(["docker", "rm", "-f", CONTAINER]); run(["docker", "volume", "rm", "-f", "checkmk-data"])
+        for f in (KEPT_AGENT, SETTINGS):
+            try: os.unlink(f)
+            except OSError: pass
     os.makedirs(CFG_DIR, exist_ok=True)
     c = creds()
     c.setdefault("admin_password", secrets.token_urlsafe(18))
     c.setdefault("automation_secret", secrets.token_urlsafe(24))
     json.dump(c, open(CREDS, "w")); os.chmod(CREDS, 0o600)
-
     say("STEP 1/6: getting the Checkmk image (about 1 GB the first time)")
     if run(["docker", "image", "inspect", IMAGE], timeout=20).returncode != 0:
         r = run(["docker", "pull", IMAGE], timeout=3600)
@@ -259,6 +266,19 @@ def cmd_disable():
     say("monitoring is off (Checkmk's data is kept; enable it again to resume)")
 
 
+def cmd_reset():
+    """The array was deleted: Checkmk's container and data went with it. Forget monitoring so the first-setup prompt comes back."""
+    for u in ("helix-monitor-sync.service", "helix-cmk-agent.socket"):
+        run(["systemctl", "stop", u])
+    if run(["docker", "info"], timeout=20).returncode == 0:
+        run(["docker", "rm", "-f", CONTAINER]); run(["docker", "volume", "rm", "-f", "checkmk-data"])
+    shutil.rmtree(CFG_DIR, ignore_errors=True)
+    for f in (SEEN, SYNC_STATUS, os.path.join(STATE_DIR, "monitor_alert_state.json"), os.path.join(STATE_DIR, "monitor_problems.json")):
+        try: os.unlink(f)
+        except OSError: pass
+    say("monitoring was reset")
+
+
 def cmd_status():
     s = settings()
     st = container_state()
@@ -310,7 +330,7 @@ def cmd_sync():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    fn = {"enable": cmd_enable, "start": cmd_start, "stop": cmd_stop, "disable": cmd_disable, "status": cmd_status, "sync": cmd_sync}.get(cmd)
+    fn = {"enable": cmd_enable, "start": cmd_start, "stop": cmd_stop, "disable": cmd_disable, "reset": cmd_reset, "status": cmd_status, "sync": cmd_sync}.get(cmd)
     if not fn:
         sys.exit(__doc__)
     if os.geteuid() != 0:

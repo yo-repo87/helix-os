@@ -582,6 +582,9 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
         # real cause from the UI. The frontend shows .error.
         return {"ok": False, "error": err}
     background_tasks.add_task(_refresh_drive_cache)
+    if not all_devs:                                   # every disk unassigned = the array was deleted
+        from routers import checkmk
+        background_tasks.add_task(checkmk.reset_for_deleted_array)
     return {"ok": True, "parity": req.parity, "data": req.data,
             "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
 

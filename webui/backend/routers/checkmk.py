@@ -203,6 +203,7 @@ def _run_job(args):
 def setup_enable():
     if not os.path.exists(MONITOR):
         raise HTTPException(503, "Monitoring is not part of this installation. Update Helix OS.")
+    _write_prompt("done")
     with _job_lock:
         if _job["state"] == "running":
             raise HTTPException(409, "Setup is already running")
@@ -217,6 +218,57 @@ def setup_disable():
     if r.returncode != 0:
         raise HTTPException(500, (r.stderr or r.stdout).strip()[-200:])
     return {"ok": True}
+
+
+PROMPT = os.path.join(HELIX_CONFIG, "checkmk", "prompt.json")
+PROTECTED = {"checkmk"}          # the Checkmk container: removed only when the array is deleted (see reset_for_deleted_array)
+
+
+def _write_prompt(state: str) -> None:
+    os.makedirs(os.path.dirname(PROMPT), exist_ok=True)
+    json.dump({"state": state}, open(PROMPT, "w"))
+
+
+@router.get("/prompt")
+def prompt_info():
+    """Should the UI invite the user to turn monitoring on? Only once the array is started (Checkmk lives in Docker on it)."""
+    try:
+        state = json.load(open(PROMPT)).get("state", "pending")
+    except (OSError, ValueError):
+        state = "pending"
+    try:
+        enabled = bool(json.load(open(os.path.join(HELIX_CONFIG, "checkmk", "monitor.json"))).get("enabled"))
+    except (OSError, ValueError):
+        enabled = False
+    try:
+        started = open(os.path.join(STATE_DIR, "array_state")).readline().strip() == "started"
+    except OSError:
+        started = False
+    import shutil
+    ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR)
+    return {"show": ready and not enabled, "state": state, "enabled": enabled, "array_started": started}
+
+
+@router.post("/prompt/later")
+def prompt_later():
+    _write_prompt("later")
+    return {"ok": True}
+
+
+def reset_for_deleted_array() -> None:
+    """The array was deleted (every disk unassigned). Checkmk lived on it, so forget monitoring; the first-setup
+    prompt comes back once a new array is created and started."""
+    try:
+        _monitor("reset", timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    import shutil
+    shutil.rmtree(os.path.join(HELIX_CONFIG, "checkmk"), ignore_errors=True)
+    for f in ("monitor_services.json", "monitor_sync.json", "monitor_alert_state.json", "monitor_problems.json"):
+        try:
+            os.unlink(os.path.join(STATE_DIR, f))
+        except OSError:
+            pass
 
 
 @router.get("/problems")

@@ -90,6 +90,10 @@ else
     if [ -f "$SCRIPT_DIR/boot-assets/splash.png" ]; then
         cp "$SCRIPT_DIR/boot-assets/splash.png" "$ISO_STAGING/isolinux/splash.png"
         echo "  boot splash: $ISO_STAGING/isolinux/splash.png"
+        # the same picture and a font for GRUB's menu (UEFI boot); without the font GRUB falls back to a plain text menu
+        mkdir -p "$ISO_STAGING/grub/fonts"
+        cp "$SCRIPT_DIR/boot-assets/splash.png" "$ISO_STAGING/grub/splash.png"
+        [ -f /usr/share/grub/unicode.pf2 ] && cp /usr/share/grub/unicode.pf2 "$ISO_STAGING/grub/fonts/unicode.pf2"
     fi
 
     cat > "$ISO_STAGING/isolinux/isolinux.cfg" <<'EOF'
@@ -106,7 +110,7 @@ MENU COLOR title  0;31;40 #ffffa0 #000000
 LABEL helix
     MENU LABEL Helix OS
     KERNEL /boot/vmlinuz
-    APPEND initrd=/boot/initrd.img quiet splash boot=helix helix_label=HELIXBOOT
+    APPEND initrd=/boot/initrd.img vga=791 quiet splash loglevel=3 vt.global_cursor_default=0 plymouth.ignore-serial-consoles boot=helix helix_label=HELIXBOOT
 
 LABEL verbose
     MENU LABEL Helix OS (verbose)

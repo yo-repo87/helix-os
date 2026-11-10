@@ -344,6 +344,16 @@ for helper in \
         echo "  installed /usr/local/sbin/$(basename "$helper")"
     fi
 done
+# Boot splash: the animated helix (Plymouth theme). The kernel command line has "quiet splash".
+if [ -d /build/boot-assets/plymouth-helix ]; then
+    rm -rf /usr/share/plymouth/themes/helix
+    install -d /usr/share/plymouth/themes/helix
+    cp /build/boot-assets/plymouth-helix/* /usr/share/plymouth/themes/helix/
+    install -d /etc/plymouth
+    printf '[Daemon]\nTheme=helix\nShowDelay=0\nDeviceTimeout=8\n' > /etc/plymouth/plymouthd.conf
+    echo "  installed boot splash theme (helix)"
+fi
+
 # Checkmk agent "local" plugin (turns containers/VMs/disks/array into Checkmk services); helix-monitor copies it into the agent at start
 install -d /usr/local/lib/helix
 install -m 0755 /build/checkmk/helix_local_check.py /usr/local/lib/helix/helix_local_check.py

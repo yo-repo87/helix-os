@@ -1,1 +1,1 @@
-console=serial0,115200 console=tty1 boot=helix helix_label=HELIXBOOT quiet splash
+console=serial0,115200 console=tty1 boot=helix helix_label=HELIXBOOT quiet splash loglevel=3 vt.global_cursor_default=0 plymouth.ignore-serial-consoles

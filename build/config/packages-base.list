@@ -66,6 +66,9 @@ lsof
 strace
 tcpdump
 
+# ── Boot splash (animated helix; theme in build/boot-assets/plymouth-helix) ──
+plymouth
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 sudo
 ca-certificates

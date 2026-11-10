@@ -9,9 +9,14 @@ BOOT_LABEL="HELIXBOOT"
 SQUASHFS_PATH="boot/filesystem.squashfs"
 TIMEOUT=30
 
-msg()  { echo "[helix] $*"; }
-warn() { echo "[helix] WARN: $*" >&2; }
-die()  { echo "[helix] FATAL: $*" >&2; exec /bin/sh; }
+# With the boot splash running, progress text goes to a log (and the kernel log) instead of over the animation.
+SPLASH=0
+msg()  { [ -d /run/helix ] && echo "[helix] $*" >> /run/helix/init.log; [ "$SPLASH" = 1 ] && { echo "[helix] $*" > /dev/kmsg 2>/dev/null; return 0; }; echo "[helix] $*"; }
+warn() { [ -d /run/helix ] && echo "[helix] WARN: $*" >> /run/helix/init.log; [ "$SPLASH" = 1 ] && { echo "[helix] WARN: $*" > /dev/kmsg 2>/dev/null; return 0; }; echo "[helix] WARN: $*" >&2; }
+die()  {
+    [ "$SPLASH" = 1 ] && { plymouth quit 2>/dev/null; cat /run/helix/init.log 2>/dev/null; }
+    echo "[helix] FATAL: $*" >&2; exec /bin/sh
+}
 
 # ── 1. Essential pseudo-filesystems ──────────────────────────────────────────
 mount -t devtmpfs  devtmpfs /dev
@@ -19,6 +24,31 @@ mount -t proc      proc     /proc
 mount -t sysfs     sysfs    /sys
 mount -t tmpfs     tmpfs    /run
 mkdir -p /run/helix/usb /run/helix/ro /run/helix/rw
+
+# ── 1b. Boot splash (Plymouth): animated helix while the system loads ────────────
+# Needs "splash" on the kernel command line and plymouth in this initramfs. A display driver is loaded first
+# (simpledrm takes over the firmware framebuffer; bochs/virtio-gpu/... cover virtual machines).
+case " $(cat /proc/cmdline) " in *" splash "*) [ -x /usr/sbin/plymouthd ] && SPLASH=1 ;; esac
+if [ "$SPLASH" = 1 ]; then
+    for mod in simpledrm bochs virtio_gpu cirrus vmwgfx hyperv_drm vc4; do modprobe "$mod" 2>/dev/null || true; done
+    i=0
+    while [ $i -lt 8 ] && [ ! -e /dev/dri/card0 ] && [ ! -e /dev/fb0 ]; do sleep 1; i=$((i + 1)); done
+    if [ -e /dev/dri/card0 ] || [ -e /dev/fb0 ]; then
+        mkdir -p /run/plymouth
+        # Plymouth only uses a graphics device that udev has marked "initialized", and there is no udev daemon in this
+        # initramfs. Mark each DRM device ourselves (a small entry in udev's database: initialized + the "seat" tags); the real udev rewrites it later.
+        mkdir -p /run/udev/data
+        for d in /sys/class/drm/card[0-9]*; do
+            [ -f "$d/dev" ] && printf 'I:1\nG:seat\nG:master-of-seat\nQ:seat\nQ:master-of-seat\n' > "/run/udev/data/c$(cat "$d/dev")"
+        done
+        # Foreground mode in the background: the daemonizing mode needs a controlling terminal, which init does not have.
+        plymouthd --mode=boot --pid-file=/run/plymouth/pid --no-daemon > /run/plymouth/out.log 2>&1 &
+        i=0; while [ $i -lt 6 ] && ! plymouth --ping 2>/dev/null; do sleep 1; i=$((i + 1)); done
+        plymouth --ping 2>/dev/null && plymouth show-splash 2>/dev/null || SPLASH=0
+    else
+        SPLASH=0                                  # no display device: fall back to the normal text boot
+    fi
+fi
 
 # ── 2. Kernel modules ─────────────────────────────────────────────────────────
 # Load filesystem modules AND the storage/controller drivers needed to see the
@@ -213,5 +243,7 @@ if [ -f /root/boot/config/go ]; then
 fi
 
 msg "Switching to live filesystem..."
+# Hand the splash over to the real system: it keeps running until systemd's plymouth-quit.service ends it.
+[ "$SPLASH" = 1 ] && plymouth update-root-fs --new-root-dir=/root 2>/dev/null
 exec switch_root /root /sbin/init
 die "switch_root failed — dropping to emergency shell."

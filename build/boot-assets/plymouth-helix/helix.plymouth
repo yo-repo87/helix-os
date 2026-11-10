@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Helix OS
+Description=A rotating helix with three dots whose focus moves along.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/helix
+ScriptFile=/usr/share/plymouth/themes/helix/helix.script

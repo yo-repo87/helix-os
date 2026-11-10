@@ -131,6 +131,51 @@ else
     echo "  WARN: $SRC_MODS not found — initramfs will have NO kernel modules!"
 fi
 
+# ── Boot splash: plymouth, its plugins, libraries, theme and display drivers ─────────────
+# Skipped when plymouth is not in the rootfs; init then falls back to the plain text boot.
+if [ -n "${ROOTFS:-}" ] && [ -x "$ROOTFS/usr/sbin/plymouthd" ]; then
+    TRIPLET=$(ls "$ROOTFS/usr/lib" | grep -m1 -E '^(x86_64|aarch64)-linux-gnu$' || true)
+    echo "  boot splash: plymouth ($TRIPLET)"
+    copy_rel() { mkdir -p "$WORK_DIR/$(dirname "$1")"; cp -aL "$ROOTFS/$1" "$WORK_DIR/$1"; }
+    add_libs() {              # copy every shared library $1 needs (recursively), from the target rootfs
+        local f="$1" l p d
+        for l in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+            p=""
+            for d in lib/$TRIPLET usr/lib/$TRIPLET lib usr/lib; do [ -e "$ROOTFS/$d/$l" ] && { p="$d/$l"; break; }; done
+            [ -n "$p" ] || continue
+            [ -e "$WORK_DIR/$p" ] && continue
+            copy_rel "$p"; add_libs "$ROOTFS/$p"
+        done
+    }
+    for bin in usr/sbin/plymouthd usr/bin/plymouth; do copy_rel "$bin"; add_libs "$ROOTFS/$bin"; done
+    ln -sf ../usr/sbin/plymouthd sbin/plymouthd 2>/dev/null; ln -sf ../usr/bin/plymouth bin/plymouth 2>/dev/null
+    # the dynamic loader (path differs per architecture)
+    interp=$(readelf -l "$ROOTFS/usr/sbin/plymouthd" | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p')
+    # Copy the loader from the rootfs's own library directory. $interp (/lib64/ld-linux-...) is an ABSOLUTE symlink in the
+    # rootfs, so following it from the build host would pick up the HOST's loader, which does not match the image's libc
+    # ("stack smashing detected" the moment any plymouth binary starts).
+    if [ -n "$interp" ]; then
+        ibase=$(basename "$interp"); isrc=""
+        for d in lib/$TRIPLET usr/lib/$TRIPLET lib usr/lib; do [ -f "$ROOTFS/$d/$ibase" ] && { isrc="$ROOTFS/$d/$ibase"; break; }; done
+        [ -n "$isrc" ] || { echo "  ERROR: loader $ibase not found in rootfs"; exit 1; }
+        mkdir -p "$WORK_DIR$(dirname "$interp")"; cp -aL "$isrc" "$WORK_DIR$interp"
+    fi
+    PLY_PLUGINS="usr/lib/$TRIPLET/plymouth"
+    for so in "$PLY_PLUGINS/script.so" "$PLY_PLUGINS/renderers/drm.so" "$PLY_PLUGINS/renderers/frame-buffer.so"; do
+        [ -f "$ROOTFS/$so" ] && { copy_rel "$so"; add_libs "$ROOTFS/$so"; }
+    done
+    mkdir -p usr/share/plymouth/themes etc/plymouth
+    cp -a "$ROOTFS/usr/share/plymouth/plymouthd.defaults" usr/share/plymouth/ 2>/dev/null || true
+    cp -a "$ROOTFS/usr/share/plymouth/themes/helix" usr/share/plymouth/themes/ 2>/dev/null || true
+    cp -a "$ROOTFS/etc/plymouth/plymouthd.conf" etc/plymouth/ 2>/dev/null || true
+    # display drivers (small ones: the firmware framebuffer via simpledrm, plus virtual-machine and Pi GPUs). Big
+    # desktop GPU drivers are not needed: they load later, after the system has started.
+    for modname in simpledrm drm drm_kms_helper drm_shmem_helper drm_dma_helper bochs virtio_gpu cirrus vmwgfx hyperv_drm vc4; do
+        install_module "$modname"
+    done
+    depmod -b "$WORK_DIR" "$KERNEL_VERSION" 2>/dev/null || true
+fi
+
 # ── udev minimal rules (so blkid can find devices by label) ──────────────────
 cat > etc/udev/udev.conf <<'EOF'
 udev_log=err

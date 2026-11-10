@@ -145,6 +145,7 @@ echo ""
 echo "── Step 3/6: Running customization hooks ──"
 
 mkdir -p "$ROOTFS_DIR/build/config"
+rm -rf "$ROOTFS_DIR/build/boot-assets"; cp -r "$BUILD_DIR/boot-assets" "$ROOTFS_DIR/build/boot-assets"
 cp -r "$BUILD_DIR/config/"* "$ROOTFS_DIR/build/config/"
 
 # Copy webui/ for hook 03-helix-install.sh (if present)
@@ -228,10 +229,20 @@ cp "$BUILD_DIR/grub/grub.cfg" "$OUTPUT_DIR/grub/grub.cfg"
 if [ "$ARCH" = "amd64" ]; then
     # Install GRUB EFI + BIOS images if available
     if command -v grub-mkimage >/dev/null; then
+        # The EFI loader runs from a tiny FAT image (on an ISO) or from the boot partition (USB/disk). An embedded start-up
+        # script finds the boot volume by its label either way, then loads the real menu from it. Without it, booting the
+        # ISO under UEFI stopped at a bare "grub>" prompt. iso9660 reads the ISO; the video/png modules are needed because
+        # the menu is drawn on a picture, and modules cannot be loaded from a volume GRUB has not found yet.
+        cat > "$ROOTFS_DIR/../helix-grub-early.cfg" <<'GRUBEARLY'
+search --no-floppy --label --set=root HELIXBOOT
+set prefix=($root)/grub
+configfile ($root)/grub/grub.cfg
+GRUBEARLY
         grub-mkimage -O x86_64-efi -o "$OUTPUT_DIR/EFI/BOOT/BOOTX64.EFI" \
-            -p /grub \
-            part_gpt part_msdos fat search search_label normal \
-            linux echo configfile gzio 2>/dev/null || \
+            -c "$ROOTFS_DIR/../helix-grub-early.cfg" -p /grub \
+            part_gpt part_msdos fat iso9660 search search_label search_fs_file normal \
+            linux echo configfile gzio gfxterm gfxterm_background png jpeg all_video video video_fb font terminal \
+            efi_gop || \
             echo "  WARN: grub-mkimage failed — install grub-efi-amd64-bin"
     fi
 elif [ "$ARCH" = "arm64" ]; then

@@ -1,0 +1,72 @@
+# Helix OS boot animation (Plymouth "script" theme).
+# A glossy blue helix lies on its side and rotates; three dots to its right take turns being in focus: 1, 2, 3, 1, ...
+# The images are drawn by build/boot-assets/make-helix-splash.py.
+
+Window.SetBackgroundTopColor(0.078, 0.078, 0.078);       # #141414, the Helix dark theme
+Window.SetBackgroundBottomColor(0.078, 0.078, 0.078);
+
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+
+FRAMES = 36;
+
+# The whole group (helix + gap + dots) is scaled to the screen: the helix takes about 44% of the width.
+sample = Image("helix-00.png");
+scale = (screen_w * 0.44) / sample.GetWidth();
+if (scale > 2.4) scale = 2.4;
+if (scale < 0.35) scale = 0.35;
+hw = Math.Int(sample.GetWidth() * scale);
+hh = Math.Int(sample.GetHeight() * scale);
+
+dot_size = Math.Int(64 * scale * 0.8);
+dot_gap  = Math.Int(dot_size * 0.9);
+group_w  = hw + Math.Int(dot_size * 0.9) + 3 * dot_size + 2 * dot_gap;
+x0 = Math.Int((screen_w - group_w) / 2);
+y0 = Math.Int((screen_h - hh) / 2);
+
+# soft blue glow behind the helix
+glow_img = Image("glow.png");
+glow_w = Math.Int(hw * 1.5);
+glow_h = Math.Int(glow_img.GetHeight() * glow_w / glow_img.GetWidth());
+glow = Sprite(glow_img.Scale(glow_w, glow_h));
+glow.SetPosition(x0 + Math.Int(hw / 2) - Math.Int(glow_w / 2), Math.Int(screen_h / 2) - Math.Int(glow_h / 2), 0);
+
+# helix frames
+for (i = 0; i < FRAMES; i++) {
+    if (i < 10) name = "helix-0" + i + ".png";
+    else        name = "helix-" + i + ".png";
+    helix_img[i] = Image(name).Scale(hw, hh);
+}
+helix = Sprite(helix_img[0]);
+helix.SetPosition(x0, y0, 10);
+
+# dots
+dot_on  = Image("dot-on.png").Scale(dot_size, dot_size);
+dot_off = Image("dot-off.png").Scale(dot_size, dot_size);
+dot_y = Math.Int(screen_h / 2) - Math.Int(dot_size / 2);
+dot_x0 = x0 + hw + Math.Int(dot_size * 0.9);
+for (d = 0; d < 3; d++) {
+    dots[d] = Sprite(dot_off);
+    dots[d].SetPosition(dot_x0 + d * (dot_size + dot_gap), dot_y, 10);
+}
+
+tick = 0;
+focus = -1;
+
+fun refresh () {
+    tick++;
+    helix.SetImage(helix_img[Math.Int(tick / 2) % FRAMES]);     # about 25 frames a second: half a turn every 1.4 s
+    f = Math.Int(tick / 24) % 3;                                  # focus moves every ~0.5 s
+    if (f != focus) {
+        for (d = 0; d < 3; d++) {
+            if (d == f) dots[d].SetImage(dot_on);
+            else        dots[d].SetImage(dot_off);
+        }
+        focus = f;
+    }
+}
+Plymouth.SetRefreshFunction(refresh);
+
+# Boot messages and password prompts are not drawn: nothing here asks for either.
+fun message_callback (text) { }
+Plymouth.SetMessageFunction(message_callback);

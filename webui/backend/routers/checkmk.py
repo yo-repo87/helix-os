@@ -169,10 +169,18 @@ def _monitor(*args, timeout=60):
     return subprocess.run(["sudo", "-n", *env, "python3", MONITOR, *args], capture_output=True, text=True, timeout=timeout)
 
 
+def _supported() -> bool:
+    import platform
+    return platform.machine() in ("x86_64", "AMD64")      # Checkmk publishes its server image for x86-64 only
+
+
 @router.get("/setup")
 def setup_status():
     if not os.path.exists(MONITOR):
         return {"installed": False, "job": _job_view()}
+    if not _supported():
+        import platform
+        return {"installed": True, "supported": False, "machine": platform.machine(), "enabled": False, "job": _job_view()}
     try:
         r = _monitor("status", timeout=30)
         d = json.loads(r.stdout.strip().splitlines()[-1])
@@ -245,7 +253,7 @@ def prompt_info():
     except OSError:
         started = False
     import shutil
-    ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR)
+    ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR) and _supported()
     return {"show": ready and not enabled, "state": state, "enabled": enabled, "array_started": started}
 
 

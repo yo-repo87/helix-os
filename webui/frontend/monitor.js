@@ -30,6 +30,7 @@ async function monRefresh(first) {
 
 function monGate(st) {          // what every tab shows until monitoring is on
   const job = st.job || {}, running = job.state === 'running';
+  if (st.supported === false) return `<div class="vm-note warn"><b>Monitoring is not available on this hardware yet.</b> Checkmk's server is only published for x86-64 PCs, and this machine is <b>${_esc(st.machine)}</b>. Helix's own notifications (the bell) still report array, disk and container events.</div>`;
   if (!st.installed) return '<div class="vm-note warn">Monitoring is not part of this installation. Update Helix OS to a version that includes it.</div>';
   if (st.enabled && !running) return '';
   return `<div class="vf-card"><div class="vm-h">Turn on monitoring</div>

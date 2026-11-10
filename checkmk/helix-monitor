@@ -182,6 +182,9 @@ def container_state():
 
 
 def cmd_enable():
+    import platform
+    if platform.machine() not in ("x86_64", "AMD64"):
+        raise SystemExit(f"Checkmk's server image is only built for x86-64 PCs, not {platform.machine()} (for example a Raspberry Pi).")
     if run(["docker", "info"], timeout=20).returncode != 0:
         raise SystemExit("Docker is not running. Start the array first (Docker starts with it).")
 

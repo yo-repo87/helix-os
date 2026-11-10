@@ -464,7 +464,7 @@ main {
 .app-icon {
   width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
   background: var(--accent-dim); display: flex; align-items: center; justify-content: center;
-  font-size: 16px; color: var(--accent);
+  font-size: 16px; color: var(--accent); overflow: hidden;
 }
 .app-card-title { font-weight: 600; font-size: 13px; line-height: 1.3; }
 .app-card-cat {
@@ -3204,6 +3204,14 @@ async function loadApps() {
 let _catalogLimit = 60;
 function showMoreApps() { _catalogLimit += 60; renderCatalog(_catalogShown); }
 let _catalogShown = [];
+// App icon: the catalog's icon URL, falling back to the emoji if it is missing or fails to load.
+function appIconHtml(name, url) {
+  const emoji = APP_ICONS[name] || '📦';
+  if (!/^https?:\/\//i.test(url || '')) return emoji;
+  return `<img src="${_esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+    style="width:100%;height:100%;object-fit:contain;border-radius:8px"
+    onerror="this.replaceWith(document.createTextNode(this.dataset.fb))" data-fb="${emoji}">`;
+}
 function renderCatalog(templates, resetLimit = false) {
   const grid = document.getElementById('apps-catalog-grid');
   if (resetLimit) _catalogLimit = 60;
@@ -3221,7 +3229,7 @@ function renderCatalog(templates, resetLimit = false) {
          <span style="font-size:12px;color:var(--fg-dim)"> or use search to narrow it down.</span></div>` : '';
   grid.innerHTML = shown.map(t => {
     const isInst = !!_installedApps[t.name];
-    const icon = APP_ICONS[t.name] || '📦';
+    const icon = appIconHtml(t.name, t.icon);
     return `<div class="app-card">
       <div class="app-card-header">
         <div class="app-icon">${icon}</div>
@@ -3250,7 +3258,7 @@ function renderInstalled(installed) {
     return;
   }
   grid.innerHTML = installed.map(a => {
-    const icon = APP_ICONS[a.name] || '📦';
+    const icon = appIconHtml(a.name, a.icon);
     const stateColor = a.state === 'running' ? 'var(--ok)' : a.state === 'exited' ? 'var(--err)' : 'var(--fg-dim)';
     return `<div class="app-card">
       <div class="app-card-header">

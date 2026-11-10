@@ -155,6 +155,12 @@ if [ -x "$(dirname "$0")/helix-vm-start" ]; then
     "$(dirname "$0")/helix-vm-start" --from-array-start || helix_log "WARN: VM Manager did not start (see /var/log/helix-array.log)"
 fi
 
+# ── Monitoring (Checkmk) — only when it has been enabled; after Docker and VMs so they are all seen ──
+if [ -x /usr/local/sbin/helix-monitor ]; then
+    HELIX_CONFIG="$HELIX_CONFIG" STATE_DIR="$STATE_DIR" python3 /usr/local/sbin/helix-monitor start \
+        || helix_log "WARN: monitoring did not start (helix-monitor start)"
+fi
+
 set -e
 
 # ── Record state ──────────────────────────────────────────────────────────────

@@ -1172,6 +1172,12 @@ main { padding-bottom: 44px; }
   </div>
 
   <!-- WireGuard VPN page (hidden until #vpn) -->
+  <!-- Monitoring page (#monitoring) -->
+  <div id="monitoring-section" hidden>
+    <div class="vm-head"><a class="panel-action" href="#tools">‹ Tools</a><span class="section-title" style="margin:0">Monitoring</span></div>
+    <div id="mon-body"></div>
+  </div>
+
   <!-- VMs page (hidden until #vms) -->
   <div id="vms-section" hidden>
     <div class="vm-head">
@@ -1934,6 +1940,7 @@ main { padding-bottom: 44px; }
   <div id="tools-section" hidden>
     <div class="section-title" style="margin-top:0">Tools</div>
     <div class="tool-grid">
+      <a class="tool-card" href="#monitoring"><h3>Monitoring</h3><p>Checkmk: watches disks, containers and VMs for you.</p></a>
       <a class="tool-card" href="#diagnostics"><h3>Diagnostics</h3><p>Syslog, kernel log, and the process list.</p></a>
       <a class="tool-card" href="#hardware"><h3>Hardware</h3><p>Board, CPU, memory, and PCI devices.</p></a>
       <a class="tool-card" href="#scheduler"><h3>Scheduler</h3><p>Cron jobs that survive a reboot.</p></a>
@@ -2105,7 +2112,7 @@ main { padding-bottom: 44px; }
       <span>Monitoring (Checkmk)</span>
       <span style="display:flex;gap:8px">
         <button class="settings-btn" onclick="loadCmkServices()" style="font-size:11px;padding:4px 10px">Services</button>
-        <a href="http://localhost:5050/cmk/" target="_blank" class="settings-btn" style="font-size:11px;padding:4px 10px;text-decoration:none">Open UI ↗</a>
+        <a href="#" onclick="this.href=monUrl(null)" target="_blank" class="settings-btn" style="font-size:11px;padding:4px 10px;text-decoration:none">Open UI ↗</a>
       </span>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px" id="cmk-summary">
@@ -2134,6 +2141,7 @@ main { padding-bottom: 44px; }
 
 <script src="/static/vms.js"></script>
 <script src="/static/vmform.js"></script>
+<script src="/static/monitor.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
@@ -3171,7 +3179,7 @@ async function refresh() {
 }
 
 // ── Nav hash routing ────────────────────────────────────────────
-const TOOL_HASHES = new Set(['#tools', '#diagnostics', '#hardware', '#scheduler', '#backup', '#scanner', '#proxy', '#terminal', '#zfs']);
+const TOOL_HASHES = new Set(['#tools', '#monitoring', '#diagnostics', '#hardware', '#scheduler', '#backup', '#scanner', '#proxy', '#terminal', '#zfs']);
 const SETTINGS_HASHES = new Set(['#config', '#notif-config']);
 function routeHash() {
   const h = (location.hash || '#dashboard').split('?')[0];
@@ -4738,6 +4746,7 @@ const SECTION_IDS = {
   '#notif-config': 'notif-settings-section',
   '#apps':         'apps-section',
   '#vpn':          'vpn-section',
+  '#monitoring':   'monitoring-section',
   '#vms':          'vms-section',
   '#vmform':       'vmform-section',
   '#vm-settings':  'vmsettings-section',
@@ -4759,6 +4768,7 @@ const SECTION_LOADERS = {
   '#notif-config': loadNotifConfig,
   '#apps':         loadApps,
   '#vpn':          () => { loadVPN(); loadWol(); loadVnstat(); },
+  '#monitoring':   loadMonitoring,
   '#vms':          loadVMs,
   '#vmform':       loadVmForm,
   '#vm-settings':  loadVmSettings,

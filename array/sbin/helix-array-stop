@@ -17,6 +17,9 @@ load_disk_config
 
 ERRORS=0
 
+# ── Monitoring first, so it does not report the shutdown as a pile of failures ──
+[ -x /usr/local/sbin/helix-monitor ] && HELIX_CONFIG="$HELIX_CONFIG" STATE_DIR="$STATE_DIR" python3 /usr/local/sbin/helix-monitor stop || true
+
 # ── VMs first: they use the drives and the user share ─────────────────────────
 [ -x "$(dirname "$0")/helix-vm-stop" ] && "$(dirname "$0")/helix-vm-stop" || true
 

@@ -68,14 +68,14 @@ def push_dev(host: str) -> int:
     with tempfile.TemporaryDirectory() as td:
         tgz = os.path.join(td, "devsync.tgz")
         subprocess.run(["tar", "-czf", tgz, "--exclude=__pycache__", "--exclude=.venv", "--exclude=state", "--exclude=*.pyc",
-                        "-C", repo, "webui/backend", "webui/frontend", "array/sbin", "network", "shares"], check=True)
+                        "-C", repo, "webui/backend", "webui/frontend", "array/sbin", "network", "shares", "checkmk"], check=True)
         upload(host, tgz, "/mnt/user/appdata", "devsync.tgz")
     rc, out = run(host, (
         "set -e; T=$(mktemp -d); sudo -n tar -xzf /mnt/user/appdata/devsync.tgz -C $T; "
         "sudo -n rm -rf /opt/helix/backend /opt/helix/frontend; "
         "sudo -n cp -r $T/webui/backend /opt/helix/backend; sudo -n cp -r $T/webui/frontend /opt/helix/frontend; "
         "sudo -n sh -c \"cp $T/array/sbin/* /usr/local/sbin/ && cp $T/network/helix-* /usr/local/sbin/ 2>/dev/null; "
-        "cp $T/shares/helix-* /usr/local/sbin/ 2>/dev/null; chmod 755 /usr/local/sbin/helix-*; "
+        "cp $T/shares/helix-* /usr/local/sbin/ 2>/dev/null; cp $T/checkmk/helix-monitor /usr/local/sbin/; mkdir -p /usr/local/lib/helix; cp $T/checkmk/helix_local_check.py /usr/local/lib/helix/; chmod 755 /usr/local/lib/helix/*.py; chmod 755 /usr/local/sbin/helix-*; "
         "chown -R helix:helix /opt/helix/backend /opt/helix/frontend\"; "
         "sudo -n rm -rf $T /mnt/user/appdata/devsync.tgz; echo pushed; sudo -n systemd-run --on-active=2 systemctl restart helix-backend >/dev/null 2>&1"), 120)
     print(out)

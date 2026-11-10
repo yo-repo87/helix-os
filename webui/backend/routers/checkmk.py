@@ -8,10 +8,16 @@ GET /api/checkmk/services    — all service states
 GET /api/checkmk/containers  — Docker container service states
 """
 
+import json
+import os
 import subprocess
+import threading
+import time
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
+from config import HELIX_CONFIG, STATE_DIR
 
 router = APIRouter(prefix="/api/checkmk", tags=["checkmk"])
 
@@ -148,3 +154,76 @@ def checkmk_containers():
         host_cols
     )
     return {"services": services, "hosts": hosts}
+
+
+# ── Setup / control (the Monitoring page) ─────────────────────────
+# helix-monitor (root, installed by the image) does the work; this only starts it and reports on it.
+MONITOR = os.getenv("HELIX_MONITOR", "/usr/local/sbin/helix-monitor")
+CREDS = os.path.join(HELIX_CONFIG, "checkmk", "credentials.json")
+_job = {"state": "idle", "log": [], "started": 0.0}
+_job_lock = threading.Lock()
+
+
+def _monitor(*args, timeout=60):
+    env = ["env", f"HELIX_CONFIG={HELIX_CONFIG}", f"STATE_DIR={STATE_DIR}"]
+    return subprocess.run(["sudo", "-n", *env, "python3", MONITOR, *args], capture_output=True, text=True, timeout=timeout)
+
+
+@router.get("/setup")
+def setup_status():
+    if not os.path.exists(MONITOR):
+        return {"installed": False, "job": _job_view()}
+    try:
+        r = _monitor("status", timeout=30)
+        d = json.loads(r.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        d = {"enabled": False, "container": "unknown", "ready": False}
+    d["installed"] = True
+    d["job"] = _job_view()
+    return d
+
+
+def _job_view():
+    return {"state": _job["state"], "log": _job["log"][-12:], "started": _job["started"]}
+
+
+def _run_job(args):
+    try:
+        env = ["env", f"HELIX_CONFIG={HELIX_CONFIG}", f"STATE_DIR={STATE_DIR}"]
+        p = subprocess.Popen(["sudo", "-n", *env, "python3", MONITOR, *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in p.stdout:
+            _job["log"].append(line.rstrip())
+        p.wait()
+        _job["state"] = "done" if p.returncode == 0 else "failed"
+    except Exception as e:                                  # noqa: BLE001 - shown to the user
+        _job["log"].append(str(e)); _job["state"] = "failed"
+
+
+@router.post("/enable")
+def setup_enable():
+    if not os.path.exists(MONITOR):
+        raise HTTPException(503, "Monitoring is not part of this installation. Update Helix OS.")
+    with _job_lock:
+        if _job["state"] == "running":
+            raise HTTPException(409, "Setup is already running")
+        _job.update(state="running", log=[], started=time.time())
+    threading.Thread(target=_run_job, args=(["enable"],), daemon=True).start()
+    return {"ok": True}
+
+
+@router.post("/disable")
+def setup_disable():
+    r = _monitor("disable", timeout=120)
+    if r.returncode != 0:
+        raise HTTPException(500, (r.stderr or r.stdout).strip()[-200:])
+    return {"ok": True}
+
+
+@router.get("/login")
+def setup_login():
+    """The Checkmk web login, for the "Show login" button. (The Helix API is unauthenticated today, see CLAUDE.md §29.4.)"""
+    try:
+        c = json.load(open(CREDS))
+    except (OSError, ValueError):
+        raise HTTPException(404, "Monitoring is not set up yet")
+    return {"user": "cmkadmin", "password": c.get("admin_password", "")}

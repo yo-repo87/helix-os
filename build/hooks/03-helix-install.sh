@@ -315,12 +315,15 @@ for helper in \
     /build/array/sbin/helix-mover \
     /build/array/sbin/helix-vm-start /build/array/sbin/helix-vm-stop \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
-    /build/gpu/setup-ai-gpu.sh; do
+    /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor; do
     if [ -f "$helper" ]; then
         install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
         echo "  installed /usr/local/sbin/$(basename "$helper")"
     fi
 done
+# Checkmk agent "local" plugin (turns containers/VMs/disks/array into Checkmk services); helix-monitor copies it into the agent at start
+install -d /usr/local/lib/helix
+install -m 0755 /build/checkmk/helix_local_check.py /usr/local/lib/helix/helix_local_check.py
 
 # ── Persistent data partition (HELIXDATA) setup ───────────────────────────────
 # The boot image is tiny vs a modern USB/SD; write-usb.sh / make-pi-image.sh put

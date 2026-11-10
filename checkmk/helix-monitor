@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""helix-monitor — Checkmk monitoring for Helix OS, set up and kept up to date automatically.
+
+    helix-monitor enable     one-time setup (pulls Checkmk, starts it, installs the agent, registers this machine)
+    helix-monitor start      bring monitoring up (run by helix-array-start when enabled)
+    helix-monitor stop       take it down (run by helix-array-stop)
+    helix-monitor disable    stop and turn off (Checkmk's data is kept)
+    helix-monitor status     JSON state
+    helix-monitor sync       the watcher loop (run as helix-monitor-sync.service): when a container, VM or disk
+                             appears or disappears, Checkmk is told to re-discover this machine's services
+
+How it fits together
+  * Checkmk Community runs in a Docker container ("checkmk", web UI on port 5050). Its data volume lives in Docker's
+    data-root, which is on the cache drive / first data disk, so it survives reboots.
+  * The Checkmk agent script is fetched from that container once and kept in $HELIX_CONFIG/checkmk/. At every start
+    it is re-installed into the (RAM) root and served over a systemd socket bound to the Docker bridge address only,
+    so the Checkmk container can read it and nothing else on the network can.
+  * helix_local_check.py (agent "local" plugin) turns arrays, disks (SMART), containers, VMs and share services into
+    Checkmk services. Because the service *names* contain the container/VM name, a new container = a new service.
+  * Passwords are generated here, stored in $HELIX_CONFIG/checkmk/credentials.json, never in the repo.
+"""
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+HELIX_CONFIG = os.getenv("HELIX_CONFIG", "/boot/config")
+STATE_DIR = os.getenv("STATE_DIR", "/var/local/helix")
+CFG_DIR = os.path.join(HELIX_CONFIG, "checkmk")
+CREDS = os.path.join(CFG_DIR, "credentials.json")
+SETTINGS = os.path.join(CFG_DIR, "monitor.json")
+KEPT_AGENT = os.path.join(CFG_DIR, "check_mk_agent")
+LIB = "/usr/local/lib/helix"
+MK = f"{LIB}/monitor"                      # the agent's MK_LIBDIR
+PLUGIN_SRC = f"{LIB}/helix_local_check.py"
+IMAGE = os.getenv("CMK_IMAGE", "checkmk/check-mk-community:2.5.0-latest")
+CONTAINER, SITE = "checkmk", "cmk"
+WEB_PORT = int(os.getenv("CMK_PORT", "5050"))
+API = f"http://127.0.0.1:{WEB_PORT}/{SITE}/check_mk/api/1.0"
+AGENT_PORT = 6556
+HOST = socket.gethostname()
+SEEN = os.path.join(STATE_DIR, "monitor_services.json")
+SYNC_STATUS = os.path.join(STATE_DIR, "monitor_sync.json")
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+def run(cmd, timeout=120, input=None, check=False):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=input)
+    if check and r.returncode != 0:
+        raise SystemExit(f"{' '.join(cmd[:3])}…: {(r.stderr or r.stdout).strip()[-300:]}")
+    return r
+
+
+def settings():
+    try:
+        return json.load(open(SETTINGS))
+    except (OSError, ValueError):
+        return {"enabled": False}
+
+
+def save_settings(d):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    json.dump(d, open(SETTINGS, "w"))
+
+
+def creds():
+    try:
+        return json.load(open(CREDS))
+    except (OSError, ValueError):
+        return {}
+
+
+def bridge_ip():
+    r = run(["docker", "network", "inspect", "bridge", "-f", "{{(index .IPAM.Config 0).Gateway}}"], timeout=20)
+    ip = r.stdout.strip()
+    return ip if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) else "172.17.0.1"
+
+
+# ── Checkmk REST ─────────────────────────────────────────────────────────────
+
+def api(method, path, body=None, user="cmkadmin", pw=None, timeout=60, headers=None):
+    if pw is None:
+        c = creds()
+        user, pw = ("helix", c.get("automation_secret", "")) if c.get("automation_secret") else ("cmkadmin", c.get("admin_password", ""))
+    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {user} {pw}", "Accept": "application/json", "Content-Type": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            t = r.read()
+            return r.status, (json.loads(t) if t[:1] in (b"{", b"[") else {})
+    except urllib.error.HTTPError as e:
+        t = e.read()
+        try:
+            return e.code, json.loads(t)
+        except ValueError:
+            return e.code, {"raw": t[:300].decode("utf-8", "replace")}
+    except (OSError, ValueError) as e:
+        return 0, {"error": str(e)}
+
+
+def wait_ready(limit=240):
+    c = creds()
+    for i in range(limit):
+        st, _ = api("GET", "/version", user="cmkadmin", pw=c.get("admin_password", ""), timeout=5)
+        if st == 200:
+            return True
+        time.sleep(1)
+    return False
+
+
+def site(cmd, timeout=300):
+    """Run a shell command as the Checkmk site user inside the container."""
+    return run(["docker", "exec", CONTAINER, "su", "-", SITE, "-c", cmd], timeout=timeout)
+
+
+def activate():
+    """Activate pending changes (the REST API insists on If-Match) and wait until Checkmk is done."""
+    st, _ = api("POST", "/domain-types/activation_run/actions/activate-changes/invoke",
+                {"redirect": False, "sites": [SITE], "force_foreign_changes": True}, timeout=120, headers={"If-Match": "*"})
+    if st in (200, 202, 302):
+        for _ in range(90):
+            s2, d2 = api("GET", "/domain-types/activation_run/collections/running")
+            if s2 == 200 and not d2.get("value"):
+                break
+            time.sleep(1)
+    return st
+
+
+def rediscover():
+    r = site(f"cmk -II {HOST} && cmk -R", timeout=300)
+    return r.returncode == 0, (r.stdout + r.stderr).strip()[-200:]
+
+
+# ── agent on this machine ────────────────────────────────────────────────────
+
+def install_agent():
+    if not os.path.exists(KEPT_AGENT):
+        raise SystemExit("the Checkmk agent has not been downloaded yet (run helix-monitor enable)")
+    for sub in ("local", "plugins"):
+        os.makedirs(f"{MK}/{sub}", exist_ok=True)
+    txt = open(KEPT_AGENT).read()
+    # Docker's per-container overlay mounts would each become a "Filesystem" service that comes and goes with the container.
+    txt = txt.replace('excludefs="-x smbfs', 'excludefs="-x overlay -x smbfs', 1)
+    open(f"{MK}/check_mk_agent", "w").write(txt); os.chmod(f"{MK}/check_mk_agent", 0o755)
+    shutil.copy(PLUGIN_SRC, f"{MK}/local/helix"); os.chmod(f"{MK}/local/helix", 0o755)
+    wrapper = f"{MK}/agent-run"
+    open(wrapper, "w").write(f"#!/bin/sh\nexport MK_LIBDIR={MK} MK_CONFDIR={MK} MK_VARDIR=/var/lib/helix-cmk-agent HELIX_CONFIG={HELIX_CONFIG} STATE_DIR={STATE_DIR}\n"
+                             f"mkdir -p $MK_VARDIR\nexec {MK}/check_mk_agent\n")
+    os.chmod(wrapper, 0o755)
+    ip = bridge_ip()
+    open("/etc/systemd/system/helix-cmk-agent.socket", "w").write(
+        f"[Unit]\nDescription=Checkmk agent (Docker bridge only)\n\n[Socket]\nListenStream={ip}:{AGENT_PORT}\nAccept=yes\nFreeBind=yes\n\n[Install]\nWantedBy=sockets.target\n")
+    open("/etc/systemd/system/helix-cmk-agent@.service", "w").write(
+        f"[Unit]\nDescription=Checkmk agent connection\n\n[Service]\nExecStart={wrapper}\nStandardInput=socket\nUser=root\n")
+    open("/etc/systemd/system/helix-monitor-sync.service", "w").write(
+        f"[Unit]\nDescription=Helix OS: keep Checkmk's view of this machine current\nAfter=docker.service\n\n[Service]\nExecStart=/usr/bin/python3 /usr/local/sbin/helix-monitor sync\n"
+        f"Environment=HELIX_CONFIG={HELIX_CONFIG} STATE_DIR={STATE_DIR}\nRestart=on-failure\nRestartSec=15\n")
+    run(["systemctl", "daemon-reload"])
+    return ip
+
+
+def start_services():
+    run(["systemctl", "restart", "helix-cmk-agent.socket"])
+    run(["systemctl", "restart", "helix-monitor-sync.service"])
+
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+def container_state():
+    r = run(["docker", "inspect", "-f", "{{.State.Status}}", CONTAINER], timeout=15)
+    return r.stdout.strip() if r.returncode == 0 else "absent"
+
+
+def cmd_enable():
+    if run(["docker", "info"], timeout=20).returncode != 0:
+        raise SystemExit("Docker is not running. Start the array first (Docker starts with it).")
+    os.makedirs(CFG_DIR, exist_ok=True)
+    c = creds()
+    c.setdefault("admin_password", secrets.token_urlsafe(18))
+    c.setdefault("automation_secret", secrets.token_urlsafe(24))
+    json.dump(c, open(CREDS, "w")); os.chmod(CREDS, 0o600)
+
+    say("STEP 1/6: getting the Checkmk image (about 1 GB the first time)")
+    if run(["docker", "image", "inspect", IMAGE], timeout=20).returncode != 0:
+        r = run(["docker", "pull", IMAGE], timeout=3600)
+        if r.returncode != 0:
+            raise SystemExit("could not download the Checkmk image: " + (r.stderr or r.stdout).strip()[-200:])
+    say("STEP 2/6: starting Checkmk")
+    if container_state() == "absent":
+        run(["docker", "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped", "-p", f"{WEB_PORT}:5000",
+             "-e", f"CMK_PASSWORD={c['admin_password']}", "-e", f"CMK_SITE_ID={SITE}", "--tmpfs", f"/opt/omd/sites/{SITE}/tmp:uid=1000,gid=1000",
+             "-v", "checkmk-data:/omd/sites", "-v", "/etc/localtime:/etc/localtime:ro", IMAGE], timeout=120, check=True)
+    elif container_state() != "running":
+        run(["docker", "start", CONTAINER], check=True)
+    say("STEP 3/6: waiting for Checkmk to come up (a minute or two)")
+    if not wait_ready():
+        raise SystemExit("Checkmk did not become ready in time (docker logs checkmk)")
+    say("STEP 4/6: installing the agent on this machine")
+    if not os.path.exists(KEPT_AGENT):
+        for src in (f"/omd/sites/{SITE}/share/check_mk/agents/check_mk_agent.linux", f"/omd/sites/{SITE}/local/share/check_mk/agents/check_mk_agent.linux"):
+            if run(["docker", "cp", f"{CONTAINER}:{src}", KEPT_AGENT], timeout=60).returncode == 0:
+                break
+        else:
+            raise SystemExit("could not fetch the agent from the Checkmk container")
+    ip = install_agent()
+    run(["systemctl", "restart", "helix-cmk-agent.socket"])
+    say("STEP 5/6: registering this machine in Checkmk")
+    st, d = api("POST", "/domain-types/user_config/collections/all", {"username": "helix", "fullname": "Helix OS (automatic)",
+               "auth_option": {"auth_type": "automation", "secret": c["automation_secret"]}, "roles": ["admin"]},
+               user="cmkadmin", pw=c["admin_password"])
+    if st not in (200, 201, 400, 409):
+        raise SystemExit(f"could not create the automation user (HTTP {st}: {d})")
+    st, d = api("POST", "/domain-types/host_config/collections/all", {"host_name": HOST, "folder": "/", "attributes": {"ipaddress": ip}})
+    if st not in (200, 201) and "exist" not in json.dumps(d).lower():
+        raise SystemExit(f"could not register {HOST} (HTTP {st}: {d})")
+    activate()
+    say("STEP 6/6: discovering what to monitor (CPU, memory, disks, containers, VMs …)")
+    ok, out = rediscover()
+    if not ok:
+        say("note: first discovery did not finish: " + out)
+    save_settings({"enabled": True})
+    start_services()
+    say("DONE: monitoring is on. Open Checkmk from the Monitoring page.")
+
+
+def cmd_start():
+    if not settings().get("enabled"):
+        return
+    if container_state() == "absent":
+        say("Checkmk container is missing; run enable again"); return
+    if container_state() != "running":
+        run(["docker", "start", CONTAINER])
+    install_agent()
+    start_services()
+    say("monitoring started")
+
+
+def cmd_stop():
+    for u in ("helix-monitor-sync.service", "helix-cmk-agent.socket"):
+        run(["systemctl", "stop", u])
+    if container_state() == "running":
+        run(["docker", "stop", "-t", "30", CONTAINER], timeout=90)
+    say("monitoring stopped")
+
+
+def cmd_disable():
+    cmd_stop()
+    save_settings({"enabled": False})
+    say("monitoring is off (Checkmk's data is kept; enable it again to resume)")
+
+
+def cmd_status():
+    s = settings()
+    st = container_state()
+    ready = st == "running" and api("GET", "/version", timeout=4)[0] == 200
+    sync = {}
+    try:
+        sync = json.load(open(SYNC_STATUS))
+    except (OSError, ValueError):
+        pass
+    print(json.dumps({"enabled": bool(s.get("enabled")), "container": st, "ready": ready, "host": HOST, "port": WEB_PORT,
+                      "agent": os.path.exists(f"{MK}/check_mk_agent"), "agent_socket": run(["systemctl", "is-active", "helix-cmk-agent.socket"]).stdout.strip() == "active",
+                      "sync": run(["systemctl", "is-active", "helix-monitor-sync.service"]).stdout.strip() == "active", "last_sync": sync,
+                      "image_present": run(["docker", "image", "inspect", IMAGE], timeout=20).returncode == 0}))
+
+
+def services_now():
+    r = run(["python3", PLUGIN_SRC if os.path.exists(PLUGIN_SRC) else f"{MK}/local/helix"], timeout=60)
+    return sorted(m.group(1) for m in (re.match(r'^\d \"(.+?)\" ', l) for l in r.stdout.splitlines()) if m)
+
+
+def cmd_sync():
+    """Re-run discovery whenever the set of services (containers, VMs, disks …) changes."""
+    last = None
+    try:
+        last = json.load(open(SEEN))
+    except (OSError, ValueError):
+        pass
+    say("watching for new or removed containers, VMs and disks")
+    while True:
+        try:
+            now = services_now()
+            if now and now != last:
+                time.sleep(4)                           # let a fresh container/VM finish starting
+                now = services_now()
+                added = sorted(set(now) - set(last or [])); gone = sorted(set(last or []) - set(now))
+                ok, out = rediscover() if container_state() == "running" else (False, "checkmk not running")
+                if ok:
+                    last = now
+                    os.makedirs(STATE_DIR, exist_ok=True)
+                    json.dump(now, open(SEEN, "w"))
+                    json.dump({"at": int(time.time()), "added": added, "removed": gone}, open(SYNC_STATUS, "w"))
+                    say(f"rediscovered: +{len(added)} -{len(gone)} {added[:5]} {gone[:5]}")
+                else:
+                    say("rediscovery failed: " + out)
+        except Exception as e:                          # noqa: BLE001 - keep watching
+            say(f"sync error: {e}")
+        time.sleep(10)
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    fn = {"enable": cmd_enable, "start": cmd_start, "stop": cmd_stop, "disable": cmd_disable, "status": cmd_status, "sync": cmd_sync}.get(cmd)
+    if not fn:
+        sys.exit(__doc__)
+    if os.geteuid() != 0:
+        sys.exit("helix-monitor must run as root")
+    fn()

@@ -127,6 +127,9 @@ curl -fsSL --retry 3 "$TS_BASE/bookworm.noarmor.gpg" -o "$ROOTFS_DIR/usr/share/k
 chroot "$ROOTFS_DIR" /bin/bash -c "
     set -e
     export DEBIAN_FRONTEND=noninteractive
+    # A fresh rootfs has no CA certificates yet, so the first update cannot verify the https Tailscale repository.
+    apt-get update -qq || true
+    apt-get install -y --no-install-recommends ca-certificates
     apt-get update -qq
     apt-get install -y --no-install-recommends $PKG_LIST
     apt-get clean

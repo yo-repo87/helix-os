@@ -4,6 +4,7 @@ const mon = {timer: null, st: null, tab: 'overview', framed: false};
 const monApi = (p, o) => fetchJSON('/api/checkmk' + p, o);
 const monJson = (b) => ({method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)});
 const monDot = (c) => `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};margin-right:6px"></span>`;
+const monName = (st) => (st && st.provider === 'netdata') ? 'Netdata' : 'Checkmk';
 const MON_LAB = {0: ['OK', 'var(--ok)'], 1: ['WARN', 'var(--warn)'], 2: ['CRIT', 'var(--err)'], 3: ['UNKNOWN', 'var(--fg-dim)']};
 const monAge = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' d'; };
 
@@ -23,20 +24,20 @@ async function monRefresh(first) {
   let st;
   try { st = await monApi('/setup'); } catch (e) { document.getElementById('mon-pane-overview').innerHTML = `<div class="vm-note err">${_esc(errText(e))}</div>`; return; }
   mon.st = st;
+  const embedTab = document.querySelector('.mon-tab[data-tab=checkmk]'); if (embedTab) embedTab.textContent = st.provider === 'netdata' ? 'Dashboard' : 'Checkmk';
   if (mon.tab === 'overview') monOverview(st);
   else if (mon.tab === 'alerts') monAlerts(st);
   else monCheckmk(st, first);
 }
 
 function monGate(st) {          // what every tab shows until monitoring is on
-  const job = st.job || {}, running = job.state === 'running';
-  if (st.supported === false) return `<div class="vm-note warn"><b>Monitoring is not available on this hardware yet.</b> Checkmk's server is only published for x86-64 PCs, and this machine is <b>${_esc(st.machine)}</b>. Helix's own notifications (the bell) still report array, disk and container events.</div>`;
+  const job = st.job || {}, running = job.state === 'running', nd = st.provider === 'netdata';
   if (!st.installed) return '<div class="vm-note warn">Monitoring is not part of this installation. Update Helix OS to a version that includes it.</div>';
   if (st.enabled && !running) return '';
   return `<div class="vf-card"><div class="vm-h">Turn on monitoring</div>
-    <p style="font-size:12.5px;margin:0 0 10px">Helix will download and start <b>Checkmk</b> (a full monitoring system, in a container), install its agent on this machine and register it. After that nothing needs configuring:
-    <b>new containers, VMs and disks are added to monitoring by themselves</b>, and problems show up on the notification bell. It watches the array, disk health (SMART), containers, VMs, SMB/NFS services, CPU, memory, filesystems and network.</p>
-    <ul style="font-size:12px;color:var(--fg-muted);margin:0 0 10px 18px"><li>Needs the array started (Checkmk lives in Docker on your array), about 1 GB of disk and roughly 1 GB of memory.</li><li>The first start downloads the Checkmk image and takes a few minutes.</li></ul>
+    <p style="font-size:12.5px;margin:0 0 10px">Helix will download and start <b>${monName(st)}</b> (${nd ? 'a lightweight monitoring system that suits small boards like the Raspberry Pi' : 'a full monitoring system'}, in a container)${nd ? '' : ', install its agent on this machine and register it'}. After that nothing needs configuring:
+    <b>new containers, VMs and disks are picked up by themselves</b>, and problems show up on the notification bell. It watches the array, disk health (SMART), containers, VMs, SMB/NFS services, CPU, memory, filesystems and network.</p>
+    <ul style="font-size:12px;color:var(--fg-muted);margin:0 0 10px 18px"><li>Needs the array started (${monName(st)} lives in Docker on your array), about ${nd ? '300 MB of disk and 150 MB' : '1 GB of disk and roughly 1 GB'} of memory.</li><li>The first start downloads the ${monName(st)} image and takes a few minutes.</li></ul>
     ${running ? '' : '<button class="settings-btn primary" onclick="monEnable()">Enable monitoring</button>'}
     ${job.log && job.log.length ? `<pre class="vm-pre" style="margin-top:10px">${_esc(job.log.join('\n'))}${running ? '\n…' : ''}</pre>` : ''}
     ${job.state === 'failed' ? '<div class="fm-err">Setup did not finish. Fix the problem named above and try again: it picks up where it left off.</div>' : ''}</div>`;
@@ -47,12 +48,12 @@ async function monOverview(st) {
   if (gate) { el.innerHTML = gate; return; }
   const ok = (b) => b ? 'var(--ok)' : 'var(--err)';
   const html = `<div class="vf-card"><div class="vm-h">Status</div>
-    <div style="font-size:12.5px;line-height:1.9">${monDot(ok(st.ready))}Checkmk: ${st.ready ? 'running' : (st.container === 'running' ? 'starting up…' : 'not running (' + _esc(st.container) + '). It starts with the array.')}<br>
-    ${monDot(ok(st.agent_socket))}Agent on this machine: ${st.agent_socket ? 'answering' : 'not running'}<br>
-    ${monDot(ok(st.sync))}Automatic updates: ${st.sync ? 'watching for new or removed containers, VMs and disks' : 'not running'}
+    <div style="font-size:12.5px;line-height:1.9">${monDot(ok(st.ready))}${monName(st)}: ${st.ready ? 'running' : (st.container === 'running' ? 'starting up…' : 'not running (' + _esc(st.container) + '). It starts with the array.')}<br>
+    ${st.provider === 'netdata' ? `${monDot(ok(st.ready))}Containers, VMs and disks: found automatically by Netdata` : `${monDot(ok(st.agent_socket))}Agent on this machine: ${st.agent_socket ? 'answering' : 'not running'}<br>
+    ${monDot(ok(st.sync))}Automatic updates: ${st.sync ? 'watching for new or removed containers, VMs and disks' : 'not running'}`}
     ${st.last_sync && st.last_sync.at ? `<span class="vm-dim"> · last change ${new Date(st.last_sync.at * 1000).toLocaleTimeString()} (+${st.last_sync.added.length} / −${st.last_sync.removed.length})</span>` : ''}</div>
-    ${st.container === 'absent' ? `<div class="fm-warn" style="margin-top:8px">Checkmk's container is missing. <button class="ctr-btn" onclick="monEnable()">Repair</button> recreates it; your saved Checkmk data is reused when it still exists.</div>` : ''}
-    <div class="vf-foot"><a class="settings-btn primary" style="text-decoration:none" href="#monitoring/checkmk">Open Checkmk</a><button class="ctr-btn" onclick="monShowLogin()">Show login</button><span style="flex:1"></span><button class="ctr-btn" onclick="monDisable()">Turn off</button></div></div>
+    ${st.container === 'absent' ? `<div class="fm-warn" style="margin-top:8px">${monName(st)}'s container is missing. <button class="ctr-btn" onclick="monEnable()">Repair</button> recreates it; your saved Checkmk data is reused when it still exists.</div>` : ''}
+    <div class="vf-foot"><a class="settings-btn primary" style="text-decoration:none" href="#monitoring/checkmk">Open ${st.provider === 'netdata' ? 'dashboard' : 'Checkmk'}</a>${st.provider === 'netdata' ? '' : '<button class="ctr-btn" onclick="monShowLogin()">Show login</button>'}<span style="flex:1"></span><button class="ctr-btn" onclick="monDisable()">Turn off</button></div></div>
     <div class="vf-card"><div class="vm-h">What is being monitored</div><div id="mon-svcs" class="vm-dim">Loading…</div></div>`;
   if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
   if (st.ready) monServices();
@@ -87,7 +88,7 @@ async function monAlerts(st) {
       <div style="margin-left:22px">${sw('critical', 'Critical problems')}${sw('warning', 'Warnings')}${sw('recovered', 'Back to normal')}${sw('changes', 'New or removed containers, VMs and disks', 'so you know monitoring noticed')}</div>
       <div class="vf-help" style="margin-top:6px">One message per change, not one per minute. A change must last about 40 seconds before it is announced. Anything in a Checkmk downtime is ignored.</div></div>
     <div class="vf-card"><div class="vm-h">Recent alerts</div>${mine.length ? `<table class="vm-mini"><tbody>${mine.map(n => `<tr><td style="width:70px"><span class="notif-dot ${n.level}" style="display:inline-block"></span> ${_esc(n.level)}</td><td>${_esc(n.title)}</td><td class="vm-dim">${_esc(n.message || '')}</td><td class="vm-dim" style="white-space:nowrap">${fmtAge(n.ts)}</td></tr>`).join('')}</tbody></table>` : '<div class="vm-dim" style="font-size:12.5px">Nothing yet.</div>'}
-      <div class="vf-help" style="margin-top:6px">For rules, schedules and who gets which alert, use Checkmk's own notification settings in the Checkmk tab.</div></div>`;
+      <div class="vf-help" style="margin-top:6px">${mon.st && mon.st.provider === 'netdata' ? 'Netdata also raises its own alarms (CPU, memory, disk space, network); they appear above and on the bell.' : 'For rules, schedules and who gets which alert, use Checkmk\'s own notification settings in the Checkmk tab.'}</div></div>`;
   if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
 }
 async function monSetting(cb) {
@@ -98,8 +99,13 @@ async function monSetting(cb) {
 async function monCheckmk(st, first) {
   const el = document.getElementById('mon-pane-checkmk'), gate = monGate(st);
   if (gate) { el.innerHTML = gate; mon.framed = false; return; }
-  if (!st.ready) { el.innerHTML = `<div class="vm-note warn">Checkmk is ${st.container === 'running' ? 'still starting up' : 'not running'}. ${st.container === 'running' ? 'This page opens by itself in a moment.' : 'It starts with the array.'}</div>`; mon.framed = false; setTimeout(() => { if (mon.tab === 'checkmk') monRefresh(false); }, 4000); return; }
+  if (!st.ready) { el.innerHTML = `<div class="vm-note warn">${monName(st)} is ${st.container === 'running' ? 'still starting up' : 'not running'}. ${st.container === 'running' ? 'This page opens by itself in a moment.' : 'It starts with the array.'}</div>`; mon.framed = false; setTimeout(() => { if (mon.tab === 'checkmk') monRefresh(false); }, 4000); return; }
   if (mon.framed && el.querySelector('iframe')) return;
+  if (st.provider === 'netdata') {
+    el.innerHTML = `<div class="vf-foot" style="margin:0 0 8px"><span class="vm-dim" style="font-size:12px">Netdata's live dashboard: every chart, per container and per VM.</span><span style="flex:1"></span><a class="ctr-btn" style="text-decoration:none" href="/netdata/" target="_blank" rel="noopener">Open in its own tab ↗</a></div>
+      <iframe id="cmkframe" src="/netdata/" style="width:100%;height:calc(100vh - 210px);min-height:520px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>`;
+    mon.framed = true; return;
+  }
   let c; try { c = await monApi('/login'); } catch (e) { el.innerHTML = `<div class="vm-note err">${_esc(errText(e))}</div>`; return; }
   el.innerHTML = `<div class="vf-foot" style="margin:0 0 8px"><span class="vm-dim" style="font-size:12px">Checkmk's own control panel: hosts, rules, notifications, dashboards. You are signed in as <b>${_esc(c.user)}</b>.</span><span style="flex:1"></span><a class="ctr-btn" style="text-decoration:none" href="/cmk/" target="_blank" rel="noopener">Open in its own tab ↗</a></div>
     <iframe name="cmkframe" id="cmkframe" style="width:100%;height:calc(100vh - 210px);min-height:520px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>
@@ -111,7 +117,7 @@ async function monCheckmk(st, first) {
 // ── actions ─────────────────────────────────────────────────────────────────────────────────────
 async function monEnable() { try { await monApi('/enable', {method: 'POST'}); } catch (e) { alert(errText(e)); return; } monRefresh(false); }
 async function monDisable() {
-  if (!confirm('Turn monitoring off? Checkmk stops. Its history is kept and comes back if you enable it again.')) return;
+  if (!confirm('Turn monitoring off? ' + monName(mon.st) + ' stops. Its history is kept and comes back if you enable it again.')) return;
   try { await monApi('/disable', {method: 'POST'}); } catch (e) { alert(errText(e)); }
   mon.framed = false; monRefresh(false);
 }
@@ -140,9 +146,10 @@ async function monPromoCheck() {
   const promo = document.getElementById('mon-promo');
   if (promo) { promo.dataset.on = d.show && d.state === 'later' ? '1' : '0'; promo.hidden = !(promo.dataset.on === '1' && !(location.hash && location.hash !== '#dashboard' && location.hash !== '#')); }
   if (d.show && d.state === 'pending' && !document.getElementById('modal-overlay').style.display.includes('flex')) {
-    showModal('Turn on monitoring?', `<p style="font-size:13px;margin:0 0 10px">Your array is up. Helix can now watch this server for you with <b>Checkmk</b>:</p>
+    const nm = d.provider === 'netdata' ? 'Netdata' : 'Checkmk';
+    showModal('Turn on monitoring?', `<p style="font-size:13px;margin:0 0 10px">Your array is up. Helix can now watch this server for you with <b>${nm}</b>:</p>
       <ul style="font-size:12.5px;margin:0 0 10px 18px;line-height:1.7"><li>disk health, the array, containers, VMs, shares, CPU and memory</li><li>new containers and VMs are added by themselves</li><li>problems show up on the notification bell (and email/Discord if you set those up)</li></ul>
-      <p style="font-size:11.5px;color:var(--fg-muted);margin:0">It runs in a container on your array (about 1 GB of disk and memory). The first start downloads it, which takes a few minutes. You can also do this later from the Monitoring tab.</p>`,
+      <p style="font-size:11.5px;color:var(--fg-muted);margin:0">It runs in a container on your array (${d.provider === 'netdata' ? 'light enough for a Raspberry Pi' : 'about 1 GB of disk and memory'}). The first start downloads it, which takes a few minutes. You can also do this later from the Monitoring tab.</p>`,
       '<button class="ctr-btn" onclick="monPromoLater()">Not now</button><button class="settings-btn primary" onclick="monPromoEnable()">Enable monitoring</button>');
   }
 }

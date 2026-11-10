@@ -92,7 +92,7 @@ def container_details(name: str):
         "mounts": [{"source": m.get("Source"), "target": m.get("Destination"), "rw": m.get("RW")} for m in d.get("Mounts", [])],
         "env_names": sorted(e.split("=", 1)[0] for e in (cfg.get("Env") or [])),
         "app": _is_helix_app(name),
-        "protected": name in ("checkmk",),
+        "protected": name in ("checkmk", "netdata"),
     }
 
 
@@ -101,7 +101,7 @@ def remove_container(name: str, volumes: bool = False):
     """Remove a container. Containers installed through Helix are removed via the app
     API so their compose project and saved settings go too (otherwise they would
     still be listed as installed). Your data folders are never deleted."""
-    if name in ("checkmk",):
+    if name in ("checkmk", "netdata"):
         raise HTTPException(409, "This is Helix's monitoring server (Monitoring tab). It cannot be removed here: use Monitoring → Turn off to stop it. It is removed only when the array is deleted.")
     if _is_helix_app(name):
         from routers.apps import remove_app

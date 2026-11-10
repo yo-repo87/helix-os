@@ -15,6 +15,7 @@ announced once (at most five, then a summary).
 import json
 import logging
 import os
+import socket
 import threading
 import time
 
@@ -54,6 +55,49 @@ def _int(v) -> int:
 
 
 def read_states() -> dict | None:
+    from routers import checkmk as cmk
+    return _netdata_states() if cmk._provider() == "netdata" else _checkmk_states()
+
+
+def _plugin_states() -> dict:
+    """The Helix local-check plugin (array, SMART, containers, VMs, shares), read directly: this is what Netdata installs get."""
+    import re
+    import subprocess
+    try:
+        r = subprocess.run(["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", f"STATE_DIR={STATE_DIR}", "python3", "/usr/local/lib/helix/helix_local_check.py"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out, now = {}, int(time.time())
+    for line in r.stdout.splitlines():
+        m = re.match(r'^(\d) "(.+?)" \S+ ?(.*)$', line)
+        if not m:
+            continue
+        d = m.group(2)
+        kind = "container" if d.startswith("Container ") else "vm" if d.startswith("VM ") else "disk" if d.startswith("Disk ") else "service"
+        out[f"svc|{socket.gethostname()}|{d}"] = {"state": int(m.group(1)), "text": m.group(3), "name": d, "kind": kind, "since": now, "downtime": False, "ack": False}
+    return out
+
+
+def _netdata_states() -> dict | None:
+    import urllib.request
+    out = _plugin_states()
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:19999/api/v1/alarms", timeout=8) as r:
+            alarms = json.load(r).get("alarms", {})
+    except (OSError, ValueError):
+        return out or None                     # Netdata not answering: still report what the plugin knows
+    for key, a in alarms.items():
+        st = {"CLEAR": 0, "WARNING": 1, "CRITICAL": 2}.get(a.get("status"), None)
+        if st is None:
+            continue
+        out[f"svc|netdata|{key}"] = {"state": st, "text": a.get("info") or f"{a.get('name')} = {a.get('value_string', a.get('value'))}",
+                                      "name": f"{(a.get('name') or key).replace('_', ' ')} ({a.get('chart', '')})", "kind": "service",
+                                      "since": int(a.get("last_status_change") or time.time()), "downtime": False, "ack": False}
+    return out
+
+
+def _checkmk_states() -> dict | None:
     """{key: {state, text, name, kind, since}} for every non-downtime service and host, or None when Checkmk is unreachable."""
     from routers import checkmk as cmk
     svc = cmk._query_dicts("GET services\nColumns: host_name description state plugin_output last_state_change scheduled_downtime_depth acknowledged\n",
@@ -115,7 +159,7 @@ def step(pending: dict, now_states: dict, known: dict, seeded: bool, cfg: dict) 
                     problems_at_seed.append((v["name"], st, v["text"]))
             else:
                 if v["kind"] in ("container", "vm", "disk") and cfg["changes"]:
-                    notify("info", f"Now monitoring {v['name'].lower() if v['kind'] != 'disk' else v['name']}", "Added to Checkmk automatically.", source="monitoring")
+                    notify("info", f"Now monitoring {v['name'].lower() if v['kind'] != 'disk' else v['name']}", "Added to monitoring automatically.", source="monitoring")
                 if st != 0:
                     announce("problem", v["name"], st, v["text"], cfg)
             continue

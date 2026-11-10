@@ -112,7 +112,7 @@ def docker():
         except ValueError:
             continue
         name, status, state = c.get("Names", ""), c.get("Status", ""), c.get("State", "")
-        if name == "checkmk":
+        if name in ("checkmk", "netdata"):
             continue
         if state == "running":
             emit(1 if "unhealthy" in status else 0, f"Container {name}", status + (" · " + c.get("Image", "")))

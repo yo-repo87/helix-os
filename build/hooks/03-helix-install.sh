@@ -65,6 +65,18 @@ client_max_body_size 0;
 proxy_request_buffering off;
 
 # Checkmk's own web UI (Monitoring -> Checkmk shows it inside Helix). Same origin as Helix, so it can be framed.
+# Netdata's dashboard (the monitoring engine on ARM boards, where Checkmk has no image). It listens on 127.0.0.1 only.
+location /netdata/ {
+    proxy_pass         http://127.0.0.1:19999/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host $http_host;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   Upgrade $http_upgrade;
+    proxy_set_header   Connection $connection_upgrade;
+    proxy_read_timeout 3600s;
+    gzip off;
+}
+
 location /cmk/ {
     proxy_pass         http://127.0.0.1:5050/cmk/;
     proxy_http_version 1.1;

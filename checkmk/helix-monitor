@@ -9,7 +9,12 @@
     helix-monitor sync       the watcher loop (run as helix-monitor-sync.service): when a container, VM or disk
                              appears or disappears, Checkmk is told to re-discover this machine's services
 
-How it fits together
+Two engines, same behaviour for the user. Checkmk (x86-64 PCs) is the full monitoring system. Netdata is used where
+Checkmk's image does not exist (Raspberry Pi and other ARM boards): it also discovers containers, VMs and disks by itself and
+has its own alarms. Both are fed the same Helix "local check" plugin results for the array, SMART, containers, VMs and shares,
+and both raise the same notification-bell alerts. `helix-monitor enable --provider netdata` forces Netdata.
+
+How it fits together (Checkmk)
   * Checkmk Community runs in a Docker container ("checkmk", web UI on port 5050). Its data volume lives in Docker's
     data-root, which is on the cache drive / first data disk, so it survives reboots.
   * The Checkmk agent script is fetched from that container once and kept in $HELIX_CONFIG/checkmk/. At every start
@@ -41,6 +46,10 @@ LIB = "/usr/local/lib/helix"
 MK = f"{LIB}/monitor"                      # the agent's MK_LIBDIR
 PLUGIN_SRC = f"{LIB}/helix_local_check.py"
 IMAGE = os.getenv("CMK_IMAGE", "checkmk/check-mk-community:2.5.0-latest")
+ND_IMAGE = os.getenv("ND_IMAGE", "netdata/netdata:stable")
+ND = "netdata"
+ND_PORT = 19999
+ND_CONF = os.path.join(CFG_DIR, "netdata.conf")
 CONTAINER, SITE = "checkmk", "cmk"
 WEB_PORT = int(os.getenv("CMK_PORT", "5050"))
 API = f"http://127.0.0.1:{WEB_PORT}/{SITE}/check_mk/api/1.0"
@@ -59,6 +68,14 @@ def run(cmd, timeout=120, input=None, check=False):
     if check and r.returncode != 0:
         raise SystemExit(f"{' '.join(cmd[:3])}…: {(r.stderr or r.stdout).strip()[-300:]}")
     return r
+
+
+def provider():
+    import platform
+    p = settings().get("provider")
+    if p in ("checkmk", "netdata"):
+        return p
+    return "checkmk" if platform.machine() in ("x86_64", "AMD64") else "netdata"
 
 
 def settings():
@@ -182,9 +199,18 @@ def container_state():
 
 
 def cmd_enable():
-    import platform
-    if platform.machine() not in ("x86_64", "AMD64"):
-        raise SystemExit(f"Checkmk's server image is only built for x86-64 PCs, not {platform.machine()} (for example a Raspberry Pi).")
+    want = None
+    if "--provider" in sys.argv:
+        want = sys.argv[sys.argv.index("--provider") + 1]
+        if want not in ("checkmk", "netdata"):
+            raise SystemExit("provider must be checkmk or netdata")
+        if want != provider():                     # a different engine: start the alert baseline afresh instead of announcing every item as new
+            for f in ("monitor_alert_state.json", "monitor_problems.json"):
+                try: os.unlink(os.path.join(STATE_DIR, f))
+                except OSError: pass
+        save_settings({**settings(), "provider": want})
+    if provider() == "netdata":
+        return enable_netdata()
     if run(["docker", "info"], timeout=20).returncode != 0:
         raise SystemExit("Docker is not running. Start the array first (Docker starts with it).")
 
@@ -238,14 +264,71 @@ def cmd_enable():
     ok, out = rediscover()
     if not ok:
         say("note: first discovery did not finish: " + out)
-    save_settings({"enabled": True})
+    save_settings({**settings(), "enabled": True, "provider": "checkmk"})
     start_services()
     say("DONE: monitoring is on. Open Checkmk from the Monitoring page.")
+
+
+def nd_state():
+    r = run(["docker", "inspect", "-f", "{{.State.Status}}", ND], timeout=15)
+    return r.stdout.strip() if r.returncode == 0 else "absent"
+
+
+def nd_ready():
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{ND_PORT}/api/v1/info", timeout=4) as r:
+            return r.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def nd_run():
+    os.makedirs(CFG_DIR, exist_ok=True)
+    # Listen on this machine only; Helix serves the dashboard at /netdata/ through its own web server.
+    open(ND_CONF, "w").write("[web]\n    bind to = 127.0.0.1\n")
+    run(["docker", "run", "-d", "--name", ND, "--restart", "unless-stopped", "--pid", "host", "--network", "host",
+         "--cap-add", "SYS_PTRACE", "--cap-add", "SYS_ADMIN", "--security-opt", "apparmor=unconfined",
+         "-e", "DISABLE_TELEMETRY=1", "-e", "DO_NOT_TRACK=1",
+         "-v", "netdataconfig:/etc/netdata", "-v", "netdatalib:/var/lib/netdata", "-v", "netdatacache:/var/cache/netdata",
+         "-v", f"{ND_CONF}:/etc/netdata/netdata.conf:ro",
+         "-v", "/etc/passwd:/host/etc/passwd:ro", "-v", "/etc/group:/host/etc/group:ro", "-v", "/etc/os-release:/host/etc/os-release:ro",
+         "-v", "/etc/localtime:/etc/localtime:ro", "-v", "/proc:/host/proc:ro", "-v", "/sys:/host/sys:ro", "-v", "/var/log:/host/var/log:ro",
+         "-v", "/var/run/docker.sock:/var/run/docker.sock:ro", ND_IMAGE], timeout=120, check=True)
+
+
+def enable_netdata():
+    if run(["docker", "info"], timeout=20).returncode != 0:
+        raise SystemExit("Docker is not running. Start the array first (Docker starts with it).")
+    say("STEP 1/3: getting Netdata (about 250 MB the first time)")
+    if run(["docker", "image", "inspect", ND_IMAGE], timeout=20).returncode != 0:
+        r = run(["docker", "pull", ND_IMAGE], timeout=3600)
+        if r.returncode != 0:
+            raise SystemExit("could not download Netdata: " + (r.stderr or r.stdout).strip()[-200:])
+    say("STEP 2/3: starting Netdata")
+    if nd_state() == "absent":
+        nd_run()
+    elif nd_state() != "running":
+        run(["docker", "start", ND], check=True)
+    say("STEP 3/3: waiting for it to find your containers, VMs and disks")
+    for _ in range(120):
+        if nd_ready():
+            break
+        time.sleep(1)
+    else:
+        raise SystemExit("Netdata did not become ready in time (docker logs netdata)")
+    save_settings({**settings(), "enabled": True, "provider": "netdata"})
+    say("DONE: monitoring is on. Open the dashboard from the Monitoring page.")
 
 
 def cmd_start():
     if not settings().get("enabled"):
         return
+    if provider() == "netdata":
+        if nd_state() == "absent":
+            say("Netdata container is missing; run enable again"); return
+        if nd_state() != "running":
+            run(["docker", "start", ND])
+        say("monitoring started"); return
     if container_state() == "absent":
         say("Checkmk container is missing; run enable again"); return
     if container_state() != "running":
@@ -256,6 +339,10 @@ def cmd_start():
 
 
 def cmd_stop():
+    if provider() == "netdata":
+        if nd_state() == "running":
+            run(["docker", "stop", "-t", "20", ND], timeout=60)
+        say("monitoring stopped"); return
     for u in ("helix-monitor-sync.service", "helix-cmk-agent.socket"):
         run(["systemctl", "stop", u])
     if container_state() == "running":
@@ -265,7 +352,7 @@ def cmd_stop():
 
 def cmd_disable():
     cmd_stop()
-    save_settings({"enabled": False})
+    save_settings({**settings(), "enabled": False})
     say("monitoring is off (Checkmk's data is kept; enable it again to resume)")
 
 
@@ -274,7 +361,7 @@ def cmd_reset():
     for u in ("helix-monitor-sync.service", "helix-cmk-agent.socket"):
         run(["systemctl", "stop", u])
     if run(["docker", "info"], timeout=20).returncode == 0:
-        run(["docker", "rm", "-f", CONTAINER]); run(["docker", "volume", "rm", "-f", "checkmk-data"])
+        run(["docker", "rm", "-f", CONTAINER, ND]); run(["docker", "volume", "rm", "-f", "checkmk-data", "netdataconfig", "netdatalib", "netdatacache"])
     shutil.rmtree(CFG_DIR, ignore_errors=True)
     for f in (SEEN, SYNC_STATUS, os.path.join(STATE_DIR, "monitor_alert_state.json"), os.path.join(STATE_DIR, "monitor_problems.json")):
         try: os.unlink(f)
@@ -284,6 +371,11 @@ def cmd_reset():
 
 def cmd_status():
     s = settings()
+    if provider() == "netdata":
+        st = nd_state()
+        print(json.dumps({"enabled": bool(s.get("enabled")), "provider": "netdata", "container": st, "ready": st == "running" and nd_ready(), "host": HOST,
+                          "port": ND_PORT, "agent": True, "agent_socket": True, "sync": True, "last_sync": {}, "image_present": run(["docker", "image", "inspect", ND_IMAGE], timeout=20).returncode == 0}))
+        return
     st = container_state()
     ready = st == "running" and api("GET", "/version", timeout=4)[0] == 200
     sync = {}
@@ -291,7 +383,7 @@ def cmd_status():
         sync = json.load(open(SYNC_STATUS))
     except (OSError, ValueError):
         pass
-    print(json.dumps({"enabled": bool(s.get("enabled")), "container": st, "ready": ready, "host": HOST, "port": WEB_PORT,
+    print(json.dumps({"enabled": bool(s.get("enabled")), "provider": "checkmk", "container": st, "ready": ready, "host": HOST, "port": WEB_PORT,
                       "agent": os.path.exists(f"{MK}/check_mk_agent"), "agent_socket": run(["systemctl", "is-active", "helix-cmk-agent.socket"]).stdout.strip() == "active",
                       "sync": run(["systemctl", "is-active", "helix-monitor-sync.service"]).stdout.strip() == "active", "last_sync": sync,
                       "image_present": run(["docker", "image", "inspect", IMAGE], timeout=20).returncode == 0}))
@@ -304,6 +396,10 @@ def services_now():
 
 def cmd_sync():
     """Re-run discovery whenever the set of services (containers, VMs, disks …) changes."""
+    if provider() == "netdata":
+        say("Netdata finds new containers, VMs and disks by itself; nothing to watch")
+        while True:
+            time.sleep(3600)
     last = None
     try:
         last = json.load(open(SEEN))

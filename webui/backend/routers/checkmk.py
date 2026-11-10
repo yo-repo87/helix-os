@@ -132,6 +132,11 @@ def checkmk_hosts():
 
 @router.get("/services")
 def checkmk_services(host: Optional[str] = None, state: Optional[int] = None):
+    if _provider() == "netdata":
+        from services import monitor_alerts
+        st = monitor_alerts.read_states() or {}
+        rows = [{"host_name": "", "description": v["name"], "state": v["state"], "plugin_output": v["text"], "last_check": ""} for v in st.values()]
+        return [r for r in rows if state is None or r["state"] == state]
     cols = ["host_name", "description", "state", "plugin_output", "last_check"]
     q = "GET services\nColumns: " + " ".join(cols) + "\n"
     if host:
@@ -169,24 +174,28 @@ def _monitor(*args, timeout=60):
     return subprocess.run(["sudo", "-n", *env, "python3", MONITOR, *args], capture_output=True, text=True, timeout=timeout)
 
 
-def _supported() -> bool:
+def _provider() -> str:
+    """"checkmk" on x86-64 PCs, "netdata" on boards Checkmk has no image for (Raspberry Pi); helix-monitor decides, the page just asks."""
     import platform
-    return platform.machine() in ("x86_64", "AMD64")      # Checkmk publishes its server image for x86-64 only
+    try:
+        p = json.load(open(os.path.join(HELIX_CONFIG, "checkmk", "monitor.json"))).get("provider")
+    except (OSError, ValueError):
+        p = None
+    return p if p in ("checkmk", "netdata") else ("checkmk" if platform.machine() in ("x86_64", "AMD64") else "netdata")
 
 
 @router.get("/setup")
 def setup_status():
     if not os.path.exists(MONITOR):
         return {"installed": False, "job": _job_view()}
-    if not _supported():
-        import platform
-        return {"installed": True, "supported": False, "machine": platform.machine(), "enabled": False, "job": _job_view()}
+
     try:
         r = _monitor("status", timeout=30)
         d = json.loads(r.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
         d = {"enabled": False, "container": "unknown", "ready": False}
     d["installed"] = True
+    d["provider"] = d.get("provider") or _provider()
     d["job"] = _job_view()
     return d
 
@@ -229,7 +238,7 @@ def setup_disable():
 
 
 PROMPT = os.path.join(HELIX_CONFIG, "checkmk", "prompt.json")
-PROTECTED = {"checkmk"}          # the Checkmk container: removed only when the array is deleted (see reset_for_deleted_array)
+PROTECTED = {"checkmk", "netdata"}          # the Checkmk container: removed only when the array is deleted (see reset_for_deleted_array)
 
 
 def _write_prompt(state: str) -> None:
@@ -253,8 +262,8 @@ def prompt_info():
     except OSError:
         started = False
     import shutil
-    ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR) and _supported()
-    return {"show": ready and not enabled, "state": state, "enabled": enabled, "array_started": started}
+    ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR)
+    return {"show": ready and not enabled, "state": state, "enabled": enabled, "array_started": started, "provider": _provider()}
 
 
 @router.post("/prompt/later")
@@ -305,6 +314,8 @@ def alert_settings_put(req: dict):
 
 @router.get("/login")
 def setup_login():
+    if _provider() == "netdata":
+        raise HTTPException(404, "Netdata has no login")
     """The Checkmk web login, for the "Show login" button. (The Helix API is unauthenticated today, see CLAUDE.md §29.4.)"""
     try:
         c = json.load(open(CREDS))

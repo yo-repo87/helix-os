@@ -1,0 +1,19 @@
+# Hypervisor stack (VM Manager) — amd64. QEMU/KVM + libvirt + UEFI firmware + virtual TPM + browser console.
+# virtiofsd is not a Debian 12 package; QEMU ships /usr/lib/qemu/virtiofsd.
+qemu-system-x86
+qemu-utils
+libvirt-daemon-system
+libvirt-daemon-system-systemd
+libvirt-daemon-config-nwfilter
+iptables
+libvirt-daemon-driver-qemu
+libvirt-daemon-config-network
+libvirt-clients
+dnsmasq-base
+ovmf
+seabios
+ipxe-qemu
+swtpm
+swtpm-tools
+novnc
+python3-libvirt

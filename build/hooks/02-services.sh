@@ -24,6 +24,17 @@ systemctl disable cloud-init-local    2>/dev/null || true
 # Docker's data-root must live on the array/cache, never in the RAM root, so it is
 # started by helix-array-start (after the drives are mounted), not at boot.
 systemctl disable docker.service docker.socket containerd.service 2>/dev/null || true
+# Same for libvirt: its state lives on the array, so helix-vm-start (run by helix-array-start) starts it.
+systemctl disable libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket virtlogd.service virtlockd.service \
+    virtlogd.socket virtlockd.socket virtlogd-admin.socket virtlockd-admin.socket libvirt-guests.service 2>/dev/null || true
+systemctl mask libvirt-guests.service 2>/dev/null || true      # helix-vm-stop does the shutdown/hibernate itself
+if [ -f /etc/libvirt/qemu.conf ]; then
+    # qemu runs as root so it can open vDisks on any array disk and bind PCI/USB devices; no AppArmor profile confines it
+    sed -i -e 's|^#\?user = .*|user = "root"|' -e 's|^#\?group = .*|group = "root"|' -e 's|^#\?security_driver = .*|security_driver = "none"|' /etc/libvirt/qemu.conf
+    grep -q '^security_driver' /etc/libvirt/qemu.conf || echo 'security_driver = "none"' >> /etc/libvirt/qemu.conf
+    grep -q '^user = "root"' /etc/libvirt/qemu.conf || echo 'user = "root"' >> /etc/libvirt/qemu.conf
+    grep -q '^group = "root"' /etc/libvirt/qemu.conf || echo 'group = "root"' >> /etc/libvirt/qemu.conf
+fi
 
 # ── Write the helix-startup service (runs /boot/config/go like Unraid) ────────
 cat > /etc/systemd/system/helix-startup.service <<'EOF'

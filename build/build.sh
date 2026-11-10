@@ -80,6 +80,13 @@ PKG_LIST=$(grep -v '^\s*#' "$BUILD_DIR/config/packages-base.list" \
          | sed "s/KERNEL_PKG_PLACEHOLDER/$KERNEL_PKG/" \
          | tr '\n' ' ' | sed 's/ $//')
 
+# Hypervisor stack (VM Manager), per architecture
+VM_LIST="$BUILD_DIR/config/packages-vm-$ARCH.list"
+if [ -f "$VM_LIST" ]; then
+    VM_PKGS=$(grep -v '^\s*#' "$VM_LIST" | grep -v '^\s*$' | tr '\n' ' ' | sed 's/ $//')
+    PKG_LIST="$PKG_LIST $VM_PKGS"
+fi
+
 if [ "$FULL" = "yes" ]; then
     FULL_PKGS=$(grep -v '^\s*#' "$BUILD_DIR/config/packages-full.list" \
               | grep -v '^\s*$' | tr '\n' ' ' | sed 's/ $//')

@@ -1,0 +1,13 @@
+# Hypervisor stack (VM Manager) — arm64 (Raspberry Pi 5 and other KVM-capable boards).
+qemu-system-arm
+qemu-utils
+qemu-efi-aarch64
+libvirt-daemon-system
+libvirt-daemon-driver-qemu
+libvirt-daemon-config-network
+libvirt-clients
+dnsmasq-base
+swtpm
+swtpm-tools
+novnc
+python3-libvirt

@@ -17,6 +17,7 @@ cfg_get() { awk -F= -v sec="[$1]" -v k="$2" '
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$3" 2>/dev/null; }
 
 echo "==> Applying share configuration..."
+trap '[ -x /usr/local/sbin/helix-console-banner ] && /usr/local/sbin/helix-console-banner >/dev/null 2>&1 || true' EXIT   # keep the console banner's share list current
 
 # ── Ensure share directories exist ───────────────────────────────────────────
 if mountpoint -q "$USER_SHARE" 2>/dev/null; then

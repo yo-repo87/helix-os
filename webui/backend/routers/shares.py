@@ -58,6 +58,41 @@ def _parse_shares():
             shares[section][k.strip()] = v.strip()
     return shares
 
+def _host_ips() -> list[str]:
+    try:
+        r = subprocess.run(["ip", "-o", "-4", "addr", "show", "scope", "global"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    ips = []
+    for line in r.stdout.splitlines():
+        p = line.split()
+        if len(p) >= 4 and not re.match(r"^(lo|docker|veth|br-|br_|virbr|tap|wg|kube|cni)", p[1]):
+            ips.append(p[3].split("/")[0])
+    return ips
+
+
+@router.get("/connect")
+def connect_info():
+    """How to reach each exported share from another computer (shown on the Shares page; the console banner shows the same)."""
+    import socket
+    host, ips = socket.gethostname(), _host_ips()
+    addr = ips[0] if ips else host
+    out = []
+    for name, cfg in _parse_shares().items():
+        if name == "sharedefaults":
+            continue
+        e = {"name": name}
+        if cfg.get("smb") == "yes":
+            public = cfg.get("smb_security", "public") in ("public", "")
+            e["smb"] = {"windows": f"\\\\{addr}\\{name}", "url": f"smb://{addr}/{name}", "host_url": f"smb://{host}/{name}",
+                        "access": "guest access, no password" if public else "needs a user name and password"}
+        if cfg.get("nfs") == "yes":
+            e["nfs"] = {"export": f"{addr}:{USER_SHARE}/{name}", "mount": f"sudo mount -t nfs {addr}:{USER_SHARE}/{name} /mnt/{name}"}
+        if "smb" in e or "nfs" in e:
+            out.append(e)
+    return {"host": host, "ips": ips, "array_started": os.path.ismount(USER_SHARE), "shares": out}
+
+
 @router.get("/")
 def list_shares():
     shares = _parse_shares()

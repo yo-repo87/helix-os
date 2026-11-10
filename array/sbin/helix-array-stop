@@ -77,4 +77,5 @@ fi
 
 echo "stopped" > "$ARRAY_STATE"
 date -Iseconds >> "$ARRAY_STATE"
+[ -x /usr/local/sbin/helix-console-banner ] && /usr/local/sbin/helix-console-banner >/dev/null 2>&1 || true
 helix_log "Array stopped."

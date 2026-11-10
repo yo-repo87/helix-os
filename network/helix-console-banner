@@ -12,6 +12,10 @@ HOST="$(hostname 2>/dev/null || echo helix)"
 VER="$(cat /etc/helix-version 2>/dev/null || echo '')"
 
 # Global-scope IPv4 addresses on real links (skip loopback/virtual/container).
+HELIX_CONFIG="${HELIX_CONFIG:-/boot/config}"
+USER_SHARE="${USER_SHARE:-/mnt/user}"
+SHARES_CFG="$HELIX_CONFIG/shares.cfg"
+
 ips=$(ip -o -4 addr show scope global 2>/dev/null \
   | awk '$2 !~ /^(lo|docker|veth|br-|virbr|tap|wg|kube|cni)/ {split($4,a,"/"); print $2" "a[1]}')
 
@@ -29,6 +33,22 @@ ips=$(ip -o -4 addr show scope global 2>/dev/null \
   else
     printf '  Web UI:  no network link yet — check cabling / DHCP\n'
   fi
+  # File shares: only while the array is started (the shares do not exist before that).
+  if [ -f "$SHARES_CFG" ] && mountpoint -q "$USER_SHARE" 2>/dev/null; then
+    ip1=$(echo "$ips" | awk 'NR==1{print $2}')
+    lines=$(awk -v ip="${ip1:-$HOST}" '
+      function flush() { if (sec != "" && sec != "sharedefaults") {
+          if (smb == "yes") printf "      SMB  \\\\%s\\%s   (%s)\n", ip, sec, (secu == "public" || secu == "" ? "guest access, no password" : "needs a user name and password")
+          if (nfs == "yes") printf "      NFS  %s:%s/%s\n", ip, us, sec } }
+      /^\[/ { flush(); sec=$0; gsub(/[\[\]]/, "", sec); smb=""; nfs=""; secu=""; next }
+      /^smb=/ { sub(/^smb=/, ""); smb=$0 }
+      /^nfs=/ { sub(/^nfs=/, ""); nfs=$0 }
+      /^smb_security=/ { sub(/^smb_security=/, ""); secu=$0 }
+      END { flush() }' us="$USER_SHARE" "$SHARES_CFG")
+    if [ -n "$lines" ]; then
+      printf '\n  File shares:\n%s\n' "$lines"
+    fi
+  fi
   printf '\n'
   printf '  SSH:     root, after setting a password with passwd\n'
   printf '  Login:   root (blank password until you set one)\n'
@@ -40,5 +60,8 @@ cp "$ISSUE" /etc/issue.net 2>/dev/null || true
 # Redraw tty1 so the address appears on the already-displayed prompt. Nobody is
 # logged in at boot, so a restart is safe. Pass --no-restart to skip.
 if [ "${1:-}" != "--no-restart" ]; then
-  systemctl try-restart getty@tty1.service 2>/dev/null || true
+  # Never restart the getty under someone who is logged in on tty1.
+  if ! who 2>/dev/null | awk '{print $2}' | grep -qx tty1; then
+    systemctl try-restart getty@tty1.service 2>/dev/null || true
+  fi
 fi

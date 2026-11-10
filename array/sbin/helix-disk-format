@@ -1,0 +1,96 @@
+#!/bin/bash
+# helix-disk-format — Create a file system on every unmounted data and cache disk.
+#
+# Run only while the array is started. The web UI arms this from Main, after
+# "Yes, I want to do this". The file system is the format= value on that disk
+# in disks.cfg (xfs for a data disk and btrfs for a cache disk when unset).
+# A mounted disk is left alone. Parity is raw and is never formatted here.
+#
+# After a disk is formatted it is mounted. If the user share is not up yet,
+# mergerfs is started from the data disks that are mounted now. A share that
+# is already mounted keeps its current branches; the new disk joins it the
+# next time the array starts.
+
+set -euo pipefail
+source "$(dirname "$0")/helix-array-lib.sh"
+
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+[ -f "$ARRAY_STATE" ] && [ "$(head -1 "$ARRAY_STATE")" = "started" ] || {
+    echo "Array is not started"
+    exit 1
+}
+
+note() {
+    echo "[helix-disk-format] $*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [helix-array] $*" >> /var/log/helix-array.log 2>/dev/null || true
+}
+
+load_disk_config
+formatted=0
+
+format_one() {
+    local name="$1" dev="$2" mnt="$3" default_fs="$4" fs
+    if [ ! -b "$dev" ]; then
+        note "skip $name: $dev is not a block device"
+        return 0
+    fi
+    if mountpoint -q "$mnt"; then
+        note "skip $name: already mounted at $mnt"
+        return 0
+    fi
+    fs=$(cfg_get "$DISKS_CFG" "$name" "format")
+    [ -n "$fs" ] || fs="$default_fs"
+    case "$fs" in
+        xfs|btrfs|ext4) ;;
+        *) echo "bad filesystem '$fs' for $name"; exit 1 ;;
+    esac
+    note "Formatting $name ($dev) as $fs"
+    case "$fs" in
+        xfs)   mkfs.xfs -f "$dev" ;;
+        btrfs) mkfs.btrfs -f "$dev" ;;
+        ext4)  mkfs.ext4 -F "$dev" ;;
+    esac
+    mkdir -p "$mnt"
+    mount -t "$fs" -o defaults,noatime "$dev" "$mnt"
+    if id helix >/dev/null 2>&1 && [ "$(stat -c %U "$mnt")" = "root" ]; then
+        chown helix:helix "$mnt"
+        chmod 0775 "$mnt"
+    fi
+    note "Mounted $name at $mnt"
+    formatted=$((formatted + 1))
+}
+
+if [ "${#DATA_DISKS[@]}" -gt 0 ]; then
+    for i in "${!DATA_DISKS[@]}"; do
+        format_one "${DATA_DISKS[$i]}" "${DATA_DEVS[$i]}" "${DATA_MNTS[$i]}" xfs
+    done
+fi
+if [ "${#CACHE_DISKS[@]}" -gt 0 ]; then
+    for i in "${!CACHE_DISKS[@]}"; do
+        format_one "${CACHE_DISKS[$i]}" "${CACHE_DEVS[$i]}" "${CACHE_MNTS[$i]}" btrfs
+    done
+fi
+
+[ "$formatted" -gt 0 ] || { echo "No unmountable disk was formatted"; exit 2; }
+
+branches=()
+if [ "${#DATA_MNTS[@]}" -gt 0 ]; then
+    for mnt in "${DATA_MNTS[@]}"; do
+        mountpoint -q "$mnt" && branches+=("$mnt")
+    done
+fi
+if [ "${#branches[@]}" -eq 0 ]; then
+    note "No data disk is mounted, so the user share stays down."
+elif mountpoint -q "$USER_SHARE"; then
+    note "The user share is already mounted. A newly formatted data disk joins it the next time the array starts."
+else
+    joined=$(IFS=:; echo "${branches[*]}")
+    mergerfs \
+        -o defaults,allow_other,use_ino,cache.files=partial \
+        -o dropcacheonclose=true,category.create=mfs \
+        -o minfreespace=4G,fsname=helix-user \
+        "$joined" "$USER_SHARE"
+    note "mergerfs started: $joined → $USER_SHARE"
+fi
+
+note "Formatted $formatted disk(s)."

@@ -1,22 +1,28 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import asyncio, glob, subprocess, os, json, re, tempfile, time
 from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE, STATE_DIR
-from services import array_state
+from services import array_state, disks_cfg
 
 router = APIRouter(prefix="/api/array", tags=["array"])
+
+def _helper_env() -> list[str]:
+    """Vars the array scripts read. sudo does not keep the backend's environment."""
+    return [f"HELIX_CONFIG={HELIX_CONFIG}", f"STATE_DIR={STATE_DIR}",
+            f"MNT_BASE={MNT_BASE}", f"USER_SHARE={USER_SHARE}"]
+
 
 def _sbin_cmd(script: str, *args) -> list:
     """Build a sudo invocation for an array helper. The helpers mount disks /
     start mergerfs and require root; the backend runs as the unprivileged 'helix'
-    user (NOPASSWD sudo), so run them via sudo with HELIX_CONFIG passed through."""
+    user (NOPASSWD sudo), so run them via sudo with the config paths passed through."""
     path = os.path.join(ARRAY_SBIN, script)
-    return ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", "/bin/bash", path, *args]
+    return ["sudo", "-n", "env", *_helper_env(), "/bin/bash", path, *args]
 
 
 def _run_sbin(script: str, *args, env_override: dict | None = None) -> tuple[int, str, str]:
-    cmd = ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}"]
+    cmd = ["sudo", "-n", "env", *_helper_env()]
     if env_override:
         cmd += [f"{k}={v}" for k, v in env_override.items()]
     cmd += ["/bin/bash", os.path.join(ARRAY_SBIN, script), *args]
@@ -42,14 +48,41 @@ def _usage(path: str) -> dict | None:
             "pct": round(100 * used / size, 1) if size else 0.0}
 
 
+def _disk_io() -> dict:
+    """Completed read and write counts from /proc/diskstats.
+
+    Field 1 (index 3) is reads completed, field 6 (index 7) is writes completed.
+    The kernel does not publish an unrecoverable-error counter here.
+    """
+    out = {}
+    try:
+        lines = open("/proc/diskstats").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 11:
+            continue
+        try:
+            out[parts[2]] = {"reads": int(parts[3]), "writes": int(parts[7])}
+        except ValueError:
+            continue
+    return out
+
+
 def _add_usage(d: dict) -> dict:
     us = d.get("user_share") or {}
     if us.get("mounted"):
         us.update(_usage(USER_SHARE) or {})
+    io = _disk_io()
     for key in ("disks", "parity", "cache"):
         for e in d.get(key, []) or []:
             if e.get("mounted"):
                 e.update(_usage(os.path.join(MNT_BASE, e["name"])) or {})
+            dev = e.get("device") or ""
+            base = os.path.basename(os.path.realpath(dev)) if dev else ""
+            if base in io:
+                e.update(io[base])
     return d
 
 
@@ -152,14 +185,163 @@ def _containers_running() -> int:
         return 0
 
 
+FORMAT_JOB = os.path.join(STATE_DIR, "format_job")
+_DISK_NAME = re.compile(r"^(parity|disk|cache)\d+$")
+_FS_CHOICES = ("xfs", "btrfs", "ext4")
+
+
+def _refuse(status: int, detail: str) -> JSONResponse:
+    return JSONResponse({"detail": detail}, status_code=status)
+
+
+def _cfg_text() -> str:
+    try:
+        return open(DISKS_CFG).read()
+    except OSError:
+        return ""
+
+
+def _assigned_disks() -> list[dict]:
+    """Every assigned disk, in file order, with the chosen file system."""
+    out = []
+    for name, items in disks_cfg.parse_sections(_cfg_text()):
+        if not _DISK_NAME.match(name):
+            continue
+        fields = dict(items)
+        dev = fields.get("device", "")
+        if not dev:
+            continue
+        if name.startswith("parity"):
+            role = "parity"
+        elif name.startswith("cache"):
+            role = "cache"
+        else:
+            role = "data"
+        out.append({
+            "name": name,
+            "device": dev,
+            "role": role,
+            "format": fields.get("format", ""),
+            "present": os.path.exists(dev),
+        })
+    return out
+
+
+def _blkid_type(dev: str) -> str:
+    try:
+        r = subprocess.run(["blkid", "-s", "TYPE", "-o", "value", dev],
+                           capture_output=True, text=True, timeout=5)
+        return (r.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _path_mounted(path: str) -> bool:
+    try:
+        r = subprocess.run(["findmnt", "-n", path], capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _disk_mounted(dev: str, name: str) -> bool:
+    if _path_mounted(os.path.join(MNT_BASE, name)):
+        return True
+    real = os.path.realpath(dev) if dev and os.path.exists(dev) else dev
+    if not real:
+        return False
+    try:
+        r = subprocess.run(["findmnt", "-n", "-S", real], capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _unmountable() -> list[dict]:
+    """Data and cache disks that are present but not mounted while the array is up.
+
+    Parity is raw on purpose, so a missing file system there is not unmountable.
+    """
+    out = []
+    for d in _assigned_disks():
+        if d["role"] == "parity" or not d["present"]:
+            continue
+        if _disk_mounted(d["device"], d["name"]):
+            continue
+        real = os.path.realpath(d["device"])
+        out.append({**d, "device_real": real, "fstype": _blkid_type(real)})
+    return out
+
+
+def _format_proc_running() -> bool:
+    try:
+        r = subprocess.run(["pgrep", "-f", "helix-disk-format"],
+                           capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    for pid in r.stdout.split():
+        try:
+            cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\x00", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "helix-disk-format" in cmd and "pgrep" not in cmd:
+            return True
+    return False
+
+
+def _format_job() -> tuple[str | None, str]:
+    """('running'|'error'|None, message). A stale 'running' file with no process is an error."""
+    try:
+        st = os.stat(FORMAT_JOB)
+        text = open(FORMAT_JOB).read().strip()
+    except OSError:
+        return None, ""
+    if text == "running":
+        if time.time() - st.st_mtime > 20 and not _format_proc_running():
+            return "error", "Format stopped before it finished."
+        return "running", ""
+    if text.startswith("error:"):
+        return "error", text.split(":", 1)[1].strip()
+    return None, ""
+
+
+def _write_format_job(text: str) -> None:
+    os.makedirs(os.path.dirname(FORMAT_JOB), exist_ok=True)
+    with open(FORMAT_JOB, "w") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+
+
+def _clear_format_job() -> None:
+    try:
+        os.unlink(FORMAT_JOB)
+    except OSError:
+        pass
+
+
+def _run_format() -> None:
+    try:
+        rc, out, err = _run_sbin("helix-disk-format")
+        if rc != 0:
+            msg = (err or out or f"exit {rc}").strip()
+            _write_format_job("error: " + msg[-500:])
+        else:
+            _clear_format_job()
+    except Exception as e:
+        _write_format_job("error: " + str(e))
+
+
 def _operation() -> dict:
     roles = _disk_roles()
     state = _array_state()
+    fmt_state, fmt_err = _format_job() if state == "started" else (None, "")
     return array_state.compute({
         "state": state, "transition": _transition(), **roles,
         "parity_running": _snapraid_running(), "parity_elapsed": _parity_elapsed(),
         "mover_running": _mover_running(), "synced": _parity_synced(),
         "containers_running": _containers_running() if state == "started" else 0,
+        "unmountable": _unmountable() if state == "started" else [],
+        "formatting": fmt_state == "running",
+        "format_error": fmt_err if fmt_state == "error" else "",
     })
 
 
@@ -370,6 +552,16 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     all_devs = req.parity + req.data + req.cache
     if len(set(all_devs)) != len(all_devs):
         raise HTTPException(400, "A device was assigned to more than one slot.")
+    saved = disks_cfg.formats_by_device(_cfg_text())
+    resolved = {}
+    for dev, fmt in saved.items():
+        resolved[dev] = fmt
+        if os.path.exists(dev):
+            resolved[os.path.realpath(dev)] = fmt
+
+    def keep(dev: str, default: str) -> str:
+        return resolved.get(dev) or resolved.get(os.path.realpath(dev) if os.path.exists(dev) else dev) or default
+
     req.parity = [_stable_path(d) for d in req.parity]
     req.data   = [_stable_path(d) for d in req.data]
     req.cache  = [_stable_path(d) for d in req.cache]
@@ -377,9 +569,9 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     for i, dev in enumerate(req.parity, 1):
         lines += [f"[parity{i}]", f"device={dev}", ""]
     for i, dev in enumerate(req.data, 1):
-        lines += [f"[disk{i}]", f"device={dev}", f"format={req.fmt}", ""]
+        lines += [f"[disk{i}]", f"device={dev}", f"format={keep(dev, req.fmt)}", ""]
     for i, dev in enumerate(req.cache, 1):
-        lines += [f"[cache{i}]", f"device={dev}", f"format={req.cache_fmt}", ""]
+        lines += [f"[cache{i}]", f"device={dev}", f"format={keep(dev, req.cache_fmt)}", ""]
     err = _write_disks_cfg("\n".join(lines) + "\n")
     if err:
         # Return 200 with ok=false (not a 500): BaseHTTPMiddleware can turn a
@@ -389,6 +581,144 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     background_tasks.add_task(_refresh_drive_cache)
     return {"ok": True, "parity": req.parity, "data": req.data,
             "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
+
+
+def _disk_or_404(name: str) -> dict | JSONResponse:
+    if not _DISK_NAME.match(name):
+        return _refuse(404, f"No disk named {name}")
+    for d in _assigned_disks():
+        if d["name"] == name:
+            return d
+    return _refuse(404, f"No disk named {name}")
+
+
+def _disk_view(d: dict) -> dict:
+    """What the disk page shows. The file system can be changed only while the
+    array is stopped and the disk has no file system yet."""
+    state = _array_state()
+    real = os.path.realpath(d["device"]) if d["present"] else d["device"]
+    mounted = _disk_mounted(d["device"], d["name"]) if d["present"] else False
+    detected = _blkid_type(real) if d["present"] else ""
+    chosen = d["format"] or ("btrfs" if d["role"] == "cache" else "xfs")
+    names = [x["name"] for x in _assigned_disks()]
+    idx = names.index(d["name"])
+    editable = state == "stopped" and d["role"] != "parity" and d["present"] and not mounted and not detected
+    if d["role"] == "parity":
+        erase_enabled, erase_reason = False, "Parity has no file system. SnapRAID uses the raw device."
+        note = "Parity is a raw device. There is nothing to format on this page."
+    elif not d["present"]:
+        erase_enabled, erase_reason = False, "The disk is not present."
+        note = "This disk is assigned, but the device is not connected."
+    elif state != "stopped":
+        erase_enabled, erase_reason = False, "Erase is available when the array is stopped."
+        if mounted:
+            note = f"File system: {detected or chosen}, mounted. Stop the array to change it."
+        else:
+            note = ("The array is started and this disk is unmountable. "
+                    "Use Format on Main. The button stays off until you tick Yes, I want to do this.")
+    elif detected or mounted:
+        erase_enabled, erase_reason = True, ""
+        note = (f"This disk already has a {detected or 'file'} system. "
+                "Erase it to choose a different one. Erase removes the file system and does not unassign the disk.")
+    else:
+        erase_enabled, erase_reason = True, ""
+        note = ("Apply saves this choice. It does not format the disk. "
+                "Start the array, then use Format on Main. Format stays off until you tick Yes, I want to do this.")
+    return {
+        "name": d["name"],
+        "device": d["device"],
+        "device_real": real,
+        "role": d["role"],
+        "present": d["present"],
+        "mounted": mounted,
+        "fstype": detected,
+        "fs": chosen if d["role"] != "parity" else "",
+        "fs_choices": list(_FS_CHOICES),
+        "fs_editable": editable,
+        "erase_enabled": erase_enabled,
+        "erase_reason": erase_reason,
+        "note": note,
+        "array_state": state,
+        "prev": names[idx - 1] if idx > 0 else None,
+        "next": names[idx + 1] if idx + 1 < len(names) else None,
+    }
+
+
+@router.get("/disk/{name}")
+def disk_page(name: str):
+    d = _disk_or_404(name)
+    if isinstance(d, JSONResponse):
+        return d
+    return _disk_view(d)
+
+
+class FsReq(BaseModel):
+    fs: str
+
+
+@router.post("/disk/{name}/filesystem")
+def set_disk_filesystem(name: str, req: FsReq):
+    """Save the file system to create later. Does not format the disk."""
+    d = _disk_or_404(name)
+    if isinstance(d, JSONResponse):
+        return d
+    view = _disk_view(d)
+    if req.fs not in _FS_CHOICES:
+        return _refuse(400, "File system must be xfs, btrfs, or ext4.")
+    if not view["fs_editable"]:
+        return _refuse(409, "The file system can be changed only while the array is stopped and the disk has no file system.")
+    new = disks_cfg.rewrite_key(_cfg_text(), name, "format", req.fs)
+    if new is None:
+        return _refuse(404, f"No disk named {name}")
+    err = _write_disks_cfg(new)
+    if err:
+        return _refuse(409, err)
+    return {"ok": True, "name": name, "fs": req.fs}
+
+
+class EraseReq(BaseModel):
+    confirm: str = ""
+
+
+@router.post("/disk/{name}/erase")
+def erase_disk(name: str, req: EraseReq):
+    """Wipe the file-system signature. The disk stays assigned. Type the disk name to confirm."""
+    d = _disk_or_404(name)
+    if isinstance(d, JSONResponse):
+        return d
+    view = _disk_view(d)
+    if req.confirm != name:
+        return _refuse(409, "Incorrect confirmation")
+    if not view["erase_enabled"]:
+        return _refuse(409, view["erase_reason"] or "Erase is not available for this disk.")
+    if view["mounted"] or _disk_mounted(d["device"], d["name"]):
+        return _refuse(409, "The disk is mounted. Stop the array before erasing it.")
+    dev = os.path.realpath(d["device"])
+    try:
+        r = subprocess.run(["sudo", "-n", "wipefs", "-a", dev],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return _refuse(409, str(e))
+    if r.returncode != 0:
+        return _refuse(409, (r.stderr or r.stdout or "wipefs failed").strip()[-400:])
+    return {"ok": True, "name": name, "device": dev}
+
+
+@router.post("/format")
+def format_unmountable(confirm: bool = False, background_tasks: BackgroundTasks = None):
+    """Create the chosen file system on every unmountable data and cache disk."""
+    if _array_state() != "started":
+        return _refuse(409, "Format is available when the array is started and a disk is unmountable.")
+    if _format_job()[0] == "running":
+        return {"ok": True, "message": "Format already running"}
+    disks = _unmountable()
+    if not disks:
+        return _refuse(409, "No unmountable disks.")
+    if not confirm:
+        return _refuse(409, "Confirmation required: Yes, I want to do this")
+    _write_format_job("running")
+    background_tasks.add_task(_run_format)
+    return {"ok": True, "message": "Format started", "disks": [d["name"] for d in disks]}
 
 
 # ── Parity check SSE streaming ────────────────────────────────────────────────

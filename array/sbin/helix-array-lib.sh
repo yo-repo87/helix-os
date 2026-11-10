@@ -6,9 +6,10 @@ HELIX_CONFIG="${HELIX_CONFIG:-/boot/config}"
 DISKS_CFG="$HELIX_CONFIG/disks.cfg"
 SHARES_CFG="$HELIX_CONFIG/shares.cfg"
 SNAPRAID_CONF="/etc/snapraid.conf"
-MNTBASE="/mnt"
-USER_SHARE="$MNTBASE/user"
-STATE_DIR="/var/local/helix"
+# The backend passes these. A shell run with none set keeps the image defaults.
+MNTBASE="${MNT_BASE:-/mnt}"
+USER_SHARE="${USER_SHARE:-$MNTBASE/user}"
+STATE_DIR="${STATE_DIR:-/var/local/helix}"
 ARRAY_STATE="$STATE_DIR/array_state"   # "started" | "stopped"
 
 # ── Parse a simple INI file ───────────────────────────────────────────────────

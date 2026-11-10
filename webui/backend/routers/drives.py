@@ -268,30 +268,12 @@ class FormatReq(BaseModel):
 
 @router.post("/{name}/format")
 def format_drive(name: str, req: FormatReq):
-    """Format a drive. DESTRUCTIVE — drive must not be mounted."""
-    device = _device_for(name)
-    if req.fs not in ("xfs", "btrfs", "ext4"):
-        raise HTTPException(400, "fs must be xfs, btrfs, or ext4")
-
-    # Safety: refuse if mounted
-    mnt = subprocess.run(["findmnt", "-n", device], capture_output=True, text=True)
-    if mnt.returncode == 0 and mnt.stdout.strip():
-        raise HTTPException(409, f"{device} is currently mounted — unmount first")
-
-    label_args: list[str] = []
-    if req.label:
-        label_args = ["-L", req.label] if req.fs in ("xfs", "ext4") else ["-L", req.label]
-
-    if req.fs == "xfs":
-        cmd = ["mkfs.xfs"] + (["-f"] if req.force else []) + label_args + [device]
-    elif req.fs == "btrfs":
-        cmd = ["mkfs.btrfs"] + (["-f"] if req.force else []) + label_args + [device]
-    else:
-        cmd = ["mkfs.ext4"] + label_args + [device]
-
-    rc, out, err = _sudo(*cmd, timeout=120)
-    return {"ok": rc == 0, "device": device, "fs": req.fs,
-            "output": (out or err).strip()[-500:]}
+    """The one-click format dialog is gone. Formatting happens from Main."""
+    raise HTTPException(
+        409,
+        "Choose the file system on the disk page, start the array, then use Format on Main. "
+        "Format stays off until you tick Yes, I want to do this.",
+    )
 
 
 # ── Pre-clear ────────────────────────────────────────────────────────────────

@@ -65,20 +65,20 @@ for i in "${!DATA_DISKS[@]}"; do
     MOUNTED_MNTS+=("$mnt")
 done
 
-[ ${#MOUNTED_MNTS[@]} -eq 0 ] && { helix_err "No data drives mounted — cannot start array."; exit 1; }
-
 # ── Generate SnapRAID config ──────────────────────────────────────────────────
 generate_snapraid_conf
 helix_log "SnapRAID config written to $SNAPRAID_CONF"
 
 # ── Start mergerfs (user share) ───────────────────────────────────────────────
-# Policy: ff (first found) for reads, mfs (most free space) for creates
-# Branches are all mounted data disk paths
-BRANCHES=$(IFS=:; echo "${MOUNTED_MNTS[*]}")
-
-if mountpoint -q "$USER_SHARE"; then
+# A brand-new disk has no file system yet. The array still comes online so Main
+# can show it as unmountable and Format can create the file system. mergerfs
+# needs at least one mounted data disk, so it waits until one exists.
+if [ ${#MOUNTED_MNTS[@]} -eq 0 ]; then
+    helix_log "WARN: No data drive has a filesystem. The array stays online so Main can format the unmountable disks."
+elif mountpoint -q "$USER_SHARE"; then
     helix_log "mergerfs already mounted at $USER_SHARE"
 else
+    BRANCHES=$(IFS=:; echo "${MOUNTED_MNTS[*]}")
     mergerfs \
         -o defaults,allow_other,use_ino,cache.files=partial \
         -o dropcacheonclose=true,category.create=mfs \
@@ -130,13 +130,19 @@ if command -v dockerd >/dev/null 2>&1; then
     for m in "${CACHE_MNTS[@]}"; do
         if mountpoint -q "$m"; then droot="$m/system/docker"; break; fi
     done
-    [ -n "$droot" ] || droot="${MOUNTED_MNTS[0]}/system/docker"
-    mkdir -p "$droot" /etc/docker
-    printf '{\n  "data-root": "%s"\n}\n' "$droot" > /etc/docker/daemon.json
-    if systemctl start docker 2>/dev/null; then
-        helix_log "Docker started (data-root $droot)"
+    if [ -z "$droot" ] && [ ${#MOUNTED_MNTS[@]} -gt 0 ]; then
+        droot="${MOUNTED_MNTS[0]}/system/docker"
+    fi
+    if [ -z "$droot" ]; then
+        helix_log "WARN: Docker left stopped — no formatted disk for its data."
     else
-        helix_log "WARN: docker failed to start (journalctl -u docker)"
+        mkdir -p "$droot" /etc/docker
+        printf '{\n  "data-root": "%s"\n}\n' "$droot" > /etc/docker/daemon.json
+        if systemctl start docker 2>/dev/null; then
+            helix_log "Docker started (data-root $droot)"
+        else
+            helix_log "WARN: docker failed to start (journalctl -u docker)"
+        fi
     fi
 fi
 

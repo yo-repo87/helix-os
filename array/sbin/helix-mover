@@ -1,0 +1,294 @@
+#!/bin/bash
+# helix-mover — move cache files onto the array.
+#
+# Behaviour taken from Unraid's mover (bzmodules local/sbin/mover), reimplemented
+# here so we do not ship that script:
+#   - top-level files on the cache are left where they are
+#   - hidden top-level directories are left where they are
+#   - a file a process has open, or that backs a loop device, is left in place
+#   - a file a container bind-mounts is left in place
+#   - if the same relative path already exists on the array, both copies stay
+#   - a failed copy does not delete the source (rsync only removes files it
+#     transferred; it does not keep a partial destination)
+#   - empty directories left behind are removed; the share directory itself stays
+#
+# Helix has no per-share "use cache" setting yet, so every other top-level
+# directory is a share to move. The docker data-root is never one of them:
+# array start stores it at <cache>/system/docker, and a data-root from
+# /etc/docker/daemon.json is skipped too.
+#
+# Usage: helix-mover [--dry-run] --cache PATH --dest PATH
+
+set -uo pipefail
+
+DRY=0
+CACHE=""
+DEST=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY=1 ;;
+        --cache) CACHE=${2:-}; shift ;;
+        --dest)  DEST=${2:-}; shift ;;
+        -h|--help)
+            echo "Usage: helix-mover [--dry-run] --cache PATH --dest PATH"
+            exit 0
+            ;;
+        *)
+            echo "mover: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [ -z "$CACHE" ] || [ -z "$DEST" ]; then
+    echo "mover: --cache and --dest are required" >&2
+    exit 2
+fi
+
+CACHE=$(realpath -m "$CACHE")
+DEST=$(realpath -m "$DEST")
+
+case "$DEST" in
+    "$CACHE"|"$CACHE"/*)
+        echo "mover: refuse: destination is inside the cache ($DEST)" >&2
+        exit 2
+        ;;
+esac
+case "$CACHE" in
+    "$DEST"/*)
+        echo "mover: refuse: cache is inside the destination ($CACHE)" >&2
+        exit 2
+        ;;
+esac
+
+if [ ! -d "$CACHE" ]; then
+    echo "mover: cache not found: $CACHE" >&2
+    exit 2
+fi
+if [ "$DRY" -eq 0 ] && ! mkdir -p "$DEST"; then
+    echo "mover: cannot create destination: $DEST" >&2
+    exit 2
+fi
+
+# First path component of the docker data-root when it lives on this cache.
+DOCKER_TOP=""
+if [ -r /etc/docker/daemon.json ]; then
+    droot=$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /etc/docker/daemon.json | head -1)
+    if [ -n "$droot" ]; then
+        droot=$(realpath -m "$droot")
+        case "$droot" in
+            "$CACHE")
+                echo "mover: refuse: cache is the docker data-root" >&2
+                exit 2
+                ;;
+            "$CACHE"/*)
+                rel=${droot#"$CACHE"/}
+                DOCKER_TOP=${rel%%/*}
+                ;;
+        esac
+    fi
+fi
+
+MOVED=0
+IN_USE=0
+EXISTS=0
+
+# Record every open path under $1 into file $2 (one absolute path per line).
+# One Python pass: a bash readlink per fd forks tens of thousands of times.
+# /proc entries of other users are visible only when this runs as root.
+# Docker is best-effort and time-bounded so a stuck daemon cannot stall the mover.
+collect_busy() {
+    local root=$1 out=$2
+    python3 - "$root" "$out" <<'PY'
+import os, sys
+root, out = sys.argv[1], sys.argv[2]
+found = set()
+
+def add(p):
+    if not p:
+        return
+    if p.endswith(" (deleted)"):
+        p = p[:-10]
+    if p == root or p.startswith(root + os.sep):
+        found.add(p)
+
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    base = "/proc/" + pid
+    for name in ("cwd", "exe"):
+        try:
+            add(os.readlink(base + "/" + name))
+        except OSError:
+            pass
+    fd_dir = base + "/fd"
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:
+        fds = []
+    for fd in fds:
+        try:
+            add(os.readlink(fd_dir + "/" + fd))
+        except OSError:
+            pass
+    try:
+        with open(base + "/maps", "r", errors="replace") as fh:
+            for line in fh:
+                parts = line.split(None, 5)
+                if len(parts) < 6:
+                    continue
+                add(parts[5].strip())
+    except OSError:
+        pass
+
+block = "/sys/block"
+if os.path.isdir(block):
+    for name in os.listdir(block):
+        if not name.startswith("loop"):
+            continue
+        try:
+            with open(os.path.join(block, name, "loop", "backing_file")) as fh:
+                add(fh.read().strip())
+        except OSError:
+            pass
+
+with open(out, "w") as fh:
+    for p in sorted(found):
+        fh.write(p + "\n")
+PY
+    if command -v docker >/dev/null 2>&1 && timeout 3 docker info >/dev/null 2>&1; then
+        local id src
+        while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            while IFS= read -r src; do
+                [ -n "$src" ] || continue
+                src=$(realpath -m "$src" 2>/dev/null) || continue
+                case "$src" in
+                    "$root"|"$root"/*) printf '%s\n' "$src" >>"$out" ;;
+                esac
+            done < <(timeout 3 docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$id" 2>/dev/null)
+        done < <(timeout 3 docker ps -aq 2>/dev/null)
+        sort -u -o "$out" "$out"
+    fi
+}
+
+path_is_busy() {
+    local f=$1 list=$2 b
+    while IFS= read -r b; do
+        [ -n "$b" ] || continue
+        case "$f" in
+            "$b"|"$b"/*) return 0 ;;
+        esac
+    done <"$list"
+    return 1
+}
+
+skip_top() {
+    local name=$1
+    case "$name" in
+        .*) echo "mover: skipping $name (hidden top-level directory)"; return 0 ;;
+        lost+found) echo "mover: skipping lost+found"; return 0 ;;
+        system) echo "mover: skipping system (docker data-root lives here)"; return 0 ;;
+    esac
+    if [ -n "$DOCKER_TOP" ] && [ "$name" = "$DOCKER_TOP" ]; then
+        echo "mover: skipping $name (docker data-root)"
+        return 0
+    fi
+    return 1
+}
+
+move_share() {
+    local src=$1 name=$2 dst="$DEST/$name"
+    local list rel f
+    list=$(mktemp)
+
+    local share_in_use=0 share_exists=0 share_move=0
+    while IFS= read -r -d '' f; do
+        rel=${f#"$src"/}
+        if path_is_busy "$f" "$BUSY"; then
+            echo "mover: not moved (in use): $name/$rel"
+            share_in_use=$((share_in_use + 1))
+            continue
+        fi
+        if [ -e "$dst/$rel" ] || [ -L "$dst/$rel" ]; then
+            share_exists=$((share_exists + 1))
+            continue
+        fi
+        printf '%s\0' "$rel" >>"$list"
+        share_move=$((share_move + 1))
+    done < <(find "$src" -mindepth 1 \( -type f -o -type l \) -print0)
+
+    if [ "$DRY" -eq 1 ]; then
+        echo "mover: dry-run $name: would move $share_move, in use $share_in_use, already on array $share_exists"
+        share_move=0
+    elif [ "$share_move" -gt 0 ]; then
+        if ! command -v rsync >/dev/null 2>&1; then
+            echo "mover: rsync is not installed" >&2
+            rm -f "$list"
+            exit 2
+        fi
+        mkdir -p "$dst"
+        # --files-from lists exactly the files that are safe to transfer.
+        # --remove-source-files deletes a source only after that transfer succeeds.
+        rsync -aHX --from0 --files-from="$list" --remove-source-files "$src/" "$dst/"
+        local rc=$?
+        local actually=0
+        while IFS= read -r -d '' rel; do
+            if [ ! -e "$src/$rel" ] && [ ! -L "$src/$rel" ]; then
+                actually=$((actually + 1))
+            else
+                echo "mover: not moved (copy failed): $name/$rel"
+            fi
+        done <"$list"
+        share_move=$actually
+        if [ "$rc" -ne 0 ]; then
+            echo "mover: rsync reported errors on $name (exit $rc)"
+        fi
+    else
+        echo "mover: $name: nothing to move (in use $share_in_use, already on array $share_exists)"
+    fi
+    if [ "$DRY" -eq 0 ]; then
+        # Drop directories that are empty now. Keep the share directory.
+        find "$src" -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
+    fi
+
+    MOVED=$((MOVED + share_move))
+    IN_USE=$((IN_USE + share_in_use))
+    EXISTS=$((EXISTS + share_exists))
+    rm -f "$list"
+}
+
+echo "mover: started cache=$CACHE dest=$DEST dry_run=$DRY"
+
+# Top-level files are never moved.
+top_files=0
+while IFS= read -r -d '' _f; do
+    top_files=$((top_files + 1))
+done < <(find "$CACHE" -maxdepth 1 \( -type f -o -type l \) -print0)
+if [ "$top_files" -gt 0 ]; then
+    echo "mover: leaving $top_files top-level file(s) on the cache"
+fi
+
+BUSY=$(mktemp)
+trap 'rm -f "$BUSY"' EXIT
+collect_busy "$CACHE" "$BUSY"
+
+shopt -s nullglob
+for dir in "$CACHE"/* "$CACHE"/.[!.]* "$CACHE"/..?*; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    if skip_top "$name"; then
+        continue
+    fi
+    move_share "$dir" "$name"
+done
+
+echo "mover: RESULT moved=$MOVED in_use=$IN_USE exists=$EXISTS"
+if [ "$DRY" -eq 1 ]; then
+    echo "mover: dry-run finished"
+else
+    echo "mover: finished"
+fi
+exit 0

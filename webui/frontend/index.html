@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Helix OS</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -88,6 +89,9 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
+/* Author `display:` beats the user-agent [hidden] rule, which left the
+   dashboard tiles visible on every other page. */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   font-family: 'Inter', system-ui, sans-serif;
@@ -147,7 +151,72 @@ body::before {
   transition: background .15s, color .15s;
 }
 .hdr-btn:hover { background: var(--surface-hi); color: var(--fg); }
+a.hdr-btn { text-decoration: none; }
 #menu-btn { display: none; }
+.hdr-search { position: relative; flex: 1; max-width: 260px; margin-left: 12px; }
+.hdr-search-input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  color: var(--fg); border-radius: 5px; padding: 5px 10px; font: inherit; font-size: 12px;
+}
+.hdr-search-input:focus { outline: none; border-color: var(--accent); }
+.hdr-jump {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 220;
+  background: var(--surface); border: 1px solid var(--border-str); border-radius: 6px;
+  max-height: 320px; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.hdr-jump button {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--fg); padding: 7px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.hdr-jump button:hover, .hdr-jump button.on { background: var(--accent-dim); color: var(--accent); }
+.hdr-jump .jump-hint { display: block; font-size: 10px; color: var(--fg-dim); }
+.hdr-tools { display: flex; gap: 6px; margin-left: 10px; }
+.nav-item.nav-unavail { opacity: .5; }
+.nav-note { font-size: 10px; line-height: 1.35; color: var(--fg-dim); padding: 0 14px 8px 29px; }
+.dash-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+.drives-grid.compact { display: flex; flex-direction: column; gap: 4px; }
+.glance-line {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+}
+.glance-line .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 8px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.data-table th, .data-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.data-table th { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); white-space: nowrap; }
+.data-table tr:last-child td { border-bottom: 0; }
+.data-table tr:hover td { background: var(--surface-hi); }
+button.orb {
+  width: 16px; height: 16px; padding: 0; border: none; cursor: pointer; vertical-align: middle;
+  background: var(--ok); border-radius: 50%;
+}
+button.orb.down { background: var(--fg-dim); }
+button.orb.miss {
+  width: auto; height: auto; background: transparent; color: var(--err);
+  font-weight: 700; font-size: 14px; line-height: 1; border-radius: 2px; cursor: default;
+}
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.tool-card {
+  display: block; text-decoration: none; color: var(--fg);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+}
+.tool-card:hover { border-color: var(--accent); }
+.tool-card.nav-unavail { opacity: .55; }
+.tool-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.tool-card p { font-size: 11px; color: var(--fg-muted); margin: 0; }
+.settings-jump { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+#job-log {
+  position: fixed; right: 16px; bottom: 36px; z-index: 120;
+  width: min(480px, calc(100vw - 24px)); max-height: 320px;
+  background: var(--surface); border: 1px solid var(--border-str); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.4); display: flex; flex-direction: column;
+}
+#job-log-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px; }
+#job-log-body {
+  margin: 0; padding: 8px 12px; overflow: auto; flex: 1; min-height: 80px; max-height: 240px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: pre-wrap; color: var(--fg-muted);
+}
+#footer-opjob { cursor: pointer; color: var(--accent); }
 
 /* ── Sidebar ───────────────────────────────────────────────────── */
 nav {
@@ -598,12 +667,24 @@ input:checked + .toggle-track::after { transform: translateX(14px); background: 
            padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; }
 .aop-row.aop-ok { border-left-color: var(--ok); } .aop-row.aop-warn { border-left-color: var(--warn); }
 .aop-row.aop-error { border-left-color: var(--err); } .aop-row.aop-busy { border-left-color: var(--accent); }
-.aop-status { font-size: 13px; font-weight: 600; }
+.aop-status { font-size: 13px; font-weight: 600; min-width: 0; }
+.aop-detail { font-size: 11.5px; font-weight: 400; color: var(--fg-muted); font-family: 'JetBrains Mono', monospace; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aop-ctl { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
 .aop-ctl label { font-size: 11px; color: var(--fg-muted); display: flex; gap: 5px; align-items: flex-start; max-width: 230px; }
 .aop-explain { font-size: 12px; color: var(--fg-muted); line-height: 1.45; }
 .aop-explain .aop-warn-line { display: block; margin-top: 3px; color: var(--warn); }
 .aop-empty { font-size: 12px; color: var(--fg-dim); padding: 8px 2px; }
+.settings-btn:disabled, .ctr-btn:disabled { opacity: .45; cursor: not-allowed; }
+.settings-btn:disabled:hover { background: var(--accent-dim); color: var(--accent); }
+a.disk-link { color: inherit; font-weight: 600; text-decoration: none; border-bottom: 1px solid var(--border-str); }
+a.disk-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.disk-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.disk-pager { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 650; }
+.disk-pager a { color: var(--accent); text-decoration: none; font-size: 18px; line-height: 1; }
+.disk-fields { display: grid; grid-template-columns: 180px 1fr; gap: 8px 14px; align-items: center; font-size: 13px; }
+.disk-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.disk-note { font-size: 12px; color: var(--fg-muted); margin-top: 8px; line-height: 1.45; }
+@media (max-width: 760px) { .disk-fields { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .aop-row { grid-template-columns: 1fr; } }
 #helix-footer { position: fixed; bottom: 0; left: var(--nav-w); right: 0; z-index: 40; height: 26px; display: flex; align-items: center; gap: 8px;
                 padding: 0 14px; font-size: 12px; background: var(--surface-hi); border-top: 1px solid var(--border-str); color: var(--fg-muted); }
@@ -684,7 +765,9 @@ main { padding-bottom: 44px; }
   .shell { flex-direction: column; }
   main { padding: 16px max(16px, env(safe-area-inset-right, 0px)) 24px
                   max(16px, env(safe-area-inset-left, 0px)); }
-  .hdr-uptime { display: none; }
+  .hdr-uptime, .hdr-hostname { display: none; }
+  .hdr-search { max-width: 110px; margin-left: 6px; }
+  .hdr-tools .hdr-btn { padding: 5px 7px; }
 }
 
 /* ── Network page ───────────────────────────────────────────── */
@@ -780,10 +863,16 @@ main { padding-bottom: 44px; }
   </a>
   <span class="hdr-hostname mono" id="hdr-hostname">Tower</span>
   <span class="hdr-uptime" id="hdr-uptime">up 3d 14h 22m</span>
+  <div class="hdr-search">
+    <input id="hdr-search" class="hdr-search-input" placeholder="Search pages…" autocomplete="off"
+      oninput="hdrSearch(this.value)" onkeydown="hdrSearchKey(event)" aria-label="Search pages">
+    <div id="hdr-jump" class="hdr-jump" hidden></div>
+  </div>
   <div class="hdr-spacer"></div>
-  <div class="hdr-status">
-    <span class="status-dot" id="status-dot"></span>
-    <span id="status-text">Array started</span>
+  <div class="hdr-tools">
+    <a class="hdr-btn" href="#files">Files</a>
+    <a class="hdr-btn" href="#terminal">Terminal</a>
+    <button class="hdr-btn" type="button" onclick="openHeaderLog()">Log</button>
   </div>
   <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel()" aria-label="Notifications" style="margin-left:10px">
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -815,82 +904,26 @@ main { padding-bottom: 44px; }
 <!-- ── SIDEBAR ─────────────────────────────────────────────── -->
 <nav id="sidenav">
   <div class="nav-section">System</div>
-  <a href="#dashboard" class="nav-item active">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="8" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="8" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="8" y="8" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>
-    Dashboard
-  </a>
+  <a href="#dashboard" class="nav-item active" id="nav-dashboard">Dashboard</a>
+  <a href="#main" class="nav-item" id="nav-main">Main</a>
   <div class="nav-section">Storage</div>
-  <a href="#files" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1H9l4 4v8a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 13.5v-11z" stroke="currentColor" stroke-width="1.3"/><path d="M9 1v4h4" stroke="currentColor" stroke-width="1.3"/></svg>
-    Files
-  </a>
+  <a href="#shares" class="nav-item" id="nav-shares">Shares</a>
+  <a href="#docker" class="nav-item" id="nav-docker">Docker</a>
+  <div class="nav-note" id="note-docker" hidden></div>
+  <a href="#files" class="nav-item">Files</a>
   <div class="nav-section">Apps</div>
-  <a href="#apps" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="8.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="8.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M11 8.5v5M8.5 11h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-    App Catalog
-  </a>
-  <a href="#gpu-mgmt" class="nav-item" id="nav-gpu-mgmt">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="3.5" width="13" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 3.5V2M7.5 3.5V2M11 3.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="3" y="6" width="2" height="2" rx=".4" fill="currentColor"/><rect x="6.5" y="6" width="2" height="2" rx=".4" fill="currentColor"/><rect x="10" y="6" width="2" height="2" rx=".4" fill="currentColor"/></svg>
-    GPU
-  </a>
-  <a href="#vms" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="2" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 13h5M7.5 11v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-    Virtual Machines
-  </a>
+  <a href="#apps" class="nav-item">App Catalog</a>
+  <a href="#vms" class="nav-item" id="nav-vms">Virtual Machines</a>
+  <div class="nav-note" id="note-vms" hidden></div>
+  <a href="#gpu-mgmt" class="nav-item" id="nav-gpu-mgmt">GPU</a>
+  <div class="nav-note" id="note-gpu" hidden></div>
   <div class="nav-section">Network</div>
-  <a href="#network" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M7.5 1.5C7.5 1.5 5 4 5 7.5s2.5 6 2.5 6" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 7.5h12" stroke="currentColor" stroke-width="1.3"/></svg>
-    Network
-  </a>
-  <a href="#vpn" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="4" width="13" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a2.5 2.5 0 0 1 5 0v1" stroke="currentColor" stroke-width="1.3"/><circle cx="7.5" cy="8" r="1.5" fill="currentColor"/></svg>
-    VPN (WireGuard)
-  </a>
+  <a href="#network" class="nav-item">Network</a>
+  <a href="#vpn" class="nav-item">VPN</a>
   <div class="nav-section">Admin</div>
-  <a href="#users" class="nav-item" id="nav-users">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="5" r="3" stroke="currentColor" stroke-width="1.3"/><path d="M2 13c0-2.76 2.46-5 5.5-5s5.5 2.24 5.5 5" stroke="currentColor" stroke-width="1.3"/></svg>
-    Users
-  </a>
-  <a href="#config" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1v1.5m0 9V13m-6.5-5.5H2.5m9 0H13.5M3.1 3.1l1.1 1.1m7.6 7.6-1.1-1.1M3.1 11.9l1.1-1.1m7.6-7.6-1.1 1.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-    Settings
-  </a>
-  <a href="#notif-config" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1a3.5 3.5 0 0 1 3.5 3.5c0 2 .5 3.2 1.1 3.8H2.9C3.5 7.7 4 6.5 4 4.5A3.5 3.5 0 0 1 7.5 1z" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 8.5a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.2"/></svg>
-    Notifications
-  </a>
-  <a href="#terminal" class="nav-item" id="nav-terminal">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="2" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2.5 2L4 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 10h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-    Terminal
-  </a>
-  <a href="#hardware" class="nav-item" id="nav-hardware">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="4" width="13" height="7" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M4 4V3M7.5 4V2M11 4V3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="4" cy="7.5" r=".8" fill="currentColor"/><circle cx="7.5" cy="7.5" r=".8" fill="currentColor"/><circle cx="11" cy="7.5" r=".8" fill="currentColor"/></svg>
-    Hardware
-  </a>
-  <a href="#diagnostics" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1v2m0 9v2M1 7.5h2m9 0h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="7.5" cy="7.5" r="3" stroke="currentColor" stroke-width="1.3"/></svg>
-    Diagnostics
-  </a>
-  <a href="#backup" class="nav-item">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-    Backup
-  </a>
-  <a href="#zfs" class="nav-item">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-    ZFS Pools
-  </a>
-  <a href="#proxy" class="nav-item">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M20.4 6.4A10.1 10.1 0 1 1 3.6 17.6"/><path d="M20.4 6.4L16 10"/></svg>
-    Rev. Proxy
-  </a>
-  <a href="#scanner" class="nav-item">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    LAN Scan
-  </a>
-  <a href="#scheduler" class="nav-item">
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="2.5" width="12" height="11" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M5 1v3M10 1v3M1.5 6h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4 9h2m3 0h2M4 11.5h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-    Scheduler
-  </a>
+  <a href="#users" class="nav-item" id="nav-users">Users</a>
+  <a href="#config" class="nav-item" id="nav-settings">Settings</a>
+  <a href="#tools" class="nav-item" id="nav-tools">Tools</a>
 </nav>
 
 <!-- ── MAIN ──────────────────────────────────────────────────── -->
@@ -902,7 +935,7 @@ main { padding-bottom: 44px; }
   </div>
 
   <!-- Stat tiles -->
-  <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px">
+  <div class="dash-head">
     <div class="section-title" style="margin:0">System</div>
     <button id="customize-btn" class="ctr-btn" onclick="toggleCustomize()" style="font-size:11px;padding:3px 10px">Customize</button>
   </div>
@@ -971,50 +1004,92 @@ main { padding-bottom: 44px; }
     </div>
   </div>
 
-  <!-- Drives -->
-  <div class="section-title">Drives</div>
-  <div class="drives-grid" id="drives-grid">
-    <!-- populated by JS -->
+  <!-- Drives glance. A handful of disks stay as tiles; more become a short list. The full table is on Main. -->
+  <div class="dash-head" style="margin-top:18px">
+    <div class="section-title" style="margin:0">Drives</div>
+    <a href="#main" class="panel-action">Open Main</a>
   </div>
+  <div class="drives-grid" id="drives-grid"></div>
 
-  <!-- Array Controls: rendered from GET /api/array/operation (state machine; see §30.5) -->
-  <div class="section-title" style="margin-top:20px">Array Operation</div>
-  <div id="array-op" class="array-op"><div class="aop-empty">Loading array state…</div></div>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;align-items:center">
-    <button class="ctr-btn" onclick="assignDisksModal()" title="Choose which disks are parity, data and cache. Only possible while the array is stopped.">⊹ Assign Disks</button>
-    <button class="ctr-btn" id="parity-stop-btn" onclick="stopParity()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-muted);margin-left:6px">
+  <!-- Main: disks, array operation, mover, rebuild. Hidden on the dashboard. -->
+  <div id="main-section" hidden>
+    <div class="dash-head">
+      <div class="section-title" style="margin:0">Disks</div>
+      <button class="ctr-btn" onclick="assignDisksModal()" title="Choose which disks are parity, data and cache. Only possible while the array is stopped.">Assign disks…</button>
+    </div>
+    <p id="disk-assign-note" style="font-size:12px;color:var(--fg-muted);margin:0 0 8px"></p>
+    <div class="data-wrap">
+      <table class="data-table" id="disk-table">
+        <thead><tr>
+          <th></th>
+          <th>Device</th>
+          <th>Temp</th>
+          <th title="Completed reads since boot, from the kernel.">Reads</th>
+          <th title="Completed writes since boot, from the kernel.">Writes</th>
+          <th title="Unraid counts unrecoverable device errors. Helix does not have that counter; the health badge uses SMART.">Errors</th>
+          <th>FS</th>
+          <th>Used</th>
+        </tr></thead>
+        <tbody id="disk-tbody"><tr><td colspan="8" style="color:var(--fg-dim);padding:16px">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+      <button class="ctr-btn" id="inline-assign-save" onclick="saveInlineAssign()" hidden>Save assignment</button>
+      <span id="inline-assign-msg" style="font-size:12px;color:var(--fg-muted)"></span>
+    </div>
+
+    <div class="section-title">Array Operation</div>
+    <div id="array-op" class="array-op"><div class="aop-empty">Loading array state…</div></div>
+    <div id="parity-progress-wrap" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <span id="parity-status-text" style="font-size:12px;color:var(--fg-dim)"></span>
+        <button class="ctr-btn" id="parity-stop-btn" onclick="stopParity()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
+      </div>
+      <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+        <div id="parity-progress-bar" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+      </div>
+    </div>
+
+    <div class="aop-row" style="margin-bottom:10px">
+      <div class="aop-status">Cache mover</div>
+      <div class="aop-ctl">
+        <button class="ctr-btn" onclick="moverStart()">Move now</button>
+        <button class="ctr-btn" onclick="moverDryRun()">Dry run</button>
+        <button class="ctr-btn" id="mover-stop-btn" onclick="moverStop()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
+      </div>
+      <div class="aop-explain" id="mover-status-text">Copies files that are not in use from the cache drive onto the array. The Docker data folder stays on the cache.</div>
+    </div>
+    <div class="aop-row" style="margin-bottom:10px">
+      <div class="aop-status">Drive rebuild</div>
+      <div class="aop-ctl">
+        <button class="ctr-btn" onclick="startRebuild()">Rebuild</button>
+        <button class="ctr-btn" id="rebuild-stop-btn" onclick="stopRebuild()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
+      </div>
+      <div class="aop-explain" id="rebuild-status-text">Rebuilds a replaced data disk from parity. This can take a long time.</div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-muted);margin:4px 0 12px">
       <input type="checkbox" id="array-autostart" onchange="setArrayAutostart(this.checked)"> Start array on boot
       <span class="tip" tabindex="0" role="note" data-tip="When on, the array (and Docker, shares and SMB/NFS with it) starts by itself after a reboot, as soon as the assigned disks appear. Off means you start it by hand.">ⓘ</span>
     </label>
-  </div>
-  <div id="parity-progress-wrap" style="margin-bottom:16px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-      <span id="parity-status-text" style="font-size:12px;color:var(--fg-dim)"></span>
-    </div>
-    <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden">
-      <div id="parity-progress-bar" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+    <div id="job-sink" hidden>
+      <div id="rebuild-log"></div>
+      <div id="mover-log"></div>
     </div>
   </div>
 
-  <!-- Drive Rebuild -->
-  <div class="section-title" style="margin-top:4px">Drive Rebuild (SnapRAID Fix)</div>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px">
-    <button class="ctr-btn" onclick="startRebuild()">Rebuild</button>
-    <button class="ctr-btn" id="rebuild-stop-btn" onclick="stopRebuild()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
-    <span id="rebuild-status-text" style="font-size:12px;color:var(--fg-dim)"></span>
+  <!-- One disk. Opened from its name on Main. -->
+  <div id="disk-section" hidden>
+    <div class="disk-top">
+      <a href="#main" class="panel-action">← Main</a>
+      <div class="disk-pager" id="disk-pager"></div>
+    </div>
+    <div class="settings-card">
+      <div class="settings-card-hdr" id="disk-title">Disk</div>
+      <div class="settings-card-body" id="disk-body">
+        <p class="disk-note">Loading…</p>
+      </div>
+    </div>
   </div>
-  <div id="rebuild-log" hidden style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;font-family:monospace;max-height:160px;overflow-y:auto;color:var(--fg-muted);white-space:pre-wrap;margin-bottom:16px"></div>
-
-  <!-- Cache Mover -->
-  <div class="section-title" style="margin-top:4px">Cache Mover</div>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px">
-    <button class="ctr-btn" onclick="moverStart()">Move Now</button>
-    <button class="ctr-btn" onclick="moverDryRun()">Dry Run</button>
-    <button class="ctr-btn" id="mover-stop-btn" onclick="moverStop()" hidden style="color:#f87171;border-color:#f87171">Stop</button>
-    <span id="mover-status-text" style="font-size:12px;color:var(--fg-dim)"></span>
-  </div>
-  <div id="mover-log" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;font-family:monospace;max-height:160px;overflow-y:auto;color:var(--fg-muted);white-space:pre-wrap;margin-bottom:16px"></div>
 
   <!-- Apps Catalog (hidden until #apps) -->
   <div id="apps-section" hidden>
@@ -1247,7 +1322,14 @@ main { padding-bottom: 44px; }
 
   <!-- Settings page (hidden until #settings) -->
   <div id="settings-section" hidden>
-    <div class="section-title">System Identity</div>
+    <div class="settings-jump">
+      <a class="hdr-btn" href="#config" onclick="document.getElementById('set-identity').scrollIntoView({behavior:'smooth'})">Identity</a>
+      <a class="hdr-btn" href="#config" onclick="document.getElementById('set-samba').scrollIntoView({behavior:'smooth'})">Samba</a>
+      <a class="hdr-btn" href="#users">Users</a>
+      <a class="hdr-btn" href="#notif-config">Notifications</a>
+      <a class="hdr-btn" href="#config" onclick="document.getElementById('set-appearance').scrollIntoView({behavior:'smooth'})">Appearance</a>
+    </div>
+    <div class="section-title" id="set-identity">System Identity</div>
     <div class="settings-grid">
       <div class="settings-card">
         <div class="settings-card-hdr">Server Identity</div>
@@ -1270,7 +1352,7 @@ main { padding-bottom: 44px; }
           </div>
         </div>
       </div>
-      <div class="settings-card">
+      <div class="settings-card" id="set-samba">
         <div class="settings-card-hdr">Samba Global Settings</div>
         <div class="settings-card-body">
           <div class="settings-row">
@@ -1303,7 +1385,7 @@ main { padding-bottom: 44px; }
           </div>
         </div>
       </div>
-      <div class="settings-card">
+      <div class="settings-card" id="set-appearance">
         <div class="settings-card-hdr">Appearance</div>
         <div class="settings-card-body">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1737,21 +1819,75 @@ main { padding-bottom: 44px; }
     <div id="notif-save-msg" style="margin-top:8px;font-size:11px;color:var(--ok);display:none">Settings saved.</div>
   </div>
 
-  <!-- Shares + Containers -->
+  <!-- Shares + Containers glance -->
   <div class="bottom-grid" style="margin-top:10px">
     <div class="panel">
       <div class="panel-header">
         Shares
-        <span class="panel-action" onclick="showNewShare()" style="cursor:pointer">+ New share</span>
+        <span>
+          <a href="#shares" class="panel-action">View all</a>
+          <span class="panel-action" onclick="showNewShare()" style="cursor:pointer;margin-left:8px">+ New</span>
+        </span>
       </div>
-      <div id="shares-list"><!-- populated by JS --></div>
+      <div id="shares-list"></div>
     </div>
     <div class="panel">
       <div class="panel-header">
         Containers
-        <span class="panel-action" id="docker-action" onclick="openContainerManager()" style="cursor:pointer">Manage</span>
+        <a href="#docker" class="panel-action" id="docker-action">View all</a>
       </div>
-      <div id="containers-list"><!-- populated by JS --></div>
+      <div id="containers-list"></div>
+    </div>
+  </div>
+
+  <div id="shares-section" hidden>
+    <div class="dash-head">
+      <div class="section-title" style="margin:0">Shares</div>
+      <span style="display:flex;gap:8px">
+        <button class="ctr-btn" onclick="computeAllShares()">Compute sizes</button>
+        <button class="ctr-btn" onclick="showNewShare()">+ New share</button>
+      </span>
+    </div>
+    <p style="font-size:12px;color:var(--fg-muted);margin:0 0 8px">Size is calculated only when you ask. Counting a large share reads every disk.</p>
+    <div class="data-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th>Name</th><th>Comment</th><th>SMB</th><th>NFS</th>
+          <th title="New files land on the cache drive when one is assigned. The mover copies them to the array. There is no per-share cache setting yet.">Storage</th>
+          <th>Size</th>
+        </tr></thead>
+        <tbody id="shares-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="docker-section" hidden>
+    <div class="dash-head">
+      <div class="section-title" style="margin:0">Docker</div>
+      <a href="#apps" class="panel-action">Browse apps</a>
+    </div>
+    <p id="docker-unavail" hidden style="font-size:12px;color:var(--fg-muted);margin:0 0 8px">Docker is not available on this system, so containers cannot be started.</p>
+    <div class="data-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th>Container</th><th>Status</th><th>Ports</th><th>Folders</th><th></th>
+        </tr></thead>
+        <tbody id="docker-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="tools-section" hidden>
+    <div class="section-title" style="margin-top:0">Tools</div>
+    <div class="tool-grid">
+      <a class="tool-card" href="#diagnostics"><h3>Diagnostics</h3><p>Syslog, kernel log, and the process list.</p></a>
+      <a class="tool-card" href="#hardware"><h3>Hardware</h3><p>Board, CPU, memory, and PCI devices.</p></a>
+      <a class="tool-card" href="#scheduler"><h3>Scheduler</h3><p>Cron jobs that survive a reboot.</p></a>
+      <a class="tool-card" href="#backup"><h3>Backup</h3><p>Copy folders on a schedule.</p></a>
+      <a class="tool-card" href="#scanner"><h3>LAN scan</h3><p>Find other devices on the network.</p></a>
+      <a class="tool-card" href="#proxy"><h3>Reverse proxy</h3><p>Publish a container on a hostname.</p></a>
+      <a class="tool-card" href="#terminal"><h3>Terminal</h3><p>A shell on this server.</p></a>
+      <a class="tool-card" href="#zfs" id="tool-zfs"><h3>ZFS pools</h3><p id="note-zfs">Create and scrub ZFS pools.</p></a>
     </div>
   </div>
 
@@ -1925,7 +2061,11 @@ main { padding-bottom: 44px; }
   </div>
 </main>
 <div id="net-pending" hidden><span>⚠ A network change is waiting for your confirmation. It will be undone in <b id="net-pending-t">…</b> unless you keep it.</span><button class="settings-btn primary" onclick="netKeep()">Keep</button><button class="ctr-btn" onclick="netUndo()">Undo now</button></div>
-<div id="helix-footer" role="status" aria-live="polite"><span id="footer-dot" class="footer-dot"></span><span id="footer-text">Array …</span><span id="footer-job"></span></div>
+<div id="job-log" hidden>
+  <div id="job-log-h"><span id="job-log-title">Job</span><span style="flex:1"></span><button class="ctr-btn" type="button" onclick="jobHide()">Close</button></div>
+  <pre id="job-log-body"></pre>
+</div>
+<div id="helix-footer" role="status" aria-live="polite"><span id="footer-dot" class="footer-dot"></span><span id="footer-text">Array …</span><span id="footer-job"></span><span id="footer-opjob" hidden onclick="document.getElementById('job-log').hidden=false"></span></div>
 
 <!-- ── MODAL ─────────────────────────────────────────────────── -->
 <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal(event)">
@@ -1947,10 +2087,10 @@ const MOCK = {
   system: { cpu_pct:12, cpu_count:4, load_1m:.42, ram_used_gb:3.2, ram_total_gb:8, ram_pct:40, uptime_sec:296520 },
   array:  { array_state:"started", user_share:{size:"7.4T", used:"5.6T", avail:"1.8T"},
             disks:[
-              {name:"disk1", device:"/dev/sdb", mounted:true, fstype:"xfs", size:"2.0T", used:"1.5T", use_pct:"75", temp_c:42, smart_ok:true},
-              {name:"disk2", device:"/dev/sdc", mounted:true, fstype:"xfs", size:"4.0T", used:"1.3T", use_pct:"33", temp_c:38, smart_ok:true},
-              {name:"disk3", device:"/dev/sdd", mounted:true, fstype:"xfs", size:"2.0T", used:"1.9T", use_pct:"95", temp_c:51, smart_ok:true},
-              {name:"parity1", device:"/dev/sde", mounted:false, fstype:"raw", size:"4.0T", use_pct:null, temp_c:44, smart_ok:true},
+              {name:"disk1", device:"/dev/sdb", mounted:true, fstype:"xfs", size:"2.0T", used:"1.5T", use_pct:"75", temp_c:42, smart_ok:true, reads:18420, writes:2104},
+              {name:"disk2", device:"/dev/sdc", mounted:true, fstype:"xfs", size:"4.0T", used:"1.3T", use_pct:"33", temp_c:38, smart_ok:true, reads:902, writes:440},
+              {name:"disk3", device:"/dev/sdd", mounted:true, fstype:"xfs", size:"2.0T", used:"1.9T", use_pct:"95", temp_c:51, smart_ok:true, reads:22014, writes:8801},
+              {name:"parity1", device:"/dev/sde", mounted:false, fstype:"raw", size:"4.0T", use_pct:null, temp_c:44, smart_ok:true, reads:41002, writes:12040},
             ]},
   shares: [
     {name:"media",     used_gb:3276, total_gb:5000, smb:"yes", nfs:"yes",  comment:"Movies, TV, Music"},
@@ -2107,8 +2247,7 @@ const FIELD_TIPS = {
  "wol-dname": "A label for the device.",
  "wol-dmac": "The device's MAC address, e.g. AA:BB:CC:DD:EE:FF.",
  "wol-dbcast": "Broadcast address of the device's network, e.g. 192.168.1.255.",
- "fmt-fs": "XFS suits array data disks. Btrfs or ZFS are for pools. Formatting erases everything on the drive.",
- "fmt-label": "An optional name for the filesystem.",
+ "disk-fs": "The file system to create when this disk is formatted from Main. Apply only saves the choice. XFS is the usual array file system. Btrfs suits a cache pool.",
  "vfio-vm-sel": "The VM that will get exclusive use of the selected GPU.",
  "scan-subnet": "The network to scan, in CIDR form, e.g. 192.168.1.0/24."
 };
@@ -2265,10 +2404,7 @@ function renderArray(d) {
   badge.className = 'array-state-badge ' + (d.array_state === 'started' ? 'started' : 'stopped');
   badge.innerHTML = `<span class="dot"></span> ${d.array_state.toUpperCase()}`;
 
-  const dot = document.getElementById('status-dot');
-  dot.className = 'status-dot ' + (d.array_state === 'started' ? '' : 'err');
-  document.getElementById('status-text').textContent =
-    d.array_state === 'started' ? 'Array started' : 'Array stopped';
+  // Array state lives in the footer. The header used to repeat it.
 
   const us = d.user_share || {};
   const bar = document.getElementById('array-bar');
@@ -2313,29 +2449,131 @@ function fmtHours(h) {
   return `${(d/365).toFixed(1)}yr`;
 }
 
-function renderDrives(drives, arrayDisks) {
-  // Merge array disk data (usage/size) with SMART cache data
-  const usageMap = {};
-  (arrayDisks || []).forEach(d => { usageMap[d.name] = d; });
+let _arrayState = 'stopped', _lastArr = {}, _driveSrc = [], _usageMap = {};
+let _freeDisks = null, _freeAt = 0, _freeLoading = false;
+const _spin = {}, _shareSizes = {}, _mountCache = {};
+let _dockerAvailable = null, _capsDone = false;
 
-  if (!drives.length && !(arrayDisks||[]).length) {
-    document.getElementById('drives-grid').innerHTML =
-      '<span style="font-size:12px;color:var(--fg-dim);padding:12px 0">No drives configured</span>';
+function numOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function fmtCount(n) {
+  if (n == null || n === '') return '—';
+  const x = Number(n);
+  return Number.isFinite(x) ? x.toLocaleString() : '—';
+}
+function roleOf(name) {
+  const n = String(name || '');
+  if (n.startsWith('parity')) return 'parity';
+  if (n.startsWith('cache')) return 'cache';
+  return 'data';
+}
+function orbButton(name, missing) {
+  if (missing) return '<button class="orb miss" type="button" title="Missing" disabled>✕</button>';
+  const down = _spin[name] === 'standby' || _spin[name] === 'sleep';
+  const tip = down ? 'Spun down. Click to spin up.' : 'Click to spin down.';
+  return `<button class="orb ${down ? 'down' : 'run'}" type="button" title="${tip}" onclick="toggleSpin('${_esc(name)}')"></button>`;
+}
+async function toggleSpin(name) {
+  if (!liveMode) { alert('Demo mode — connect the backend to spin a disk.'); return; }
+  try {
+    let st = _spin[name];
+    if (!st) st = (await fetchJSON('/api/drives/' + encodeURIComponent(name) + '/spinstate')).state;
+    if (st === 'standby' || st === 'sleep') {
+      await fetchJSON('/api/drives/' + encodeURIComponent(name) + '/spinup', {method:'POST'});
+      _spin[name] = 'active';
+      showToast(name + ' spinning up…', 'ok');
+    } else {
+      await fetchJSON('/api/drives/' + encodeURIComponent(name) + '/spindown', {method:'POST'});
+      _spin[name] = 'standby';
+      showToast(name + ' spinning down…', 'ok');
+    }
+  } catch (e) { showToast('Spin failed: ' + (e.message || e), 'warn'); }
+  renderDriveGlance();
+  renderDiskTable();
+}
+function errorCell(d) {
+  const r = Number(d.reallocated_sectors) || 0, p = Number(d.pending_sectors) || 0;
+  if (r || p) return `<span style="color:var(--warn)" title="SMART reallocated ${r}, pending ${p}">${r + p}</span>`;
+  return '<span title="Helix does not count unrecoverable device errors. The health badge uses SMART.">—</span>';
+}
+function usedCell(au, d) {
+  const pct = numOrNull(au.use_pct);
+  const size = au.size || (d.capacity_gb ? (d.capacity_gb >= 1000 ? (d.capacity_gb / 1000).toFixed(0) + ' TB' : d.capacity_gb + ' GB') : '');
+  if (pct == null) return _esc(size || '—');
+  return `<div class="drive-usage-row"><div class="drive-usage-bar"><div class="drive-usage-fill ${driveColor(pct)}" style="width:${Math.min(100, pct)}%"></div></div><span class="drive-usage-pct">${pct}%</span></div>`;
+}
+
+function renderDrives(drives, arrayDisks, arr) {
+  arr = arr || {};
+  _lastArr = arr;
+  if (arr.array_state) _arrayState = arr.array_state;
+  _usageMap = {};
+  const groups = [
+    ...(arr.parity || []).map(d => ({...d, role: 'parity'})),
+    ...(arrayDisks || []).map(d => ({...d, role: d.role || roleOf(d.name)})),
+    ...(arr.cache || []).map(d => ({...d, role: 'cache'})),
+  ];
+  groups.forEach(d => { if (d.name) _usageMap[d.name] = Object.assign(_usageMap[d.name] || {}, d); });
+
+  if (!(drives || []).length && !groups.length) {
+    _driveSrc = [];
+    renderDriveGlance();
+    renderDiskTable();
     return;
   }
-
-  // If no SMART data, fall back to array disk list
-  const src = drives.length ? drives : (arrayDisks || []).map(d => ({
-    name: d.name, device: d.device, role: d.name.startsWith('parity') ? 'parity' : 'data',
+  const src = (drives || []).length ? (drives || []).slice() : groups.map(d => ({
+    name: d.name, device: d.device, role: d.role,
     smart_available: d.smart_ok != null, smart_passed: d.smart_ok,
-    temp_c: d.temp_c, model: null, serial: null, capacity_gb: null,
+    temp_c: numOrNull(d.temp_c), model: null, serial: null, capacity_gb: null,
     power_on_hours: null, reallocated_sectors: null, pending_sectors: null,
   }));
+  const seen = new Set(src.map(d => d.name));
+  groups.forEach(d => {
+    if (d.name && !seen.has(d.name)) {
+      src.push({name: d.name, device: d.device, role: d.role, temp_c: numOrNull(d.temp_c),
+        smart_available: d.smart_ok != null, smart_passed: d.smart_ok});
+      seen.add(d.name);
+    }
+  });
+  _driveSrc = src;
+  renderDriveGlance();
+  renderDiskTable();
+  if (_arrayState !== 'started' && liveMode) ensureFreeDisks(false);
+}
 
+function renderDriveGlance() {
   const grid = document.getElementById('drives-grid');
+  if (!grid) return;
+  const src = _driveSrc;
+  if (!src.length) {
+    grid.classList.remove('compact');
+    grid.innerHTML = '<span style="font-size:12px;color:var(--fg-dim);padding:12px 0">No drives configured. Assign disks on Main.</span>';
+    return;
+  }
+  if (src.length > 4) {
+    grid.classList.add('compact');
+    const shown = src.slice(0, 6);
+    grid.innerHTML = shown.map(d => {
+      const au = _usageMap[d.name] || {};
+      const temp = d.temp_c != null ? d.temp_c : numOrNull(au.temp_c);
+      const pct = numOrNull(au.use_pct);
+      return `<div class="glance-line">
+        ${orbButton(d.name, au.present === false)}
+        <span class="grow">${diskNameLink(d.name)} <span style="color:var(--fg-dim)">${_esc(d.device || '')}</span></span>
+        <span class="mono" style="color:var(--fg-muted)">${temp != null ? temp + '°C' : '—'}</span>
+        <span class="mono" style="color:var(--fg-muted)">${pct != null ? pct + '%' : (au.size || '')}</span>
+      </div>`;
+    }).join('') + (src.length > 6 ? `<div style="font-size:11px;padding:4px 2px"><a href="#main" class="panel-action">${src.length - 6} more on Main</a></div>` : '');
+    return;
+  }
+  grid.classList.remove('compact');
+  const usageMap = _usageMap;
   grid.innerHTML = src.map(d => {
     const au    = usageMap[d.name] || {};
-    const pct   = au.use_pct != null ? parseInt(au.use_pct) : null;
+    const pct   = numOrNull(au.use_pct);        // '' (an unmounted disk) used to become parseInt('') = NaN and drew "NaN%"
     const cls   = pct != null ? driveColor(pct) : '';
     const tCls  = tempColor(d.temp_c);
     const reallocWarn = (d.reallocated_sectors || 0) > 0;
@@ -2374,8 +2612,6 @@ function renderDrives(drives, arrayDisks) {
           onclick="driveSpindown('${d.name}',this)">💤</button>
         <button class="ctr-btn" style="font-size:10px;padding:1px 7px" title="Identify (LED blink)"
           onclick="driveIdentify('${d.name}')">📍</button>
-        <button class="ctr-btn" style="font-size:10px;padding:1px 7px" title="Format drive"
-          onclick="showFormatDrive('${d.name}','${d.device||''}')">⚙</button>
         <button class="ctr-btn" style="font-size:10px;padding:1px 7px" title="Spin-down timer"
           onclick="showSpindownTimer('${d.name}')">⏱</button>
         <button class="ctr-btn" style="font-size:10px;padding:1px 7px" title="Health trend"
@@ -2385,26 +2621,168 @@ function renderDrives(drives, arrayDisks) {
   }).join('');
 }
 
+function diskNameLink(name) {
+  if (!/^(parity|disk|cache)\d+$/.test(name || '')) return `<strong>${_esc(name || '')}</strong>`;
+  return `<a class="disk-link" href="#disk/${encodeURIComponent(name)}">${_esc(name)}</a>`;
+}
+function diskStatRow(d, au) {
+  const temp = d.temp_c != null ? d.temp_c : numOrNull(au.temp_c);
+  const fs = au.fstype && au.fstype !== 'unknown' ? au.fstype : '—';
+  return `<tr>
+    <td>${orbButton(d.name, au.present === false)}</td>
+    <td>${diskNameLink(d.name)} <span class="mono" style="color:var(--fg-dim)">${_esc(d.device || au.device || '')}</span>
+        ${d.role ? `<div style="font-size:11px;color:var(--fg-dim)">${_esc(d.role)}</div>` : ''}</td>
+    <td class="${tempColor(temp)}">${temp != null ? temp + '°C' : '—'}</td>
+    <td class="mono">${fmtCount(au.reads)}</td>
+    <td class="mono">${fmtCount(au.writes)}</td>
+    <td>${errorCell(d)}</td>
+    <td>${_esc(fs)}</td>
+    <td>${usedCell(au, d)}</td>
+  </tr>`;
+}
+function renderDiskTable() {
+  const tb = document.getElementById('disk-tbody');
+  const note = document.getElementById('disk-assign-note');
+  const save = document.getElementById('inline-assign-save');
+  if (!tb) return;
+  const stopped = _arrayState === 'stopped' || _arrayState === '';
+  if (stopped && _freeDisks && _freeDisks.length) {
+    const choosable = _freeDisks.some(d => !d.is_boot);
+    if (note) note.textContent = choosable
+      ? 'The array is stopped. Choose a role for each disk, then save. The boot disk stays out of the array.'
+      : 'The array is stopped. The only disk here is the boot disk, so there is nothing to assign.';
+    if (save) save.hidden = !choosable;
+    tb.innerHTML = _freeDisks.map(d => {
+      const au = _usageMap[d.array_name] || {};
+      const temp = numOrNull(au.temp_c);
+      const opts = ['', 'parity', 'data', 'cache'].map(r =>
+        `<option value="${r}"${(d.role || '') === r ? ' selected' : ''}>${r || '— unassigned —'}</option>`).join('');
+      const select = d.is_boot ? '<span style="color:var(--warn)">boot disk</span>'
+        : `<select class="disk-role settings-input" data-dev="${_esc(d.device)}" style="font-size:12px;margin-top:4px">${opts}</select>`;
+      const orb = d.is_boot
+        ? '<button class="orb down" type="button" title="Boot disk" disabled></button>'
+        : (d.array_name ? orbButton(d.array_name, false)
+          : '<button class="orb down" type="button" title="Not assigned" disabled></button>');
+      const named = d.array_name ? `${diskNameLink(d.array_name)} · ` : '';
+      return `<tr>
+        <td>${orb}</td>
+        <td>${named}<span class="mono">${_esc(d.device)}</span>
+            <div style="font-size:11px;color:var(--fg-dim)">${_esc(d.model || 'unknown')} · ${_esc(d.kind || '')} · ${d.size_gb} GB</div>
+            ${select}</td>
+        <td>${temp != null ? temp + '°C' : '—'}</td>
+        <td class="mono">${fmtCount(au.reads)}</td>
+        <td class="mono">${fmtCount(au.writes)}</td>
+        <td>—</td>
+        <td>${_esc(d.fstype || au.fstype || '—')}</td>
+        <td>${usedCell(au, d)}</td>
+      </tr>`;
+    }).join('');
+    return;
+  }
+  if (save) save.hidden = true;
+  if (note) note.textContent = stopped
+    ? 'The array is stopped. Disk roles appear here once the disk list loads. You can also use Assign disks.'
+    : 'Stop the array to change which disk is parity, data, or cache.';
+  if (!_driveSrc.length) {
+    tb.innerHTML = '<tr><td colspan="8" style="color:var(--fg-dim);padding:16px">No disks assigned.</td></tr>';
+    return;
+  }
+  tb.innerHTML = _driveSrc.map(d => diskStatRow(d, _usageMap[d.name] || {})).join('');
+}
+async function ensureFreeDisks(force) {
+  if (!liveMode || _freeLoading) return;
+  if (!force && _freeDisks && Date.now() - _freeAt < 30000) return;
+  _freeLoading = true;
+  try {
+    _freeDisks = ((await fetchJSON('/api/drives/available')).disks) || [];
+    _freeAt = Date.now();
+  } catch (_) { _freeDisks = _freeDisks || []; }
+  finally { _freeLoading = false; renderDiskTable(); }
+}
+async function saveInlineAssign() {
+  if (!liveMode) { alert('Demo mode — connect the backend to assign disks.'); return; }
+  const parity = [], data = [], cache = [];
+  document.querySelectorAll('.disk-role').forEach(s => {
+    if (s.value === 'parity') parity.push(s.dataset.dev);
+    else if (s.value === 'data') data.push(s.dataset.dev);
+    else if (s.value === 'cache') cache.push(s.dataset.dev);
+  });
+  if (!parity.length && !data.length && !cache.length && !confirm('Unassign every disk?')) return;
+  const msg = document.getElementById('inline-assign-msg');
+  if (msg) { msg.style.color = 'var(--fg-muted)'; msg.textContent = 'Saving…'; }
+  try {
+    const d = await fetchJSON('/api/array/assign', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({parity, data, cache, fmt: 'xfs', cache_fmt: 'btrfs'}),
+    });
+    if (d && d.ok === false) {
+      if (msg) { msg.style.color = 'var(--warn)'; msg.textContent = d.error || 'Could not save.'; }
+      return;
+    }
+    if (msg) { msg.style.color = 'var(--ok)'; msg.textContent = `Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache.`; }
+    _freeAt = 0;
+    setTimeout(refresh, 400);
+  } catch (e) {
+    if (msg) { msg.style.color = 'var(--err)'; msg.textContent = e.message || String(e); }
+  }
+}
+
+function shareWhere() {
+  return (_lastArr.cache || []).length ? 'cache → array' : 'array';
+}
 function renderShares(shares) {
   _shareNames = shares.map(x => x.name);
-  document.getElementById('shares-list').innerHTML = shares.map(s => {
-    const pct = s.total_gb ? Math.round(s.used_gb / s.total_gb * 100) : 0;
-    const usedStr = s.used_gb != null ? (s.used_gb >= 1000 ? (s.used_gb/1024).toFixed(1)+'TB' : s.used_gb+'GB') : '—';
-    return `<div class="share-row" onclick="showEditShare('${s.name}')" style="cursor:pointer" title="Click to edit">
-      <div class="share-row-top">
-        <span class="share-name">${s.name}</span>
-        <span class="share-size mono">${usedStr}</span>
-      </div>
-      <div class="share-bar"><div class="share-bar-fill" style="width:${pct}%"></div></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:3px">
-        <span style="font-size:11px;color:var(--fg-dim)">${s.comment || ''}</span>
-        <div class="share-badges">
-          <span class="badge ${s.smb==='yes'?'on':''}">SMB</span>
-          <span class="badge ${s.nfs==='yes'?'on':''}">NFS</span>
+  const list = document.getElementById('shares-list');
+  const glance = shares.slice(0, 5);
+  if (list) {
+    list.innerHTML = glance.map(s => `
+      <div class="share-row" onclick="showEditShare('${_esc(s.name)}')" style="cursor:pointer" title="Click to edit">
+        <div class="share-row-top"><span class="share-name">${_esc(s.name)}</span></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:3px">
+          <span style="font-size:11px;color:var(--fg-dim)">${_esc(s.comment || '')}</span>
+          <div class="share-badges">
+            <span class="badge ${s.smb === 'yes' ? 'on' : ''}">SMB</span>
+            <span class="badge ${s.nfs === 'yes' ? 'on' : ''}">NFS</span>
+          </div>
         </div>
-      </div>
-    </div>`;
-  }).join('') || '<div style="padding:12px;font-size:12px;color:var(--fg-dim)">No shares yet. Click + New share.</div>';
+      </div>`).join('') || '<div style="padding:12px;font-size:12px;color:var(--fg-dim)">No shares yet.</div>';
+    if (shares.length > 5) list.insertAdjacentHTML('beforeend',
+      `<div style="padding:8px 16px;font-size:11px"><a href="#shares" class="panel-action">${shares.length - 5} more</a></div>`);
+  }
+  const tb = document.getElementById('shares-tbody');
+  if (!tb) return;
+  const where = shareWhere();
+  tb.innerHTML = shares.map(s => {
+    const known = Object.prototype.hasOwnProperty.call(_shareSizes, s.name) ? _shareSizes[s.name] : undefined;
+    const size = known === undefined
+      ? `<button class="ctr-btn" type="button" onclick="computeShare('${_esc(s.name)}')">Compute</button>`
+      : (known == null ? '—' : fmtBytesBin(known));
+    return `<tr>
+      <td><a href="#" onclick="showEditShare('${_esc(s.name)}');return false" style="color:inherit;font-weight:600">${_esc(s.name)}</a></td>
+      <td style="color:var(--fg-muted)">${_esc(s.comment || '')}</td>
+      <td><span class="badge ${s.smb === 'yes' ? 'on' : ''}">${s.smb === 'yes' ? 'Yes' : 'No'}</span></td>
+      <td><span class="badge ${s.nfs === 'yes' ? 'on' : ''}">${s.nfs === 'yes' ? 'Yes' : 'No'}</span></td>
+      <td title="New files land on the cache drive when one is assigned, and the mover copies them to the array. There is no per-share setting yet.">${where}</td>
+      <td id="sz-${_esc(s.name)}">${size}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" style="color:var(--fg-dim);padding:16px">No shares yet. Click + New share.</td></tr>';
+}
+async function computeShare(name) {
+  const cell = document.getElementById('sz-' + name);
+  if (!liveMode) { alert('Demo mode — share size is computed on the server.'); return; }
+  if (cell) cell.textContent = '…';
+  try {
+    const d = await fetchJSON('/api/files/calc', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths: ['/mnt/user/' + name]}),
+    });
+    const bytes = d.results && d.results[0] ? d.results[0].bytes : null;
+    _shareSizes[name] = bytes;
+    if (cell) cell.textContent = bytes == null ? '—' : fmtBytesBin(bytes);
+  } catch (e) { if (cell) cell.textContent = 'failed'; }
+}
+async function computeAllShares() {
+  for (const n of _shareNames) await computeShare(n);
 }
 
 async function showEditShare(name) {
@@ -2534,23 +2912,60 @@ async function createNewShare() {
 }
 
 let _containers = [];
-function renderContainers(containers) {
-  _containers = containers;
-  const running = containers.filter(c=>c.state==='running').length;
-  document.getElementById('docker-val').innerHTML =
-    `${running}<span style="font-size:14px;color:var(--fg-muted)">/${containers.length}</span>`;
-  document.getElementById('docker-sub').textContent =
-    `${running} running · ${containers.length-running} stopped`;
-
-  document.getElementById('containers-list').innerHTML = containers.length ? containers.map(c => `
-    <div class="container-row">
-      <span class="ctr-dot ${_esc(c.state)}"></span>
-      <span class="ctr-name">${_esc(c.name)}</span>
-      <span class="ctr-image" style="max-width:120px">${_esc((c.image||'').split(':')[0].split('/').pop())}</span>
-      <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
-      <div class="ctr-actions">${ctrButtons(c, true)}</div>
-    </div>`).join('')
-    : '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">No containers yet. Install one from the Apps page.</div>';
+function renderContainers(containers, available) {
+  _containers = containers || [];
+  if (available != null) _dockerAvailable = available;
+  const running = _containers.filter(c => c.state === 'running').length;
+  const val = document.getElementById('docker-val');
+  if (val) val.innerHTML = `${running}<span style="font-size:14px;color:var(--fg-muted)">/${_containers.length}</span>`;
+  const sub = document.getElementById('docker-sub');
+  if (sub) sub.textContent = `${running} running · ${_containers.length - running} stopped`;
+  const list = document.getElementById('containers-list');
+  const glance = _containers.slice(0, 5);
+  if (list) {
+    list.innerHTML = glance.length ? glance.map(c => `
+      <div class="container-row">
+        <span class="ctr-dot ${_esc(c.state)}"></span>
+        <span class="ctr-name">${_esc(c.name)}</span>
+        <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
+        <div class="ctr-actions">${ctrButtons(c, true)}</div>
+      </div>`).join('')
+      : '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">No containers yet.</div>';
+    if (_containers.length > 5) list.insertAdjacentHTML('beforeend',
+      `<div style="padding:8px 16px;font-size:11px"><a href="#docker" class="panel-action">${_containers.length - 5} more</a></div>`);
+  }
+  const tb = document.getElementById('docker-tbody');
+  if (tb) {
+    tb.innerHTML = _containers.length ? _containers.map(c => `
+      <tr>
+        <td><span class="ctr-dot ${_esc(c.state)}"></span> <strong>${_esc(c.name)}</strong>${c.app ? ' <span style="font-size:10px;color:var(--accent)">app</span>' : ''}
+            <div style="font-size:11px;color:var(--fg-dim)">${_esc((c.image || '').split('/').pop())}</div></td>
+        <td>${_esc(c.status || c.state || '')}</td>
+        <td style="font-size:11px;color:var(--fg-muted);max-width:200px;word-break:break-word">${_esc(c.ports || '—')}</td>
+        <td class="mnt-cell" data-mnt="${_esc(c.name)}" style="font-size:11px;color:var(--fg-muted);max-width:240px;white-space:pre-wrap;overflow-wrap:anywhere">…</td>
+        <td style="white-space:nowrap"><div class="ctr-actions">${ctrButtons(c, false)}</div></td>
+      </tr>`).join('')
+      : '<tr><td colspan="5" style="color:var(--fg-dim);padding:16px">No containers yet. Install one from the Apps page.</td></tr>';
+  }
+  const un = document.getElementById('docker-unavail');
+  if (un) un.hidden = _dockerAvailable !== false;
+  const page = document.getElementById('docker-section');
+  if (page && !page.hidden) fillMounts(_containers);
+}
+async function fillMounts(containers) {
+  await Promise.all((containers || []).slice(0, 40).map(async c => {
+    const cell = document.querySelector('.mnt-cell[data-mnt="' + CSS.escape(c.name) + '"]');
+    if (!cell) return;
+    const hit = _mountCache[c.name];
+    if (hit && Date.now() - hit.at < 30000) { cell.textContent = hit.text; return; }
+    if (!liveMode) { cell.textContent = '—'; return; }
+    try {
+      const d = await fetchJSON('/api/docker/containers/' + encodeURIComponent(c.name));
+      const text = (d.mounts || []).map(m => `${m.source} ${m.rw ? '↔' : '←'} ${m.target}`).join('\n') || 'no folders';
+      _mountCache[c.name] = {at: Date.now(), text};
+      cell.textContent = text;
+    } catch (e) { cell.textContent = '—'; }
+  }));
 }
 
 // Action buttons for one container (compact on the dashboard, labelled in the Manage dialog).
@@ -2598,8 +3013,10 @@ async function ctrLogs(name) {
   let text;
   try { text = (await fetchJSON(`/api/docker/containers/${encodeURIComponent(name)}/logs?lines=300`)).lines.join('\n') || '(no output)'; }
   catch (e) { text = 'Could not read the log: ' + e.message; }
+  const back = document.getElementById('ctr-manager')
+    ? '<button class="ctr-btn" onclick="openContainerManager()">← Back</button>' : '';
   showModal(`Log — ${name}`, `<pre style="max-height:60vh;overflow:auto;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;margin:0">${_esc(text)}</pre>`,
-    `<button class="ctr-btn" onclick="openContainerManager()">← Back</button><button class="settings-btn" onclick="closeModal()">Close</button>`);
+    back + '<button class="settings-btn" onclick="closeModal()">Close</button>');
 }
 
 async function ctrRemove(name, isApp) {
@@ -2644,7 +3061,7 @@ async function refresh() {
     if (!liveMode) {
       renderSystem(MOCK.system);
       renderArray(MOCK.array);
-      renderDrives(MOCK.drives, MOCK.array.disks);
+      renderDrives(MOCK.drives, MOCK.array.disks, MOCK.array);
       renderShares(MOCK.shares);
       renderContainers(MOCK.containers);
       renderNetwork({interfaces:{eth0:{ip:'192.168.1.100',up:true,rx_mb:4821,tx_mb:1240}}});
@@ -2665,18 +3082,31 @@ async function refresh() {
   ]);
   try { renderSystem(sys); } catch (e) { console.warn('renderSystem', e); }
   try { renderArray(arr || {}); } catch (e) { console.warn('renderArray', e); }
-  try { renderDrives(driveHealth || [], (arr && arr.disks) || []); } catch (e) { console.warn('renderDrives', e); }
+  try { renderDrives(driveHealth || [], (arr && arr.disks) || [], arr || {}); } catch (e) { console.warn('renderDrives', e); }
   try { renderShares(shares || []); } catch (e) { console.warn('renderShares', e); }
-  try { renderContainers((ctrs && ctrs.containers) || []); } catch (e) { console.warn('renderContainers', e); }
+  try { renderContainers((ctrs && ctrs.containers) || [], ctrs ? ctrs.available : undefined); } catch (e) { console.warn('renderContainers', e); }
   if (netStatus) { try { renderNetwork(netStatus); } catch (e) { console.warn('renderNetwork', e); } }
   netCheckPending();
+  if (!_capsDone) { _capsDone = true; probeCapabilities(); }
+  maybeRefreshDisk();
 }
 
 // ── Nav hash routing ────────────────────────────────────────────
+const TOOL_HASHES = new Set(['#tools', '#diagnostics', '#hardware', '#scheduler', '#backup', '#scanner', '#proxy', '#terminal', '#zfs']);
+const SETTINGS_HASHES = new Set(['#config', '#notif-config']);
+function routeHash() {
+  const h = (location.hash || '#dashboard').split('?')[0];
+  return h.startsWith('#disk/') ? '#disk' : h;
+}
 function handleHash() {
-  const hash = location.hash || '#dashboard';
+  const raw = (location.hash || '#dashboard').split('?')[0];
+  const hash = raw.startsWith('#disk/') ? '#disk' : raw;
   document.querySelectorAll('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.getAttribute('href') === hash);
+    const href = el.getAttribute('href');
+    el.classList.toggle('active', href === raw
+      || (el.id === 'nav-main' && (raw === '#main' || hash === '#disk'))
+      || (el.id === 'nav-tools' && TOOL_HASHES.has(raw))
+      || (el.id === 'nav-settings' && SETTINGS_HASHES.has(raw)));
   });
 }
 handleHash();
@@ -3553,7 +3983,7 @@ async function checkUpdates() {
 async function applyUpdates() {
   const log = document.getElementById('updates-log');
   const status = document.getElementById('updates-status');
-  if (log) { log.style.display='block'; log.textContent = 'Starting…\n'; }
+  if (log) { log.hidden = false; log.textContent = 'Starting…\n'; }
   if (status) status.textContent = 'Running…';
   await fetchJSON('/api/updates/apply', {method:'POST'}).catch(()=>{});
   if (_updatesES) _updatesES.close();
@@ -4079,8 +4509,141 @@ async function removeSSHKey(username, index) {
   loadSSHKeys(username);
 }
 
+// ── Header search, capability notes, long-job log ──────────────
+const PAGE_INDEX = [
+  ['Dashboard', '#dashboard', 'status tiles'],
+  ['Main', '#main', 'disks array parity mover rebuild'],
+  ['Shares', '#shares', 'smb nfs'],
+  ['Docker', '#docker', 'containers'],
+  ['Files', '#files', 'file manager'],
+  ['App Catalog', '#apps', 'install'],
+  ['Virtual Machines', '#vms', 'vm'],
+  ['GPU', '#gpu-mgmt', 'graphics'],
+  ['Network', '#network', 'dhcp'],
+  ['VPN', '#vpn', 'wireguard tailscale'],
+  ['Users', '#users', 'accounts'],
+  ['Settings', '#config', 'identity samba appearance'],
+  ['Notifications', '#notif-config', 'alerts'],
+  ['Tools', '#tools', 'diagnostics hardware'],
+  ['Diagnostics', '#diagnostics', 'syslog log'],
+  ['Hardware', '#hardware', 'cpu memory'],
+  ['Scheduler', '#scheduler', 'cron'],
+  ['Backup', '#backup', ''],
+  ['ZFS pools', '#zfs', ''],
+  ['Reverse proxy', '#proxy', ''],
+  ['LAN scan', '#scanner', ''],
+  ['Terminal', '#terminal', 'shell'],
+];
+let _jumpIdx = 0;
+function hdrSearch(q) {
+  const box = document.getElementById('hdr-jump');
+  if (!box) return;
+  const query = (q || '').trim().toLowerCase();
+  if (!query) { box.hidden = true; box.innerHTML = ''; return; }
+  const hits = PAGE_INDEX.filter(p => (p[0] + ' ' + p[2]).toLowerCase().includes(query)).slice(0, 8);
+  _jumpIdx = 0;
+  if (!hits.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = hits.map((p, i) =>
+    `<button type="button" class="${i === 0 ? 'on' : ''}" data-href="${p[1]}" onclick="location.hash='${p[1]}';document.getElementById('hdr-search').value='';hdrSearch('')">${_esc(p[0])}</button>`).join('');
+}
+function hdrSearchKey(ev) {
+  const box = document.getElementById('hdr-jump');
+  if (!box || box.hidden) return;
+  const buttons = [...box.querySelectorAll('button')];
+  if (!buttons.length) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    _jumpIdx = (_jumpIdx + (ev.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length;
+    buttons.forEach((b, i) => b.classList.toggle('on', i === _jumpIdx));
+  } else if (ev.key === 'Enter') {
+    ev.preventDefault();
+    location.hash = buttons[_jumpIdx].dataset.href;
+    document.getElementById('hdr-search').value = '';
+    hdrSearch('');
+  } else if (ev.key === 'Escape') box.hidden = true;
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest || !e.target.closest('.hdr-search')) {
+    const box = document.getElementById('hdr-jump');
+    if (box) box.hidden = true;
+  }
+});
+
+function markUnavail(id, noteId, on, sentence) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.toggle('nav-unavail', !!on);
+    el.title = on ? sentence : '';
+  }
+  const note = document.getElementById(noteId);
+  if (!note) return;
+  // The ZFS tool card's note is its description. Swapping the words keeps the
+  // card readable; nav notes under a link are extra and should disappear.
+  if (note.closest && note.closest('.tool-card')) {
+    if (!note.dataset.base) note.dataset.base = note.textContent;
+    note.textContent = on ? sentence : note.dataset.base;
+    return;
+  }
+  note.hidden = !on;
+  if (on) note.textContent = sentence;
+}
+async function probeCapabilities() {
+  const [gpu, vms, zfs] = await Promise.all([
+    apiFetch('/api/gpu/').catch(() => null),
+    apiFetch('/api/vms/').catch(() => null),
+    apiFetch('/api/zfs/pools').catch(() => null),
+  ]);
+  markUnavail('nav-gpu-mgmt', 'note-gpu', !!(gpu && gpu.available === false), 'No GPU was found on this machine.');
+  markUnavail('nav-vms', 'note-vms', !!(vms && vms.available === false), 'libvirt is not installed, so virtual machines cannot run.');
+  markUnavail('nav-docker', 'note-docker', _dockerAvailable === false, 'Docker is not available, so containers cannot run.');
+  markUnavail('tool-zfs', 'note-zfs', !!(zfs && zfs.available === false), 'ZFS tools are not installed on this system.');
+}
+
+async function openHeaderLog() {
+  showModal('System log',
+    '<pre id="hdr-log" style="max-height:60vh;overflow:auto;font-size:11px;white-space:pre-wrap;margin:0">Loading…</pre>',
+    '<a class="hdr-btn" href="#diagnostics" onclick="closeModal()">Open Diagnostics</a><button class="settings-btn" onclick="closeModal()">Close</button>');
+  const out = document.getElementById('hdr-log');
+  if (!liveMode) { if (out) out.textContent = 'Demo mode — the log is read from the server.'; return; }
+  try {
+    const d = await fetchJSON('/api/diagnostics/syslog?lines=200');
+    if (out) { out.textContent = (d.lines || []).join('\n') || '(no entries)'; out.scrollTop = out.scrollHeight; }
+  } catch (e) { if (out) out.textContent = e.message || String(e); }
+}
+
+function jobOpen(title) {
+  const box = document.getElementById('job-log');
+  const body = document.getElementById('job-log-body');
+  const t = document.getElementById('job-log-title');
+  if (t) t.textContent = title;
+  if (body) body.textContent = '';
+  if (box) box.hidden = false;
+  const f = document.getElementById('footer-opjob');
+  if (f) { f.hidden = false; f.textContent = title; }
+}
+function jobLine(line) {
+  const body = document.getElementById('job-log-body');
+  if (!body || line == null) return;
+  body.textContent += (body.textContent ? '\n' : '') + line;
+  body.scrollTop = body.scrollHeight;
+}
+function jobHide() {
+  const box = document.getElementById('job-log');
+  if (box) box.hidden = true;
+}
+function jobFinish() {
+  const f = document.getElementById('footer-opjob');
+  if (f) f.hidden = true;
+}
+
 // ── Hash-based section visibility ───────────────────────────────
 const SECTION_IDS = {
+  '#main':         'main-section',
+  '#disk':         'disk-section',
+  '#shares':       'shares-section',
+  '#docker':       'docker-section',
+  '#tools':        'tools-section',
   '#config':       'settings-section',
   '#users':        'users-section',
   '#notif-config': 'notif-settings-section',
@@ -4117,22 +4680,32 @@ const SECTION_LOADERS = {
   '#proxy':        loadProxy,
   '#scanner':      loadScannerHosts,
   '#network':      loadNetworkPage,
+  '#main':         () => ensureFreeDisks(true),
+  '#disk':         () => loadDiskPage(),
+  '#docker':       () => fillMounts(_containers),
 };
 
 function updateSections() {
-  const hash = location.hash || '#dashboard';
+  const hash = routeHash();
   const activeId = SECTION_IDS[hash];
+  const named = new Set(Object.values(SECTION_IDS));
 
-  // Hide all named sections
-  Object.values(SECTION_IDS).forEach(id => {
-    document.getElementById(id).hidden = id !== activeId;
+  named.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = id !== activeId;
   });
 
-  // Show/hide dashboard content
   const isDash = !activeId;
-  document.querySelectorAll(
-    'main > *:not(.demo-banner):not(#settings-section):not(#users-section):not(#notif-settings-section):not(#apps-section):not(#vpn-section):not(#vms-section):not(#terminal-section):not(#diagnostics-section):not(#scheduler-section):not(#files-section):not(#gpu-mgmt-section):not(#hardware-section):not(#backup-section):not(#zfs-section):not(#proxy-section):not(#scanner-section):not(#network-section):not(#net-pending):not(#modal-overlay)'
-  ).forEach(el => { el.hidden = !isDash; });
+  document.querySelectorAll('main > *').forEach(el => {
+    if (el.classList.contains('demo-banner') || named.has(el.id)) return;
+    // Checkmk decides its own visibility. Forcing it on every dashboard visit
+    // showed an empty monitoring panel for up to 30s when Checkmk is absent.
+    if (el.id === 'cmk-panel') {
+      el.hidden = !isDash || el.dataset.cmkOn !== '1';
+      return;
+    }
+    el.hidden = !isDash;
+  });
 
   if (SECTION_LOADERS[hash]) SECTION_LOADERS[hash]();
 }
@@ -4161,8 +4734,19 @@ function closeModal(e) {
 let _aopConfirmed = false;
 
 async function loadArrayOperation() {
-  try { renderArrayOperation(await apiFetch('/api/array/operation')); }
-  catch (e) { /* backend unreachable: leave the last view; liveMode handling shows demo banner */ }
+  let op;
+  try { op = await apiFetch('/api/array/operation'); }
+  catch (e) {
+    const host = document.getElementById('array-op');
+    if (host && host.querySelector('.aop-empty')) {
+      host.innerHTML = '<div class="aop-row"><div class="aop-status">Stopped</div><div class="aop-ctl"></div><div class="aop-explain">Demo mode. Start, stop, and parity run on the server.</div></div>';
+    }
+    const ft = document.getElementById('footer-text');
+    if (ft && ft.textContent.trim() === 'Array …') ft.textContent = 'Array stopped';
+    return;
+  }
+  try { renderArrayOperation(op); }
+  catch (e) { console.warn('array operation', e); }
 }
 
 function renderArrayOperation(op) {
@@ -4170,7 +4754,7 @@ function renderArrayOperation(op) {
   const ft = document.getElementById('footer-text'), fd = document.getElementById('footer-dot');
   if (ft) {
     ft.textContent = op.footer;
-    const busy = op.transition || op.busy.parity || op.busy.mover;
+    const busy = op.transition || op.busy.parity || op.busy.mover || op.busy.format;
     fd.className = 'footer-dot ' + (busy ? 'busy' : op.state === 'started' ? 'ok' : 'err');
   }
   const host = document.getElementById('array-op');
@@ -4181,15 +4765,31 @@ function renderArrayOperation(op) {
     const b = r.button;
     const needsTick = !!r.confirm;
     const enabled = b && b.enabled && (!needsTick || _aopConfirmed);
+    const status = (_esc(r.status) || '&nbsp;') + (r.detail || []).map(line => `<div class="aop-detail" title="${_esc(line)}">${_esc(line)}</div>`).join('');
     return `<div class="aop-row aop-${_esc(r.level)}">
-      <div class="aop-status">${_esc(r.status) || '&nbsp;'}</div>
+      <div class="aop-status">${status}</div>
       <div class="aop-ctl">
         ${b ? `<button class="ctr-btn" ${enabled ? '' : 'disabled'} onclick="aopAct('${b.action}')">${_esc(b.label)}</button>` : ''}
-        ${needsTick ? `<label><input type="checkbox" ${_aopConfirmed ? 'checked' : ''} onchange="_aopConfirmed=this.checked;loadArrayOperation()"> ${_esc(r.confirm)}</label>` : ''}
+        ${needsTick ? `<label><input type="checkbox" ${_aopConfirmed ? 'checked' : ''} onchange="aopTick(this, ${r.confirm_warn ? 'true' : 'false'})"> ${_esc(r.confirm)}</label>` : ''}
       </div>
       <div class="aop-explain">${_esc(r.explain)}${r.warn ? `<span class="aop-warn-line">⚠ ${_esc(r.warn)}</span>` : ''}</div>
     </div>`;
   }).join('');
+}
+
+function aopTick(el, warn) {
+  _aopConfirmed = !!el.checked;
+  if (el.checked && warn) showFormatWarning();
+  loadArrayOperation();
+}
+
+function showFormatWarning() {
+  showModal('Format unmountable disks',
+    `<p>This creates an empty file system on every disk listed as unmountable, using the file system chosen on that disk's page. Anything on those disks is discarded.</p>
+     <p>This is what you do when a new disk is added and needs a file system before it can hold files.</p>
+     <p style="font-weight:700;margin-top:10px">Warning</p>
+     <p>A format is never part of recovering data or rebuilding a disk. Formatting in that situation normally loses everything on the disks being formatted.</p>`,
+    `<button class="settings-btn primary" onclick="closeModal()">Ok</button>`);
 }
 
 async function aopAct(action) {
@@ -4204,6 +4804,9 @@ async function aopAct(action) {
     } else if (action === 'parity_sync') { startParityStream(false); return; }
     else if (action === 'parity_scrub') { startParityStream(true); return; }
     else if (action === 'parity_cancel') { stopParity(); }
+    else if (action === 'format') {
+      await fetchJSON('/api/array/format?confirm=' + (_aopConfirmed ? 'true' : 'false'), {method: 'POST'});
+    }
   } catch (e) { alert(errText(e)); }       // the server says exactly why (e.g. "a parity operation is running")
   _aopConfirmed = false;
   loadArrayOperation(); refresh();
@@ -6036,18 +6639,22 @@ function startParityStream(scrub = false) {
   bar.style.width = '0%';
   status.textContent = 'Starting…';
   if (btn) btn.hidden = false;
+  jobOpen(scrub ? 'Parity scrub' : 'Parity sync');
   _parityES = new EventSource(`/api/array/parity/stream?scrub=${scrub}`);
   _parityES.onmessage = e => {
     const line = e.data;
+    jobLine(line);
     if (line.startsWith('DONE')) {
       status.textContent = 'Parity sync complete ✓';
       if (bar) bar.style.width = '100%';
-      _parityES.close(); _parityES = null;
+      const es = _parityES; _parityES = null; if (es) es.close();
       if (btn) btn.hidden = true;
+      jobFinish();
     } else if (line.startsWith('ERROR:')) {
       status.textContent = line.replace('ERROR:', 'Error: ');
-      _parityES.close(); _parityES = null;
+      const es = _parityES; _parityES = null; if (es) es.close();
       if (btn) btn.hidden = true;
+      jobFinish();
     } else {
       // Parse snapraid progress lines like "xx% completed, ..."
       const m = line.match(/(\d+)%/);
@@ -6056,18 +6663,23 @@ function startParityStream(scrub = false) {
     }
   };
   _parityES.onerror = () => {
+    if (!_parityES) return;
     status.textContent = 'Connection lost';
-    _parityES.close(); _parityES = null;
+    jobLine('Connection lost');
+    const es = _parityES; _parityES = null; es.close();
     if (btn) btn.hidden = true;
+    jobFinish();
   };
 }
 async function stopParity() {
-  if (_parityES) { _parityES.close(); _parityES = null; }
+  if (_parityES) { const es = _parityES; _parityES = null; es.close(); }
   await fetchJSON('/api/array/parity/stop', {method: 'POST'});
   const btn = document.getElementById('parity-stop-btn');
   if (btn) btn.hidden = true;
   const st  = document.getElementById('parity-status-text');
   if (st) st.textContent = 'Stopped';
+  jobLine('Stopped');
+  jobFinish();
 }
 
 // ── Drive Rebuild ─────────────────────────────────────────────────
@@ -6078,9 +6690,11 @@ function startRebuild() {
   const log    = document.getElementById('rebuild-log');
   const status = document.getElementById('rebuild-status-text');
   const btn    = document.getElementById('rebuild-stop-btn');
-  if (log) { log.style.display = 'block'; log.textContent = 'Starting rebuild…\n'; }
+  if (log) { log.textContent = 'Starting rebuild…\n'; }
   if (status) status.textContent = 'Running…';
   if (btn) btn.hidden = false;
+  jobOpen('Drive rebuild');
+  jobLine('Starting rebuild…');
   _rebuildES = new EventSource('/api/array/rebuild/stream');
   _rebuildES.onmessage = e => {
     const line = e.data;
@@ -6088,25 +6702,33 @@ function startRebuild() {
       const ok = line.startsWith('DONE');
       if (status) { status.textContent = ok ? 'Rebuild complete ✓' : line; status.style.color = ok ? 'var(--ok)' : 'var(--warn)'; }
       if (log) log.textContent += '\n--- ' + (ok ? 'Done' : 'Error') + ' ---';
-      _rebuildES.close(); _rebuildES = null;
+      jobLine(ok ? 'Done' : line);
+      const es = _rebuildES; _rebuildES = null; if (es) es.close();
       if (btn) btn.hidden = true;
+      jobFinish();
     } else {
       if (log) { log.textContent += line + '\n'; log.scrollTop = log.scrollHeight; }
-      if (status) status.textContent = line.slice(0, 60);
+      jobLine(line);
+      if (status) status.textContent = line.slice(0, 80);
     }
   };
   _rebuildES.onerror = () => {
+    if (!_rebuildES) return;
     if (status) status.textContent = 'Connection lost';
-    _rebuildES.close(); _rebuildES = null;
+    jobLine('Connection lost');
+    const es = _rebuildES; _rebuildES = null; es.close();
     if (btn) btn.hidden = true;
+    jobFinish();
   };
 }
 async function stopRebuild() {
-  if (_rebuildES) { _rebuildES.close(); _rebuildES = null; }
+  if (_rebuildES) { const es = _rebuildES; _rebuildES = null; es.close(); }
   await fetchJSON('/api/array/rebuild/stop', {method: 'POST'});
   document.getElementById('rebuild-stop-btn') && (document.getElementById('rebuild-stop-btn').hidden = true);
   const st = document.getElementById('rebuild-status-text');
   if (st) st.textContent = 'Stopped';
+  jobLine('Stopped');
+  jobFinish();
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────
@@ -6451,8 +7073,11 @@ async function pollCheckmk() {
   if (!panel || !summary) return;
   try {
     const d = await fetchJSON('/api/checkmk/status');
+    panel.dataset.cmkOn = d.available ? '1' : '0';
     if (!d.available) { panel.hidden = true; return; }
-    panel.hidden = false;
+    const onDash = (location.hash || '#dashboard') === '#dashboard';
+    panel.hidden = !onDash;
+    if (!onDash) return;
     const { services: s = {}, hosts: h = {} } = d;
     const tiles = [
       { label:'OK',      val: s.ok     ?? 0, color:'var(--ok)' },
@@ -8271,44 +8896,136 @@ async function driveIdentify(name) {
   }
 }
 
-function showFormatDrive(name, device) {
-  openModal(`Format Drive: ${name}`,
-    `<div style="background:#f871714d;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px">
-       ⚠ <strong>DESTRUCTIVE:</strong> All data on ${device||name} will be permanently erased.
-     </div>
-     <div style="display:flex;flex-direction:column;gap:10px">
-       <div style="display:flex;align-items:center;gap:10px">
-         <label style="font-size:12px;width:80px">Filesystem</label>
-         <select id="fmt-fs" style="background:var(--surface);border:1px solid var(--border);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:12px">
-           <option value="xfs">XFS (recommended)</option>
-           <option value="btrfs">Btrfs</option>
-           <option value="ext4">ext4</option>
-         </select>
-       </div>
-       <div style="display:flex;align-items:center;gap:10px">
-         <label style="font-size:12px;width:80px">Label</label>
-         <input id="fmt-label" type="text" placeholder="optional" style="background:var(--surface);border:1px solid var(--border);color:var(--fg);padding:4px 8px;border-radius:4px;font-size:12px;flex:1">
-       </div>
-       <div id="fmt-result" style="font-size:11px;color:var(--fg-muted);display:none;white-space:pre-wrap;max-height:80px;overflow-y:auto;background:var(--bg);padding:6px;border-radius:4px"></div>
-     </div>`,
-    [{label:'Format', danger:true, onclick:`doFormatDrive('${name}')`}, {label:'Cancel', action:'close'}]);
+let _diskPage = null;
+let _diskSavedFs = '';
+
+function diskHashName() {
+  const h = (location.hash || '').split('?')[0];
+  const parts = h.split('/');
+  return parts[0] === '#disk' ? decodeURIComponent(parts[1] || '') : '';
 }
 
-async function doFormatDrive(name) {
-  const fs = document.getElementById('fmt-fs')?.value || 'xfs';
-  const label = document.getElementById('fmt-label')?.value || '';
-  const resEl = document.getElementById('fmt-result');
-  if (resEl) { resEl.style.display='block'; resEl.textContent = 'Formatting…'; }
-  const d = await fetchJSON(`/api/drives/${name}/format`, {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({fs, label, force: true})
-  }).catch(e=>({ok:false, output:String(e)}));
-  if (resEl) resEl.textContent = (d.ok ? '✓ Format complete.\n' : '✗ Format failed.\n') + (d.output || '');
-  // Formatting is finished — replace Format/Cancel with a single acknowledge button.
-  const actions = document.getElementById('modal-actions');
-  if (actions) actions.innerHTML =
-    `<button class="settings-btn primary" onclick="closeModal(); refresh();">${d.ok ? 'Done' : 'Close'}</button>`;
+async function loadDiskPage() {
+  const name = diskHashName();
+  const body = document.getElementById('disk-body');
+  const pager = document.getElementById('disk-pager');
+  const title = document.getElementById('disk-title');
+  if (!name) {
+    if (body) body.innerHTML = '<p class="disk-note">Open a disk from its name on Main.</p>';
+    return;
+  }
+  if (!liveMode) {
+    if (title) title.textContent = name;
+    if (body) body.innerHTML = '<p class="disk-note">Disk settings load from the server.</p>';
+    return;
+  }
+  let d;
+  try { d = await fetchJSON('/api/array/disk/' + encodeURIComponent(name)); }
+  catch (e) {
+    if (body) body.innerHTML = `<p class="disk-note">${_esc(errText(e))}</p>`;
+    return;
+  }
+  _diskPage = d;
+  _diskSavedFs = d.fs || 'xfs';
+  if (title) title.textContent = d.name;
+  if (pager) {
+    const prev = d.prev ? `<a href="#disk/${encodeURIComponent(d.prev)}" title="Previous disk">‹</a>` : '<span style="opacity:.3">‹</span>';
+    const next = d.next ? `<a href="#disk/${encodeURIComponent(d.next)}" title="Next disk">›</a>` : '<span style="opacity:.3">›</span>';
+    pager.innerHTML = `${prev}<span>${_esc(d.name)}</span>${next}`;
+  }
+  const fsLine = d.role === 'parity'
+    ? `<div>None</div>`
+    : (d.fs_editable
+      ? `<select id="disk-fs" class="settings-select" onchange="diskFsChanged()">${
+          (d.fs_choices || ['xfs','btrfs','ext4']).map(fs => `<option value="${fs}"${fs === d.fs ? ' selected' : ''}>${fs}</option>`).join('')
+        }</select>`
+      : `<div>${_esc(d.fstype || d.fs || 'none')}</div>`);
+  if (body) body.innerHTML = `
+    <div class="disk-fields">
+      <div class="settings-label">Device</div><div class="mono">${_esc(d.device || '')}</div>
+      <div class="settings-label">Role</div><div>${_esc(d.role || '')}</div>
+      <div class="settings-label">File system</div>${fsLine}
+    </div>
+    <p class="disk-note" id="disk-note">${_esc(d.note || '')}</p>
+    <p class="disk-note" id="disk-msg"></p>
+    <div class="disk-actions">
+      ${d.fs_editable ? '<button class="settings-btn" id="disk-apply" type="button" disabled onclick="applyDiskFs()">Apply</button>' : ''}
+      <button class="settings-btn" id="disk-done" type="button" onclick="location.hash='#main'">Done</button>
+      <button class="settings-btn" id="disk-erase" type="button" ${d.erase_enabled ? '' : 'disabled'} onclick="showEraseDisk()">${d.role === 'cache' ? 'Erase' : 'Erase'}</button>
+    </div>
+    ${d.erase_reason ? `<p class="disk-note">${_esc(d.erase_reason)}</p>` : ''}`;
+}
+
+function maybeRefreshDisk() {
+  if (!diskHashName()) return;
+  const sel = document.getElementById('disk-fs');
+  if (sel && sel.value !== _diskSavedFs) return;
+  if (document.getElementById('modal-overlay')?.style.display === 'flex') return;
+  loadDiskPage();
+}
+
+function diskFsChanged() {
+  const sel = document.getElementById('disk-fs');
+  const dirty = !!(sel && sel.value !== _diskSavedFs);
+  const apply = document.getElementById('disk-apply');
+  const done = document.getElementById('disk-done');
+  if (apply) {
+    apply.disabled = !dirty;
+    apply.classList.toggle('primary', dirty);
+  }
+  if (done) {
+    done.textContent = dirty ? 'Reset' : 'Done';
+    done.onclick = dirty
+      ? () => { if (sel) sel.value = _diskSavedFs; diskFsChanged(); }
+      : () => { location.hash = '#main'; };
+  }
+}
+
+async function applyDiskFs() {
+  if (!_diskPage) return;
+  const fs = document.getElementById('disk-fs')?.value;
+  const msg = document.getElementById('disk-msg');
+  try {
+    await fetchJSON('/api/array/disk/' + encodeURIComponent(_diskPage.name) + '/filesystem', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({fs}),
+    });
+    _diskSavedFs = fs;
+    diskFsChanged();
+    if (msg) msg.textContent = 'Saved. Start the array, then use Format on Main if this disk has no file system.';
+  } catch (e) {
+    if (msg) msg.textContent = errText(e);
+  }
+}
+
+function showEraseDisk() {
+  if (!_diskPage || !_diskPage.erase_enabled) return;
+  const name = _diskPage.name;
+  showModal(`Erase ${name}?`,
+    `<p>This will erase all content on <strong>${_esc(name)}</strong>.</p>
+     <p style="font-weight:700;color:var(--err);margin:8px 0">Existing content is permanently lost.</p>
+     <input id="erase-confirm" class="settings-input" placeholder="To confirm type: ${_esc(name)}" autocomplete="off">`,
+    `<button class="settings-btn primary" onclick="doEraseDisk()">Proceed</button>
+     <button class="settings-btn" onclick="closeModal()">Cancel</button>`);
+  setTimeout(() => document.getElementById('erase-confirm')?.focus(), 0);
+}
+
+async function doEraseDisk() {
+  const name = _diskPage && _diskPage.name;
+  const typed = document.getElementById('erase-confirm')?.value || '';
+  if (typed !== name) {
+    showModal('Incorrect confirmation', '<p>Please try again.</p>',
+      `<button class="settings-btn primary" onclick="showEraseDisk()">Ok</button>`);
+    return;
+  }
+  try {
+    await fetchJSON('/api/array/disk/' + encodeURIComponent(name) + '/erase', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: typed}),
+    });
+    closeModal();
+    await loadDiskPage();
+  } catch (e) { alert(errText(e)); }
 }
 
 async function showPreclearDrive(name) {
@@ -8406,44 +9123,66 @@ async function pollMoverStatus() {
 
 async function moverStart(dry) {
   const logEl = document.getElementById('mover-log');
-  if (logEl) { logEl.style.display='block'; logEl.textContent = 'Starting…\n'; }
-  await fetchJSON('/api/mover/start', {method:'POST'}).catch(()=>{});
+  if (logEl) logEl.textContent = 'Starting…\n';
+  jobOpen(dry ? 'Mover dry run' : 'Cache mover');
+  jobLine('Starting…');
+  // dry_run is a query flag. It must not be saved into mover.cfg: an earlier
+  // version of Dry Run wrote cache_path=/mnt/cache, which is not a real mount
+  // (cache drives are /mnt/cache1, /mnt/cache2, …) and the next Move Now failed.
+  const q = dry ? '?dry_run=true' : '';
+  let res;
+  try {
+    res = await fetchJSON('/api/mover/start' + q, {method:'POST'});
+  } catch (e) {
+    const msg = e.message || String(e);
+    if (logEl) logEl.textContent += msg + '\n';
+    jobLine(msg);
+    jobFinish();
+    return;
+  }
+  if (res && res.ok === false) {
+    const msg = res.message || 'Mover did not start';
+    if (logEl) logEl.textContent += msg + '\n';
+    jobLine(msg);
+    jobFinish();
+    return;
+  }
   document.getElementById('mover-stop-btn') && (document.getElementById('mover-stop-btn').hidden = false);
   // Stream output
   if (_moverES) _moverES.close();
   _moverES = new EventSource('/api/mover/stream');
   _moverES.onmessage = e => {
-    if (logEl) {
-      if (e.data === 'DONE') {
-        logEl.textContent += '\n--- Done ---';
-        _moverES.close(); _moverES = null;
-        document.getElementById('mover-stop-btn') && (document.getElementById('mover-stop-btn').hidden = true);
-        pollMoverStatus();
-      } else {
-        logEl.textContent += e.data + '\n';
-        logEl.scrollTop = logEl.scrollHeight;
-      }
+    if (e.data === 'DONE') {
+      if (logEl) logEl.textContent += '\n--- Done ---';
+      jobLine('Done');
+      const es = _moverES; _moverES = null; if (es) es.close();
+      document.getElementById('mover-stop-btn') && (document.getElementById('mover-stop-btn').hidden = true);
+      pollMoverStatus();
+      jobFinish();
+    } else {
+      if (logEl) { logEl.textContent += e.data + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+      jobLine(e.data);
     }
+  };
+  _moverES.onerror = () => {
+    if (!_moverES) return;
+    jobLine('Connection lost');
+    _moverES = null;
+    document.getElementById('mover-stop-btn') && (document.getElementById('mover-stop-btn').hidden = true);
+    jobFinish();
   };
 }
 
 async function moverDryRun() {
-  await fetchJSON('/api/mover/config', {
-    method:'PUT', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({dry_run: true, cache_path:'/mnt/cache', share_path:'/mnt/user'})
-  }).catch(()=>{});
-  await moverStart();
-  // Reset dry_run after start
-  await fetchJSON('/api/mover/config', {
-    method:'PUT', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({dry_run: false, cache_path:'/mnt/cache', share_path:'/mnt/user'})
-  }).catch(()=>{});
+  await moverStart(true);
 }
 
 async function moverStop() {
   await fetchJSON('/api/mover/stop', {method:'POST'}).catch(()=>{});
   if (_moverES) { _moverES.close(); _moverES = null; }
   document.getElementById('mover-stop-btn') && (document.getElementById('mover-stop-btn').hidden = true);
+  jobLine('Stopped');
+  jobFinish();
   pollMoverStatus();
 }
 

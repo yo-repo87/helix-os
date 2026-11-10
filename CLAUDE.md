@@ -423,7 +423,7 @@ All features implemented in `webui/frontend/index.html` (artifact: https://claud
 | FTP server | `routers/ftp.py` | Settings → FTP |
 | OS Updates | `routers/updates.py` | Settings → OS Updates (SSE stream) |
 | VFIO GPU passthrough | `routers/vfio.py` | VMs → GPU Passthrough panel |
-| Cache mover | `routers/mover.py` | Array Controls → Cache Mover |
+| Cache mover | `routers/mover.py` + `array/sbin/helix-mover` | Main → Cache mover. Safety rules from Unraid's mover landed in 2.0.25 (§31). The row moved onto Main in 2.0.26 (§32). Per-share yes/no/only/prefer is still absent. |
 | Hardware profile | `routers/hardware.py` | Hardware page |
 | Drive spin-down / identify / format / pre-clear / timer | `routers/drives.py` | Drive tile buttons |
 | Avahi/mDNS toggle | `routers/network.py` | Network settings |
@@ -1297,6 +1297,8 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 | Array, Shares and Docker sidebar links showed the same page as Dashboard | they had no section in `SECTION_IDS`, so every one of them fell through to the dashboard (which already holds the array, shares and containers tiles) | links removed. Audit method: click every `a.nav-item` on the VM and fingerprint the visible `main > *` ids; any two links with the same fingerprint are duplicates (only that one group existed). Re-run it whenever a link is added |
 | Dashboard: Array Operation rows touched the bottom of the drive tiles, drive tiles almost touched the stat tiles (user screenshot with no "Drives"/"Array Operation" headings between them; could not reproduce the missing headings on the VM at 1700 px, dark or light) | the blocks relied on the section headings' margins for their distance | `.drives-grid` has its own margin and `gap:16px 12px`, `.stats-row + .drives-grid` / `.drives-grid + .array-op` add 22 px when no heading sits between them, `.array-op` gap 10 px and larger row padding. Measured: 22 px without headings (was ~3), 51-61 px with |
 | 91 form fields unexplained | — | `FIELD_TIPS` map + shared ⓘ bubble (`attachTips`, MutationObserver for modals); `tipHtml()` for string-built HTML |
+| Mover could delete open files and the Docker graph; one Dry Run click pointed every later run at `/mnt/cache` | `routers/mover.py` ran `rsync -a --remove-source-files` on every directory under `/mnt/cache1` into `/mnt/user`. Dry Run saved `cache_path=/mnt/cache`, which is not a mount (drives are `/mnt/cache1`…) | **2.0.25.** `array/sbin/helix-mover` plus `POST /api/mover/start?dry_run=true`. Full write-up §31. |
+| Dashboard, array controls, the disk list, shares, and containers were one scrolling page; the header repeated the footer | The sidebar listed every tool, and a page that cannot run (no libvirt, no ZFS, no GPU) looked the same as one that can | **2.0.26.** Dashboard stays a glance. Main holds the disk table, array operation, mover, and rebuild. Shares and Docker are their own tables. Settings and Tools are grouped. Header search jumps to a page. Full write-up §32. |
 
 ### 29.3 Rules learned (read before changing these areas)
 
@@ -1313,7 +1315,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **NFS-exporting mergerfs needs `fsid=`.** One service identity (`helix`) for SMB/NFS/file-manager keeps files interchangeable.
 - **Docker data-root must be a real FS (not the mergerfs share, not RAM)** → cache or a data disk.
 - **File manager internals:** files are copied by the backend process (as `helix`) so everything it creates has the same owner as SMB/NFS/apps; only Owner/Permission jobs use `sudo`. Test knobs: `FILES_MNT`/`FILES_BOOT` move the browsable roots, `HELIX_FILEJOBS_DELAY` (seconds per 4 MB chunk) slows copies because RAM disks finish instantly. Backend checks used a throwaway tree + `uvicorn` on port 8099, UI checks used Playwright against it.
-- **A CSS `display:` on a class overrides the `hidden` attribute.** Any element that is toggled with `.hidden` and has `display:flex|block|grid` needs a matching `[hidden]{display:none}` rule.
+- **A CSS `display:` on a class overrides the `hidden` attribute.** `index.html` now has a global `[hidden] { display: none !important; }`, which is what lets Dashboard tiles disappear on other pages. Setting `style.display = 'block'` does **not** reveal an element that still has the `hidden` attribute. Clear `hidden` (the OS-update log does; `#updates-log` was the one that only set `display`).
 - **A fixed bar must sit above `header` (z-index 100)** or its buttons cannot be clicked; Playwright reports "<header> intercepts pointer events".
 - **Test network changes with `NETWORK_SBIN` pointed at a stub and `NET_CONFIRM_SECS` small** (never run the real `helix-apply-network` on a dev machine: it rewrites `/etc/systemd/network`).
 - **`pkill -f <pattern>` kills your own shell if the pattern is in its command line.** Write it as `pkill -f '[u]vicorn …'`.
@@ -1330,6 +1332,7 @@ The updater polls GitHub unauthenticated (60 req/h per IP) and the releases list
 - **A boot-critical file change (initrd, grub.cfg) ships with a `.prev` copy.** `grub.cfg` is **not** updated by OTA — copy it by hand (back up as `grub.cfg.bak-<ver>`, checksum, atomic `mv`).
 - **Boot-test after any partition/boot change** before applying the next update, so a failure can be pinned on the right change.
 - A rootfs change in the image needs an actual image rebuild+OTA to take effect on the VM; hot-patching the VM is for unblocking only.
+- **Mover:** never `rsync --remove-source-files` a cache tree onto `/mnt/user`. Skip open files, the docker data-root (`<cache>/system/docker`), and any path that already exists on the array. Dry Run must not write `mover.cfg`. The open-file scan is one Python walk of `/proc` run as root; a bash `readlink` per fd takes a minute, and a bash `RETURN` trap fires on every function return, not only the function that set it. Details and the remaining per-share gap are in §31.
 - Unraid parity: its `/boot` is FAT too and its templates hold tokens on the flash — our `/boot/config` holds secrets (API keys, PIA, app env) in plain text on a world-readable FAT volume. Acceptable for now; see 29.4.
 
 ### 29.4 State at time of writing, open items, ideas
@@ -1349,7 +1352,7 @@ Open items:
 - PIA `addKey` is called with TLS verification off (PIA ships a CA cert; pin it). PIA password and other secrets are plain text on `/boot`.
 - **PIA:** DNS for routed containers still goes through Docker's embedded resolver to the host's upstream (a DNS leak); there is no kill-switch (disconnect restores the containers' normal networks instead).
 - `apps` update/`up --pull` on compose v1 is emulated; moving to Docker's own apt repo would give v2.
-- Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI, split level, array autostart, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing.
+- Unraid features worth comparing next (from §10): per-share cache policy + mover scheduling UI (the mover no longer deletes open files or the docker graph — §31 — but it still moves every ordinary share directory, with no yes/no/only/prefer and no array→cache direction), split level, notifications feed wiring, dashboard tile layout, user-share "exclusive" mode, docker "autostart order", Dynamix-style system stats history, safe-mode boot entry testing. Array autostart shipped earlier (§29.2).
 
 *Last updated: 2026-11-09 (2.0.13).*
 
@@ -1967,7 +1970,7 @@ Mapping is a recommendation; none of this has been built yet.
 - **Read only in part:** `DisplaySettings.page` (field labels), `CPUvms.page` (to the start of its table scripts), `ManagementAccess.page` (certificate blocks at the end cut off), `OutgoingProxy.page` (first 90 lines), `SyslogSettings.page` and `PHPsettings.page` (first ~105 lines). Lines over about 170 characters were clipped when reading the larger pages.
 - **Structure only, not line by line:** `WG0.page`/`WGX.page` (fields, dialogs and function list; `validateForm`, keypair and peer add/remove partly), `BootParameters.page` (layout and all action functions; not its config-parsing routines), `Connect.page`, `Custom.form.php` (fields and function names), the eth0 VLAN markup (same as the fields already listed), `VMajax.php` (action list), `monitor` after line ~250, `BrowseButton.page` after line ~130 (behaviour covered via `Browse.page`), `Control.php` after the `start` case, `update_container` (start only), theme CSS (variables only).
 - **Not read:** other `include/*.php` endpoints (e.g. `Helpers.php`, `ShareList.php`, `SmartInfo.php`, `Browse.php`), `nchan/*` other than `device_list`, `default-base.css` and `default-dynamix.css`.
-- **Not readable:** `emhttp` (compiled), so `cmd*` internals are inferred. The compiled Vue components (`unraid-*`: header, notifications, Update OS, API keys, log viewer, onboarding). Community Applications ships separately. The mover is outside this tree. Vendored libraries were skipped.
+- **Not readable:** `emhttp` (compiled), so `cmd*` internals are inferred. The compiled Vue components (`unraid-*`: header, notifications, Update OS, API keys, log viewer, onboarding). Community Applications ships separately. Vendored libraries were skipped. The mover shell wrapper is not in this tree; it was read from `bzmodules` on 2026-11-10 and written up in §31. `libexec/unraid/shfs` and `/usr/libexec/unraid/move` are stripped binaries and were not disassembled.
 
 *Section 30 added 2026-11-09 from static reading of the Unraid 7.3.4 web UI source; nothing was exercised on a live Unraid server.*
 
@@ -1979,22 +1982,206 @@ Numbers refer to the adoption list in §30.13. Verified = exercised on the test 
 |---|---|---|
 | 17 | Refuse rather than fail | **Partly done (2.0.14):** the §30.14 input limits (share/host/user/description/password) are enforced server-side and shown live in the forms. Still to do: render config forms disabled with "Array must be Stopped" for identity/SMB/global-share changes; check whether a VM/container uses something before changing it. |
 | 5 | Apply disabled until a form changes; Done returns to parent | not started (Helix saves per button) |
-| 1 | Array panel as a state machine | **Done (2.0.15), partly:** valid/invalid Start (no devices, no data disk, parity too small, missing disk + confirm, unprotected warning), Stop gated by parity/mover, transitions, parity Sync/Scrub/Cancel rows. Not yet: unclean-shutdown check, maintenance mode, spin up/down, reboot/shutdown rows, real % progress/ETA for parity |
-| 2 | Global footer with live array/operation status | **Done (2.0.15):** "Array Started · Parity operation 0:12:33 · Mover running" with a colour dot, on every page |
-| 3 | Long jobs in a live-log modal that survives closing | not started (parity uses an inline progress bar) |
-| 4 | One container context menu shared by Dashboard and list pages | **Partly done (2.0.13):** Manage dialog + per-row Start/Stop/Restart/Logs/Configure/Remove; no "Edit before touching running container", no update/Update All yet |
-| 6 | Shape+colour status orbs, click to spin | not started |
-| 7 | Inline disk assignment while stopped | not started (modal exists) |
-| 8 | Share editor (Primary/Secondary/Mover wording, on-demand size) | not started |
-| 9 | Hide/explain features that cannot work now | not started |
+| 1 | Array panel as a state machine | **Done (2.0.15), on Main (2.0.26):** valid/invalid Start (no devices, no data disk, parity too small, missing disk + confirm, unprotected warning), Stop gated by parity/mover, transitions, parity Sync/Scrub/Cancel rows. Mover and rebuild sit under that panel as their own rows. Not yet: unclean-shutdown check, maintenance mode, spin up/down of every disk, reboot/shutdown rows, real % progress/ETA for parity |
+| 2 | Global footer with live array/operation status | **Done (2.0.15):** "Array Started · Parity operation 0:12:33 · Mover running" with a colour dot, on every page. A running mover, rebuild, or parity job adds a second chip (`#footer-opjob`) that reopens its log |
+| 3 | Long jobs in a live-log modal that survives closing | **Partly done (2.0.26):** mover, rebuild, and parity open `#job-log`. Close hides the window and leaves the job running; the footer chip opens it again. The window stays up when the stream ends. Parity still has its bar on Main. Not the Unraid pattern of one shared modal for every long job |
+| 4 | One container context menu shared by Dashboard and list pages | **Partly done (2.0.13, table in 2.0.26):** the Docker page repeats Start/Stop/Restart/Logs/Configure/Remove on each row. Logs opened from that table has Close only; Back to the old manager appears only when that dialog is open. No "edit before touching the running container", no Update All |
+| 6 | Shape+colour status orbs, click to spin | **Partly done (2.0.26):** Main's disk table and the compact dashboard glance use a green circle, a grey circle once spun down, and a red X when the disk is missing. Click calls the existing spinup/spindown endpoints. Four or fewer assigned disks stay as the old tiles, which already had a spin button. The boot disk is a grey circle and is not clickable |
+| 7 | Inline disk assignment while stopped | **Partly done (2.0.26):** while the array is stopped, Main lists every physical disk and a role dropdown (parity, data, cache, unassigned) posts the same body as Assign disks. The boot disk has no dropdown. The modal stays. A machine whose only disk is the boot disk hides Save. Not yet the Unraid pattern of one dropdown per slot that saves on change |
+| 8 | Share editor (Primary/Secondary/Mover wording, on-demand size) | **Partly done (2.0.26):** Shares is its own page. Size is computed only when asked (`POST /api/files/calc` on `/mnt/user/<name>`). Storage reads `cache → array` when a cache disk is assigned, otherwise `array`. There is still no per-share Primary/Secondary/mover-direction editor (§31.6) |
+| 9 | Hide/explain features that cannot work now | **Partly done (2.0.26):** GPU, Virtual Machines, Docker, and the ZFS tool card stay in the nav and go grey, with one sentence, when that API returns `available: false`. A failed call leaves the link looking normal |
 | — | App folder picker (not in §30.13) | **Done (2.0.16):** share drop-down + folder box, new-folder creation, validation (see §29.2) |
 | §30.7 | File manager | **Done (2.0.20):** table with checkbox/type/name/owner/permission/size/modified(or age)/location(disks); sortable (remembered), type filter, quick links; row menu + bottom buttons with Unraid's enable rules; Copy/Move/Delete/Owner/Permission as server jobs (`services/filejobs.py`: progress, ETA, queue, start/cancel, survive closing the dialog, footer indicator `#footer-job`); Calculate (per-disk breakdown); Search (name or `*` `?`); text editor (conflict check, unsaved-changes guard; plain textarea, not Ace); image/PDF/audio/video viewer; 20 MB chunked resumable upload with progress/cancel and drag-and-drop. Rules enforced server-side (`services/fileutil.py`): nothing created/renamed/deleted at `/mnt`, `/mnt/user`, disk roots or share folders; user-share and disk paths cannot be mixed. Not done: Ace editor, `editor.cfg` extension list, zipped-folder download, right-click on crumbs |
 | 10 | Save a container's definition before touching the running one | Done for apps (compose + settings written before `up`); not for plain containers |
-| 11 | Group the sidebar (Settings/Tools grids, Favorites) | not started (21 flat items) |
+| 11 | Group the sidebar (Settings/Tools grids, Favorites) | **Partly done (2.0.26):** 13 top-level links. Settings opens on a jump bar (Identity, Samba, Users, Notifications, Appearance). Tools is a card grid (diagnostics, hardware, scheduler, backup, LAN scan, proxy, terminal, ZFS). Header search jumps to any of those pages. No Favorites and no padlock |
 | 12 | Dashboard drag-sortable tiles, tile manager, padlock | tiles are draggable; no manager/padlock/server-side layout |
 | 13 | One global Apply/Reset + one reboot-notice service | not started |
-| 14 | Type-the-name confirmation for destructive actions | not started (uses `confirm()`) |
+| 14 | Type-the-name confirmation for destructive actions | **Partly done (2.0.26):** disk Erase asks you to type the disk name (wrong name → "Incorrect confirmation" → Ok reopens it) and Format needs the "Yes, I want to do this" tick plus a warning dialog (§33). Everything else still uses `confirm()` |
 | 15 | Edge-triggered alerts with "returned to normal" | not started; notification backends still not wired to real events |
 | 16 | Dated backup on every boot-config write | not started |
 
-Other Unraid behaviours already matched: array auto-start on boot, mover never moving files in use is not yet checked, recycle bin location, user-share exclusive/FUSE is n/a (mergerfs).
+Other Unraid behaviours already matched: array auto-start on boot, recycle bin location, user-share exclusive/FUSE is n/a (mergerfs). The mover skips open files, the docker data-root, and files already on the array (2.0.25, §31). Per-share cache policy is still absent. The 2.0.26 layout (Dashboard vs Main, disk table, Shares, Docker, header search) is §32. It was checked in a browser against this repo, not yet on the test VM.
+
+## 31. Independent read of the Unraid management scripts, and the mover fix (2026-11-10)
+
+`build/config/VERSION` is **2.0.25**. Not published and not applied to the test VM (`192.168.50.12`). The helper is installed by hook 03, so it reaches a machine only with an image rebuild and OTA. Do not paste the Unraid scripts into this repo.
+
+### 31.1 What was read
+
+Section 30 is the web UI in `bzmodules-emhttp/`. The programs that perform the work live in the `bzmodules` squashfs (`unraid-extracted/bzmodules`, mounted as `/usr` on a running Unraid). These were extracted to a temp directory and read there:
+
+| Path inside the squashfs | What it is |
+|---|---|
+| `local/sbin/mdcmd` | 12 lines. Read in full. |
+| `local/sbin/mover` | The mover. Read in full. |
+| `local/sbin/emhttp_event` | Plugin event dispatcher. Read in full. |
+| `local/sbin/sdspin` | ATA spin up/down. Read in full. |
+| `local/sbin/powerdown` | Deprecated. Read in full. |
+| `local/etc/rc.d/rc.samba` | Samba start/reload. Read in full. |
+| `local/etc/rc.d/rc.S.cont` | Boot continuation. First 120 lines. |
+| `local/etc/rc.d/rc.M` | Multi-user start. First 120 lines. |
+
+`libexec/unraid/shfs` is a stripped ELF. `/usr/libexec/unraid/move` (the program `mover` pipes file names into) was not extracted. `local/sbin/emhttp` is the compiled daemon. `diagnostics`, `emcmd`, `newperms` and `plugin` are symlinks into the emhttp tree already covered in §30. `rc.docker` (856 lines), `create_network_ini`, `monitor_interface`, `use_ssl` and `vfio-pci` were listed and not read.
+
+### 31.2 How Unraid actually does these jobs
+
+**Parity.** `mdcmd status` prints `/proc/mdstat`. Every other command is written to `/proc/mdcmd` for the custom `md` driver. There is no userspace parity engine. Helix's SnapRAID path is a separate design and this read does not change it.
+
+**Array lifecycle hooks.** `emhttp` calls `emhttp_event` and waits until it returns. The argument is one of `startup`, `driver_loaded`, `starting`, `array_started`, `disks_mounted`, `svcs_restarted`, `docker_started`, `libvirt_started`, `started`, and the matching `stopping_libvirt`, `stopping_docker`, `stopping_svcs`, `unmounting_disks`, `stopping_array`, `stopped`. `poll_attributes` fires after every SMART poll. Plugins drop executables in `/usr/local/emhttp/plugins/*/event/<name>/`. Helix has no equivalent hook list; array start in `helix-array-start` mounts disks, starts mergerfs, mounts cache, starts Docker with its data-root on the cache, then runs `helix-shares-apply`.
+
+**Early boot (`rc.S.cont`).** Restores `/etc/machine-id` from `/boot/config/machine-id`. Runs `vfio-pci` before udev and copies `vfio-pci.cfg` to `vfio-pci.boot`. Installs custom udev rules from `/boot/config/udev`. Mounts cgroup v2 unless the kernel command line says `unraidcgroup1`. Then `swapon -a`.
+
+**`powerdown`** logs that it is deprecated, then `reboot` (`-r`) or `init 0`.
+
+**Spin.** `sdspin <dev> up|down|status` is `hdparm -S0`, `-y`, or `-C`. ATA only. Exit 0 means up (or the action worked), 2 means standby. Helix drive spin is still the API in `routers/drives.py`; this was not reimplemented.
+
+**Samba.** `rc.samba` rebuilds `/etc/samba/smb-names.conf` from `/boot/config/ident.cfg` on every start and reload: hostname as the NetBIOS name, comment, hide-dot-files, multi-channel, max open files, mDNS registration off (it clashes with emhttp). NetBIOS on forces the minimum protocol to NT1 and optionally a local master at os level 100; off forces SMB2. Active Directory writes a different block (realm, winbind, ACL inherit). Otherwise security is USER, `map to guest = Bad User`, `smbpasswd`, create mask 0777. Bind-to-interfaces is applied when set. Reload uses `smbcontrol all reload-config`. A restart happens only when the interface list changed. `secrets.tdb` is copied to and from the boot flash. Helix still generates its own Samba config in `helix-samba-apply` and does not grow this ident.cfg surface.
+
+**Mover.** This is the behaviour Helix was missing. The script reads `/boot/config/shares/*.cfg`:
+
+- `shareUseCache=yes` moves that share from its primary pool to the secondary (another pool, or the array disks `/mnt/diskN/<share>`).
+- `shareUseCache=prefer` moves the other way, secondary back to primary.
+- `only` and `no` are not moved.
+- Top-level files on a pool or disk are never moved. Hidden top-level directories are skipped unless `dotglob` is turned on in the script (it ships commented out).
+- A file `fuser` reports as open, or that backs a loop device, stays. The comment says a failed copy deletes the partial target and keeps the source, and a file that already exists on the target is left alone on both sides.
+- A second pass deletes empty directories left behind.
+- `shareUserEmptying` in `/boot/config/share.cfg` is a comma list of disks to empty. Anything still there is logged, truncated to 100 paths.
+- The copy is not rsync. `find` prints paths into `/usr/libexec/unraid/move`.
+- A pid file at `/var/run/mover.pid` refuses a second copy. `mover stop` signals the process tree.
+
+Cache is not part of the user-share union. Helix already matches that: `helix-array-start` mounts cache at `/mnt/cacheN` and does not put those paths in the mergerfs branch list. Writing a moved file to `/mnt/user/<share>` therefore lands on a data disk. The bug was not "rsync copies the cache onto itself".
+
+### 31.3 What was wrong in Helix
+
+`webui/backend/routers/mover.py` ran, as the `helix` user:
+
+```
+rsync -aX --progress --remove-source-files /mnt/cache1/<dir>/ /mnt/user/<dir>/
+```
+
+for every directory on the cache, with no share policy.
+
+- An open file was copied and then deleted out from under the process that had it.
+- `<cache>/system/docker` is the Docker data-root `helix-array-start` creates. Treating `system` as a share would move the Docker graph onto the array and delete it from the cache. It survived only because those files are root-owned and the backend is unprivileged. Running the same rsync as root, which a mover needs in order to see every process's open files, would have deleted it.
+- If the array already had the file and the cache copy was newer, rsync overwrote the array copy and deleted the cache copy. Unraid leaves both.
+- `--remove-source-files` does not remove the empty directories it leaves behind.
+- There was no check that the cache path and the destination overlap.
+
+**Dry Run wrote the wrong config.** `moverDryRun()` in `webui/frontend/index.html` PUT `/api/mover/config` with `cache_path: '/mnt/cache'` and `dry_run: true`, called start, then PUT the same path back with `dry_run: false`. Cache drives are `/mnt/cache1`, `/mnt/cache2`, …. After one Dry Run click, `mover.cfg` pointed at a directory that does not exist, and every later Move Now failed. Start reads the config before it returns, so that one invocation was a dry run; the saved path stayed wrong.
+
+### 31.4 What changed, and why
+
+| File | Why |
+|---|---|
+| `array/sbin/helix-mover` | New helper. Does the safe part of §31.2 without shipping Unraid's `move` binary. |
+| `webui/backend/routers/mover.py` | Runs that helper. Stops the whole process group. Dry run is a query flag. |
+| `webui/frontend/index.html` | Dry Run calls `moverStart(true)` and no longer PUTs `mover.cfg`. A failed start is written into the log instead of being swallowed. |
+| `build/hooks/03-helix-install.sh` | Installs `helix-mover` to `/usr/local/sbin` with the other array helpers. Without this line the image boots and the API reports "helper not found". |
+| `array/test/test-mover.sh` | Throwaway-tree regression test. No root and no `/mnt`. |
+| `build/config/VERSION` | `2.0.24` → `2.0.25`, so a later image is distinguishable. |
+
+Helper rules, in order:
+
+- `--cache` and `--dest` are required. If one path contains the other, exit 2. If the cache directory is missing, exit 2.
+- If `/etc/docker/daemon.json` names a `data-root` equal to the cache, refuse. If the data-root is under the cache, skip that top-level directory. `system` is always skipped, because array start uses `<cache>/system/docker` even when `daemon.json` is missing. `lost+found` and any hidden top-level directory are skipped. Top-level files are left in place and counted in the log.
+- One Python 3 walk of `/proc/<pid>/{fd,cwd,exe,maps}` plus loop `backing_file` records paths under the cache. A file on that list, or under a listed directory, is not moved. Docker bind-mount sources under the cache are added the same way. `docker info`, `docker ps` and `docker inspect` each have a 3-second `timeout`, so a stuck daemon cannot stall the mover.
+- If the same relative path already exists on the destination (including a symlink), both copies stay.
+- The files that remain are handed to `rsync -aHX --from0 --files-from --remove-source-files`. rsync deletes a source only after that transfer succeeds, and it does not keep a partial destination. A file still present afterward is logged as "copy failed".
+- Empty directories under the share are then removed. The share directory itself stays, so the next write still has a place.
+- `--dry-run` prints "would move" and does not call rsync. `mover: RESULT moved=N in_use=N exists=N` counts real moves only.
+
+Router rules:
+
+- `POST /api/mover/start?dry_run=true` forces one dry run and does not write `mover.cfg`. A saved `dry_run=true` in the config is still honoured, so the config field means something if an API client sets it. The button no longer sets it.
+- Both paths must be absolute and under `/mnt`, with no `..`. The API is still unauthenticated (§29.4); this only stops a request from naming `/etc` or similar.
+- The helper runs as `sudo -n env HELIX_CONFIG=… /bin/bash …`. The open-file walk cannot see other users' `/proc/<pid>/fd` otherwise, and the copy must be allowed to preserve ownership (`rsync -a` as root keeps the source owner). `HELIX_MOVER_DIRECT=1` skips sudo for a same-user test.
+- The script is `ARRAY_SBIN/helix-mover` (`/usr/local/sbin` on an image). If that file is absent, the router uses `array/sbin/helix-mover` three levels above `webui/backend/routers/`. That fallback matches this repo. It does not match `/opt/helix/backend` on an installed system, so a hot-patch of `mover.py` alone reports "helper not found" instead of going back to the old rsync.
+- Stop sets a cancel flag and `SIGTERM`s the process group (`start_new_session=True`). Terminating only the shell would leave rsync running.
+- The SSE stream waits until the thread has printed a line or finished, so a fast client does not receive `DONE` before the helper starts.
+
+### 31.5 How it was checked
+
+`bash array/test/test-mover.sh` on a temp tree. All of these passed: an ordinary file moves and the emptied subdirectory is removed; the share directory, a top-level file, `.hidden/`, and `system/docker/` stay; a file held open by another process stays and is logged "in use"; an existing destination file is not overwritten and its source stays; a destination directory mode `0555` keeps the source and logs "copy failed"; `--dry-run` copies nothing and prints "would move"; a destination inside the cache exits 2.
+
+The first run of that test took about 71 seconds. `collect_busy` was a bash loop that forked `readlink` once per fd of every process. It was replaced with the single Python walk above and the same test passed in a few seconds. A `trap … RETURN` was removed in the same edit: in bash that trap runs on every function return, including helpers called while the temp files are still in use.
+
+Browser, against this repo's UI on `127.0.0.1:8098` with a throwaway `HELIX_CONFIG` and `HELIX_MOVER_DIRECT=1` (Playwright, Chromium `--no-sandbox`). Dry Run sent `POST /api/mover/start?dry_run=true`. Move Now sent `POST /api/mover/start`. Nothing PUT `/api/mover/config`. `mover.cfg` was unchanged. The log showed `mover: cache not found: /mnt/cache1` because this machine has no cache disk, then `--- Done ---`. No page errors. The server was stopped afterward. A real cache disk on the test VM has not been exercised; that waits on the next image.
+
+### 31.6 Still not done
+
+- Per-share cache policy. Unraid's `shareUseCache` is `no` (ignore), `yes` (move cache → array), `only` (stay on cache, mover ignores), `prefer` (move array → cache). Helix has no such field, so every ordinary top-level directory on the one configured cache is moved. A share a person named `system` is skipped on purpose. Appdata that lives on the cache and is not currently open will be moved; Unraid would move it only when the share says `yes`.
+- No array → cache direction, no "empty this disk" list, no mover schedule. The schedule pattern is the one in §30.10 (Mover Settings).
+- `shfs` allocation (split level, included disks, min free space) is still mergerfs `category.create=mfs` and `minfreespace=4G` for the whole union.
+- Samba still does not rebuild from `ident.cfg` the way `rc.samba` does (NetBIOS, multi-channel, hide-dot-files, Active Directory, `secrets.tdb` on the flash).
+- No `emhttp_event`-style hook list for plugins.
+- Click-to-spin orbs on the disk table landed in 2.0.26 (§32). A per-disk spin-down delay is still the old timer dialog, and there is no Spin up / Spin down for the whole array.
+
+## 32. Dashboard, Main, Shares, Docker, and the header (2026-11-10)
+
+`build/config/VERSION` is **2.0.26**. Not published and not applied to the test VM. The page is `webui/frontend/index.html`. Reads and writes on `/api/array/status` come from `webui/backend/routers/array.py` (`_disk_io`, `/proc/diskstats` fields for completed reads and writes). The kernel does not publish an unrecoverable-error counter, so the Errors column is an em dash. A disk whose SMART reallocated or pending count is above zero shows that sum in warning colour instead.
+
+The palette, Inter, the orange accent, outline buttons, and the settings cards are unchanged. These were deliberately not added: a global Apply/Reset, type-the-name confirms, a tile manager, edge-triggered alerts, and a per-share cache policy.
+
+### 32.1 What the screen does now
+
+- **Dashboard** is status. Stat tiles, a drive glance, and the first five shares and containers, each with View all. Four or fewer assigned disks stay as the old tiles. Five or more become a short list (six lines, then "N more on Main").
+- **Main** (`#main`) is the disk table plus the existing Array Operation panel. Cache mover (Move now, Dry run, Stop) and Drive rebuild are rows under that panel, so there is still one Start. While the array is stopped, each physical disk gets a role dropdown. Save posts `{parity, data, cache, fmt:'xfs', cache_fmt:'btrfs'}` to `POST /api/array/assign`, the same body as the Assign disks modal. The boot disk is labelled and has no dropdown. If the only disk is the boot disk, Save is hidden. The modal remains.
+- **Shares** (`#shares`) is name, comment, SMB, NFS, storage, and size. Size is a Compute button, not the old `used_gb` figure (that number was `statvfs` of the whole filesystem). Compute calls `POST /api/files/calc` with `/mnt/user/<name>`. Storage is `cache → array` when `array/status` lists a cache disk, otherwise `array`.
+- **Docker** (`#docker`) is one row per container: status, ports, folders (filled from `GET /api/docker/containers/{name}` only while that page is open, cached 30 seconds, capped at 40), and the same Start/Stop/Restart/Logs/Configure/Remove buttons as the old manager. The dashboard glance keeps the compact buttons and the top five.
+- **Sidebar.** System: Dashboard, Main. Storage: Shares, Docker, Files. Apps: App Catalog, Virtual Machines, GPU. Network: Network, VPN. Admin: Users, Settings, Tools. Settings has a jump bar. Tools is eight cards. Diagnostics, hardware, the scheduler, backup, LAN scan, the proxy, the terminal, and ZFS are reached from Tools or from search, not from their own sidebar row.
+- **Header.** Search (type, arrows, Enter), Files, Terminal, Log, and the notification bell. The duplicate array-status dot was removed. Array state stays in the footer.
+- **A page that cannot run** stays visible and goes grey, with one sentence: no GPU, no libvirt, Docker `available: false`, ZFS tools missing. If that request fails, the link is left looking normal.
+- **A long job** (mover, rebuild, parity) opens `#job-log`, which sits outside `<main>` so changing pages does not hide it. Close does not stop the stream. `#footer-opjob` stays until the stream ends and opens the window again. File-manager jobs still use `#footer-job`.
+
+### 32.2 Why a few details look the way they do
+
+- `updateSections` hides every `main` child that is not the active section. It builds that set from `SECTION_IDS`, so a new page is hidden on the dashboard as soon as it is registered. `#cmk-panel` is the exception: Checkmk decides whether it exists (`dataset.cmkOn`), and the dashboard visit must not force an empty monitoring panel on.
+- Author `display:` used to beat the `hidden` attribute, so tiles stayed visible on other pages. The global `[hidden] { display: none !important; }` fixes that. `#updates-log` is revealed by clearing `hidden`, because `style.display = 'block'` no longer wins.
+- Clicking an orb calls `GET /api/drives/{name}/spinstate` when this page has not spun it yet, then `spindown` or `spinup`. A missing disk is a red X and is not clickable. Demo mode does not call the server.
+- The first bytes of `index.html` are `<meta charset="utf-8">`. Without that, a server that sends `text/html` with no charset (Python's `http.server`) decoded the file as windows-1252, so `°` and `—` rendered as `Â°` and `â€"`.
+- Container Logs opened from the Docker table offers Close. Back to the container manager is added only when `#ctr-manager` is already open, because that dialog is what Back returns to.
+
+### 32.3 How it was checked
+
+Playwright (Chromium, `--no-sandbox`) against two local servers. Neither click assigned a disk, started the array, or ran Move now.
+
+- `http://127.0.0.1:8097/index.html` was the file with no API, so the page stayed in demo mode. The sidebar was the 13 links above. Four mock disks rendered as tiles; five injected disks became the compact glance. Search for "sha" and Enter opened Shares, and the stat tiles' computed display was `none`. The share table said `array` and offered Compute, with no usage bar. The Docker table had all eight mock containers; Logs showed Close and no Back. Main's disk table showed the kernel-style read counts and the em dash, and disk3's three reallocated sectors showed as `3`. Mover and Rebuild were on Main. Closing the job window left the footer chip, and the chip opened it again.
+- `http://127.0.0.1:8098` was uvicorn with `HELIX_CONFIG` and `STATE_DIR` under `/tmp/hx-ui-226` and `HELIX_MOVER_DIRECT=1`. The banner hid. The footer read Array Stopped. The Start button was present and disabled (no data disk). This machine's only disk is the boot disk, so Save assignment was hidden and the note said there was nothing to assign. Injecting a data disk and a parity disk (in the page only, no POST) produced those two dropdowns and left the boot row without one. GPU stayed a normal link (`available: true` on this host). VMs and the ZFS card greyed out with their sentences. Docker stayed available. Header search opened Hardware and highlighted Tools. The Log button filled the syslog. Dry Run posted `POST /api/mover/start?dry_run=true` only. The log read `mover: cache not found: /mnt/cache1` and then Done. `mover.cfg` was not created. No page errors on the live origin. A 680 px viewport hid the hostname and showed the menu button.
+
+`node --check` on the inline script and `py_compile` on `array.py` both passed. The servers were stopped afterward. The test VM at `192.168.50.12` was not updated.
+
+## 33. Format from Main and the disk page (2026-11-10, written after an interrupted session)
+
+`build/config/VERSION` is **2.0.26** and covers §31 (mover), §32 (layout) and this section. A session working on these was cut off by a usage limit, with everything uncommitted and this third piece undocumented. It was reconstructed from the working tree, completed, tested and committed in one go. Nothing here has been run against a real disk: a new disk with no file system has not been exercised on the test VM.
+
+### 33.1 What it does (Unraid's "unmountable disk → Format" model)
+
+- **The array starts even when a data disk has no file system.** `helix-array-start` no longer exits "No data drives mounted". mergerfs is skipped until at least one data disk is mounted, and Docker is left stopped if there is no formatted disk for its data-root.
+- **Main shows an "Unmountable disks present" row** while the array is started and an assigned data/cache disk is present but not mounted. Parity is raw by design and never counts. It lists `name · /dev/sdX`, has a **Format** button, and the button stays disabled until you tick "Yes, I want to do this"; ticking pops a warning that a format is never part of recovering data.
+- **`POST /api/array/format?confirm=true`** runs `array/sbin/helix-disk-format` as root in the background (`FORMAT_JOB` marker in `STATE_DIR`). The helper only touches a block device that is **not mounted**, uses the disk's `format=` value (default xfs for data, btrfs for cache; xfs/btrfs/ext4 only), mounts it, chowns the mount to `helix`, and starts mergerfs if the share was not up. While it runs, Stop is disabled and the footer says Formatting. A failure is written to the marker and shown on Main as "The last format failed: …", with Format still available to retry; a marker with no process after 20 s is reported as "Format stopped before it finished."
+- **Per-disk page** `#disk/<name>` (Main stays highlighted; ‹ › link to the neighbouring disks). `GET /api/array/disk/{name}` returns role, device, detected file system, whether it is mounted, the chosen file system, and whether Apply/Erase are allowed. The file system dropdown is editable **only** while the array is stopped and the disk has no file system; **Apply only saves the choice** (`POST …/filesystem` → `format=` in `disks.cfg`) and does not format. **Erase** (`POST …/erase`, body `{confirm: "<disk name>"}`) runs `wipefs -a` via sudo, only while stopped and unmounted; the disk stays assigned. Parity shows "raw device, nothing to format".
+- **`services/disks_cfg.py`** edits one key of one section of `disks.cfg` without dropping the others. `POST /api/array/assign` now keeps each disk's saved `format=` (matched by device path or its realpath) instead of resetting every disk to the request default.
+- **The old one-click `POST /api/drives/{name}/format` is disabled** (409 with a pointer to Main). It would mkfs any unmounted disk by name with no gate.
+- `routers/array.py` passes `HELIX_CONFIG`, `STATE_DIR`, `MNT_BASE` and `USER_SHARE` through sudo (`_helper_env()`), and `helix-array-lib.sh` honours them, so the helpers can be tested against a throwaway tree.
+
+### 33.2 What was completed or fixed in this session
+
+- **Verified every piece:** `array/test/test-disk-flow.sh` (40 checks, 64 MB image files as disks, no real device touched) and a 46-check Playwright run over the whole UI: direct loads of `#main` and `#disk/<name>`, the 13 sidebar links, spacing/overlap/overflow audits at 1700 px and 420 px, the disk page Apply and type-the-name Erase, the Format gate, the warning dialog and the failure path.
+- **Dashboard drive tiles drew "NaN%"** for any disk that is not mounted, which is exactly the state of a new disk waiting for Format. The status script prints an empty `use_pct`, and the full-size tile did `parseInt('')`. It now uses the existing `numOrNull`.
+- **The unmountable row printed the long `/dev/disk/by-id/...` path in bold,** wrapping into a tall block. It now shows `name · /dev/sdX` (`device_real`) as small single-line items with the full text on hover (`.aop-detail`).
+- `test-mover.sh` (13 checks) was re-run and passes.
+
+### 33.3 Rules and traps (for the next person)
+
+- **Never test the Format or Erase code against a real device.** Use the image-file setup. `helix-disk-format` refuses anything that is not a block device, which is also why Format is expected to *fail* in that test and the failure message is part of what is asserted.
+- **Main lists physical disks from `lsblk`, not from `disks.cfg`,** while the array is stopped, so image-file disks never appear in that table. The "Unmountable" row comes from `/api/array/operation`, which reads `disks.cfg`, so it does. Test the table with the disk-name link builder (`diskNameLink`) and test the disk pages by URL.
+- **Changing only the URL hash does not reload the page.** After changing array state in a test, call `page.reload()` or the UI shows the old state.
+- **Port 8096 on this dev machine is an Emby container.** Do not use it for a test server (the symptom is a 404 page that says "The file '/api/health' could not be found"). Free ports used by tests: 8094, 8098, 8099.
+- **`pkill -f <pattern>` can kill your own shell even with the `[x]` trick** when the same text also appears inside a heredoc in the same command; stop servers with `fuser -k <port>/tcp` instead.
+
+### 33.4 Still not done
+
+- Unraid's per-slot inline dropdown that saves on change (Main's role dropdowns need a Save click).
+- Maintenance mode, and Format on a disk that already holds a file system that failed to mount (Format is offered; Erase from the disk page needs the array stopped).
+- A spun-down state in the orb that comes from a live read of the disk rather than the last call.
+

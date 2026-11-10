@@ -19,15 +19,19 @@ def compute(i: dict) -> dict:
       mover_running    bool
       synced           bool   (parity was built at least once)
       containers_running  int
+      unmountable      list of {name, device} present while started but not mounted
+      formatting       bool   a format job is running
+      format_error     str    last format failure, if any
     """
     state, trans = i["state"], i.get("transition")
     parity, data, cache = i.get("parity", []), i.get("data", []), i.get("cache", [])
     busy_parity, busy_mover = bool(i.get("parity_running")), bool(i.get("mover_running"))
     rows: list[dict] = []
 
-    def row(rid, status, label=None, action=None, enabled=True, explain="", warn=None, confirm=None, level="ok"):
+    def row(rid, status, label=None, action=None, enabled=True, explain="", warn=None, confirm=None, level="ok",
+            detail=None, confirm_warn=False):
         rows.append({"id": rid, "status": status, "level": level, "explain": explain, "warn": warn,
-                     "confirm": confirm,
+                     "confirm": confirm, "detail": detail or [], "confirm_warn": confirm_warn,
                      "button": {"label": label, "action": action, "enabled": enabled} if label else None})
 
     footer = "Array " + {"started": "Started", "stopped": "Stopped"}[state]
@@ -75,14 +79,41 @@ def compute(i: dict) -> dict:
 
     # ── started ──
     ctr = int(i.get("containers_running") or 0)
-    if busy_parity or busy_mover:
-        why = "a parity operation is running" if busy_parity else "the mover is running"
-        row("array", "Started", "Stop", "stop", False,
-            f"Disabled — {why}. Wait for it to finish{' or cancel it below' if busy_parity else ''}; stopping now could corrupt data.", level="ok")
+    formatting = bool(i.get("formatting"))
+    unmountable = list(i.get("unmountable") or [])
+    format_error = (i.get("format_error") or "").strip()
+    if formatting or busy_parity or busy_mover:
+        if formatting:
+            why = "disks are being formatted"
+        elif busy_parity:
+            why = "a parity operation is running"
+        else:
+            why = "the mover is running"
+        extra = " or cancel it below" if busy_parity and not formatting else ""
+        row("array", "Started, formatting…" if formatting else "Started", "Stop", "stop", False,
+            f"Disabled — {why}. Wait for it to finish{extra}; stopping now could corrupt data.", level="busy" if formatting else "ok")
     else:
         note = f" {ctr} running container{'s' if ctr != 1 else ''} will be stopped." if ctr else ""
         row("array", "Started", "Stop", "stop", True,
             "Stop will stop Docker and file sharing, unmount all disks and take the array offline." + note, level="ok")
+
+    if formatting:
+        row("format", "Started, formatting…", "Format", "format", False,
+            "Creating a file system on the unmountable disks. This page refreshes when it is done.",
+            level="busy")
+    elif unmountable or format_error:
+        detail = [f"{d.get('name', '')} · {d.get('device_real') or d.get('device', '')}".strip(" ·") for d in unmountable]   # /dev/sdb, not the long by-id path
+        noun = "disk" if len(unmountable) == 1 else "disks"
+        explain = (f"Format will create a file system on the unmountable {noun}, using the file system chosen on each disk's page."
+                   if unmountable else "Nothing left to format.")
+        if format_error:
+            explain = f"The last format failed: {format_error} " + explain
+        row("format",
+            "Unmountable disk present" if len(unmountable) == 1 else
+            ("Unmountable disks present" if unmountable else "Format failed"),
+            "Format" if unmountable else None, "format" if unmountable else None, True,
+            explain, confirm="Yes, I want to do this" if unmountable else None,
+            level="warn" if unmountable else "error", detail=detail, confirm_warn=bool(unmountable))
 
     if busy_parity:
         el = i.get("parity_elapsed")
@@ -100,10 +131,12 @@ def compute(i: dict) -> dict:
         row("parity", "No parity disk assigned", level="warn",
             explain="Data is not protected. Stop the array and use Assign Disks to add a parity disk at least as large as your biggest data disk.")
 
+    if formatting:
+        footer += " · Formatting"
     if busy_parity:
         el = i.get("parity_elapsed")
         footer += " · Parity operation" + (f" {el}" if el else "")
     if busy_mover:
         footer += " · Mover running"
     return {"state": state, "transition": None, "rows": rows, "footer": footer,
-            "busy": {"parity": busy_parity, "mover": busy_mover}}
+            "busy": {"parity": busy_parity, "mover": busy_mover, "format": formatting}}

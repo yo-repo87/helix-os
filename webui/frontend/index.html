@@ -8933,13 +8933,11 @@ async function loadDiskPage() {
     const next = d.next ? `<a href="#disk/${encodeURIComponent(d.next)}" title="Next disk">›</a>` : '<span style="opacity:.3">›</span>';
     pager.innerHTML = `${prev}<span>${_esc(d.name)}</span>${next}`;
   }
-  const fsLine = d.role === 'parity'
-    ? `<div>None</div>`
-    : (d.fs_editable
-      ? `<select id="disk-fs" class="settings-select" onchange="diskFsChanged()">${
-          (d.fs_choices || ['xfs','btrfs','ext4']).map(fs => `<option value="${fs}"${fs === d.fs ? ' selected' : ''}>${fs}</option>`).join('')
-        }</select>`
-      : `<div>${_esc(d.fstype || d.fs || 'none')}</div>`);
+  const fsLine = d.fs_editable
+    ? `<select id="disk-fs" class="settings-select" onchange="diskFsChanged()">${
+        (d.fs_choices || ['xfs','btrfs','ext4']).map(fs => `<option value="${fs}"${fs === d.fs ? ' selected' : ''}>${fs}</option>`).join('')
+      }</select>`
+    : `<div>${_esc(d.fstype || d.fs || 'none')}</div>`;
   if (body) body.innerHTML = `
     <div class="disk-fields">
       <div class="settings-label">Device</div><div class="mono">${_esc(d.device || '')}</div>
@@ -8951,7 +8949,7 @@ async function loadDiskPage() {
     <div class="disk-actions">
       ${d.fs_editable ? '<button class="settings-btn" id="disk-apply" type="button" disabled onclick="applyDiskFs()">Apply</button>' : ''}
       <button class="settings-btn" id="disk-done" type="button" onclick="location.hash='#main'">Done</button>
-      <button class="settings-btn" id="disk-erase" type="button" ${d.erase_enabled ? '' : 'disabled'} onclick="showEraseDisk()">${d.role === 'cache' ? 'Erase' : 'Erase'}</button>
+      <button class="settings-btn" id="disk-erase" type="button" ${d.erase_enabled ? '' : 'disabled'} onclick="showEraseDisk()">Erase</button>
     </div>
     ${d.erase_reason ? `<p class="disk-note">${_esc(d.erase_reason)}</p>` : ''}`;
 }

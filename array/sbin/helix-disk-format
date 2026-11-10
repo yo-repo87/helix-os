@@ -1,10 +1,10 @@
 #!/bin/bash
-# helix-disk-format — Create a file system on every unmounted data and cache disk.
+# helix-disk-format — Create a file system on every unmounted parity, data and cache disk.
 #
 # Run only while the array is started. The web UI arms this from Main, after
 # "Yes, I want to do this". The file system is the format= value on that disk
 # in disks.cfg (xfs for a data disk and btrfs for a cache disk when unset).
-# A mounted disk is left alone. Parity is raw and is never formatted here.
+# A mounted disk is left alone. Parity gets a file system too: SnapRAID keeps its parity file on it.
 #
 # After a disk is formatted it is mounted. If the user share is not up yet,
 # mergerfs is started from the data disks that are mounted now. A share that
@@ -60,6 +60,14 @@ format_one() {
     formatted=$((formatted + 1))
 }
 
+# Parity first: SnapRAID keeps its parity file on a mounted file system (/mnt/parityN).
+if [ "${#PARITY_DEVS[@]}" -gt 0 ]; then
+    pidx=1
+    for pdev in "${PARITY_DEVS[@]}"; do
+        format_one "parity$pidx" "$pdev" "$MNTBASE/parity$pidx" xfs
+        pidx=$((pidx + 1))
+    done
+fi
 if [ "${#DATA_DISKS[@]}" -gt 0 ]; then
     for i in "${!DATA_DISKS[@]}"; do
         format_one "${DATA_DISKS[$i]}" "${DATA_DEVS[$i]}" "${DATA_MNTS[$i]}" xfs

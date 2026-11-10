@@ -120,13 +120,16 @@ def compute(i: dict) -> dict:
         row("parity", f"Parity operation in progress{f' ({el})' if el else ''}", "Cancel", "parity_cancel", True,
             "Cancel stops the operation. A cancelled Sync leaves parity incomplete until you run it again.", level="busy")
     elif parity:
+        parity_blocked = any(d.get("role") == "parity" for d in unmountable)
         row("parity_sync", "Parity is valid" if i.get("synced") else "Parity has not been built",
-            "Parity Sync", "parity_sync", True,
-            "Parity Sync reads every data disk and updates the parity disk, so a failed disk can be rebuilt from it. Run it after adding or changing files.",
+            "Parity Sync", "parity_sync", not parity_blocked,
+            "Parity Sync reads every data disk and updates the parity disk, so a failed disk can be rebuilt from it. Run it after adding or changing files."
+            if not parity_blocked else
+            "Disabled — the parity disk has no file system yet. Format it first (see the row above); SnapRAID keeps its parity file on it.",
             level="ok" if i.get("synced") else "warn")
-        row("parity_scrub", "", "Parity Scrub", "parity_scrub", bool(i.get("synced")),
-            "Scrub re-reads data and parity and checks them against stored checksums to find silent corruption." if i.get("synced")
-            else "Disabled — build parity with a Sync first.")
+        row("parity_scrub", "", "Parity Scrub", "parity_scrub", bool(i.get("synced")) and not parity_blocked,
+            "Scrub re-reads data and parity and checks them against stored checksums to find silent corruption." if i.get("synced") and not parity_blocked
+            else ("Disabled — the parity disk has no file system yet." if parity_blocked else "Disabled — build parity with a Sync first."))
     else:
         row("parity", "No parity disk assigned", level="warn",
             explain="Data is not protected. Stop the array and use Assign Disks to add a parity disk at least as large as your biggest data disk.")

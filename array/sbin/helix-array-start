@@ -19,9 +19,8 @@ load_disk_config
 ensure_dirs
 
 # ── Mount parity drives ───────────────────────────────────────────────────────
-# Parity drives have no filesystem — SnapRAID writes directly to them.
-# We just need the parity mount point; the device is managed by snapraid.
-# If the parity device has a filesystem (some configs use a partition), mount it.
+# SnapRAID keeps its parity FILE on a mounted file system (/mnt/parityN), so a parity disk needs
+# one like any other disk. A new parity disk shows up on Main as unmountable; Format creates it.
 idx=1
 for dev in "${PARITY_DEVS[@]}"; do
     mnt="$MNTBASE/parity$idx"
@@ -34,10 +33,9 @@ for dev in "${PARITY_DEVS[@]}"; do
         mountpoint -q "$mnt" || mount -t "$fstype" "$dev" "$mnt"
         helix_log "Mounted parity$idx: $dev → $mnt ($fstype)"
     else
-        # Raw device: snapraid writes parity file directly (no mount needed)
-        helix_log "Parity$idx: $dev (raw — no mount, snapraid direct I/O)"
-        # For raw parity, update snapraid.conf to point to device path
-        sed -i "s|$mnt/snapraid.parity|$dev.parity|" "$SNAPRAID_CONF" 2>/dev/null || true
+        # Not "raw": there is nothing sensible to point SnapRAID at. Leave it unmounted; Main offers Format,
+        # and Parity Sync stays disabled until the disk has a file system.
+        helix_log "WARN: Parity$idx: $dev has no file system. Format it from Main before running Parity Sync."
     fi
     idx=$((idx+1))
 done

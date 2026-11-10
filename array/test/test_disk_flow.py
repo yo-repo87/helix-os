@@ -41,8 +41,8 @@ c, r = call("GET", "/disk/disk1")
 T("disk page", c == 200 and r["role"] == "data" and r["fs"] == "xfs" and r["fs_editable"] and r["present"] and not r["mounted"]
   and r["prev"] == "parity1" and r["next"] == "disk2", r)
 c, r = call("GET", "/disk/parity1")
-T("parity page: raw, nothing to format", c == 200 and r["role"] == "parity" and not r["fs_editable"] and not r["erase_enabled"]
-  and "raw" in r["note"].lower() and r["fs"] == "", r)
+T("parity page: a normal disk, file system chosen, SnapRAID explained",
+  c == 200 and r["role"] == "parity" and r["fs_editable"] and r["fs"] == "xfs" and "SnapRAID" in r["note"] and "raw" not in r["note"].lower(), r)
 c, r = call("GET", "/disk/cache1")
 T("cache default btrfs, last disk has no next", c == 200 and r["fs"] == "btrfs" and r["next"] is None, r)
 for n in ("disk9", "..%2Fetc", "parity", "disk"):
@@ -59,8 +59,9 @@ T("image untouched by choosing a fs", fstype(D + "/d1.img") == "")
 for fs in ("zfs", "ntfs", "", "xfs; rm -rf /"):
     c, r = call("POST", "/disk/disk1/filesystem", {"fs": fs})
     T(f"rejects fs {fs!r}", c == 400, (c, r))
-c, r = call("POST", "/disk/parity1/filesystem", {"fs": "xfs"})
-T("parity cannot get a fs", c == 409, (c, r))
+c, r = call("POST", "/disk/parity1/filesystem", {"fs": "ext4"})
+T("parity can get a fs (SnapRAID keeps its parity file on it)", c == 200 and r["fs"] == "ext4", (c, r))
+T("parity fs choice saved, other sections kept", "format=ext4" in cfg().split("[disk1]")[0].split("[parity1]")[1] and "[disk2]" in cfg(), cfg())
 c, r = call("POST", "/disk/disk7/filesystem", {"fs": "xfs"})
 T("fs on unknown disk 404", c == 404, (c, r))
 
@@ -78,8 +79,8 @@ T("erase with the wrong name refused", c == 409 and "Incorrect" in r["detail"], 
 c, r = call("POST", "/disk/disk2/erase", {})
 T("erase with no confirmation refused", c == 409, (c, r))
 T("nothing erased yet", fstype(D + "/d2.img") == "ext4")
-c, r = call("POST", "/disk/parity1/erase", {"confirm": "parity1"})
-T("parity cannot be erased", c == 409, (c, r))
+c, r = call("POST", "/disk/parity1/erase", {"confirm": "disk1"})
+T("parity erase also needs its own name typed", c == 409 and "Incorrect" in r["detail"], (c, r))
 c, r = call("POST", "/disk/disk2/erase", {"confirm": "disk2"})
 T("erase with the right name works", c == 200 and r["ok"], (c, r))
 T("signature really wiped", fstype(D + "/d2.img") == "")
@@ -93,6 +94,7 @@ c, r = call("POST", "/assign", {"parity": [D + "/par.img"], "data": [D + "/d1.im
 T("assign ok", c == 200 and r.get("ok"), (c, r))
 T("assign kept disk1's btrfs choice (request default is xfs)",
   "format=btrfs" in cfg().split("[disk2]")[0].split("[disk1]")[1], cfg())
+T("assign kept parity's ext4 choice", "format=ext4" in cfg().split("[disk1]")[0].split("[parity1]")[1], cfg())
 
 # --- started: unmountable disks + format gate
 setstate("started")
@@ -102,7 +104,11 @@ T("started: Format row appears with the confirm gate",
   "format" in rows and rows["format"]["button"]["label"] == "Format" and rows["format"]["confirm"] == "Yes, I want to do this"
   and rows["format"]["level"] == "warn", rows.get("format"))
 names = {d.split(" ")[0] for d in rows["format"]["detail"]}
-T("unmountable list names data+cache but not parity", {"disk1", "disk2", "cache1"} <= names and "parity1" not in names, rows["format"]["detail"])
+T("unmountable list names parity, data and cache", {"parity1", "disk1", "disk2", "cache1"} <= names, rows["format"]["detail"])
+T("Parity Sync/Scrub are disabled while parity has no file system",
+  rows["parity_sync"]["button"]["enabled"] is False and "file system" in rows["parity_sync"]["explain"] and rows["parity_scrub"]["button"]["enabled"] is False, rows.get("parity_sync"))
+c, r = call("POST", "/parity-check")
+T("REST parity check refused while parity has no file system", c == 409 and "file system" in r["detail"], (c, r))
 c, r = call("GET", "/disk/disk1")
 T("started + unmountable: page says use Format on Main, erase off",
   not r["fs_editable"] and not r["erase_enabled"] and "Format on Main" in r["note"], r)
@@ -113,7 +119,7 @@ T("format without confirm refused", c == 409 and "Confirmation" in r["detail"], 
 c, r = call("POST", "/format?confirm=false")
 T("confirm=false refused", c == 409, (c, r))
 c, r = call("POST", "/format?confirm=true")
-T("format with confirm accepted", c == 200 and r["ok"] and set(r["disks"]) >= {"disk1", "disk2", "cache1"}, (c, r))
+T("format with confirm accepted, parity included", c == 200 and r["ok"] and set(r["disks"]) >= {"parity1", "disk1", "disk2", "cache1"}, (c, r))
 rr = {}
 for _ in range(60):
     time.sleep(0.5)

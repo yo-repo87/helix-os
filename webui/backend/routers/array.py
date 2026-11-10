@@ -258,13 +258,14 @@ def _disk_mounted(dev: str, name: str) -> bool:
 
 
 def _unmountable() -> list[dict]:
-    """Data and cache disks that are present but not mounted while the array is up.
+    """Assigned disks that are present but not mounted while the array is up.
 
-    Parity is raw on purpose, so a missing file system there is not unmountable.
+    Parity counts too: SnapRAID keeps its parity file on a mounted file system (/mnt/parityN), so a
+    parity disk without one cannot work, and writing "to it" would fill the RAM root instead.
     """
     out = []
     for d in _assigned_disks():
-        if d["role"] == "parity" or not d["present"]:
+        if not d["present"]:
             continue
         if _disk_mounted(d["device"], d["name"]):
             continue
@@ -388,6 +389,8 @@ def parity_check(scrub: bool = False, background_tasks: BackgroundTasks = None):
         return {"ok": True, "message": "A parity operation is already running"}
     if _array_state() != "started":
         raise HTTPException(400, "Array is not started")
+    if any(d["role"] == "parity" for d in _unmountable()):
+        raise HTTPException(409, "The parity disk has no file system yet. Format it from Main first.")
     args = ["--scrub"] if scrub else []
     background_tasks.add_task(_run_sbin, "helix-parity-check", *args)
     return {"ok": True, "message": f"Parity {'sync+scrub' if scrub else 'sync'} initiated"}
@@ -567,7 +570,7 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     req.cache  = [_stable_path(d) for d in req.cache]
     lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
     for i, dev in enumerate(req.parity, 1):
-        lines += [f"[parity{i}]", f"device={dev}", ""]
+        lines += [f"[parity{i}]", f"device={dev}", f"format={keep(dev, 'xfs')}", ""]
     for i, dev in enumerate(req.data, 1):
         lines += [f"[disk{i}]", f"device={dev}", f"format={keep(dev, req.fmt)}", ""]
     for i, dev in enumerate(req.cache, 1):
@@ -602,11 +605,8 @@ def _disk_view(d: dict) -> dict:
     chosen = d["format"] or ("btrfs" if d["role"] == "cache" else "xfs")
     names = [x["name"] for x in _assigned_disks()]
     idx = names.index(d["name"])
-    editable = state == "stopped" and d["role"] != "parity" and d["present"] and not mounted and not detected
-    if d["role"] == "parity":
-        erase_enabled, erase_reason = False, "Parity has no file system. SnapRAID uses the raw device."
-        note = "Parity is a raw device. There is nothing to format on this page."
-    elif not d["present"]:
+    editable = state == "stopped" and d["present"] and not mounted and not detected
+    if not d["present"]:
         erase_enabled, erase_reason = False, "The disk is not present."
         note = "This disk is assigned, but the device is not connected."
     elif state != "stopped":
@@ -623,7 +623,8 @@ def _disk_view(d: dict) -> dict:
     else:
         erase_enabled, erase_reason = True, ""
         note = ("Apply saves this choice. It does not format the disk. "
-                "Start the array, then use Format on Main. Format stays off until you tick Yes, I want to do this.")
+                "Start the array, then use Format on Main. Format stays off until you tick Yes, I want to do this."
+                + (" Parity needs a file system because SnapRAID keeps its parity file on it." if d["role"] == "parity" else ""))
     return {
         "name": d["name"],
         "device": d["device"],
@@ -632,7 +633,7 @@ def _disk_view(d: dict) -> dict:
         "present": d["present"],
         "mounted": mounted,
         "fstype": detected,
-        "fs": chosen if d["role"] != "parity" else "",
+        "fs": chosen,
         "fs_choices": list(_FS_CHOICES),
         "fs_editable": editable,
         "erase_enabled": erase_enabled,
@@ -740,6 +741,11 @@ async def parity_stream(scrub: bool = False):
         async def _busy():
             yield "data: ERROR:A parity operation is already running\n\n"
         return StreamingResponse(_busy(), media_type="text/event-stream")
+
+    if any(d["role"] == "parity" for d in _unmountable()):
+        async def _nofs():
+            yield "data: ERROR:The parity disk has no file system yet. Format it from Main first.\n\n"
+        return StreamingResponse(_nofs(), media_type="text/event-stream")
 
     op = "scrub" if scrub else "sync"
 

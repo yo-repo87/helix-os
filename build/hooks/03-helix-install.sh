@@ -64,6 +64,17 @@ proxy_cache off;
 client_max_body_size 0;
 proxy_request_buffering off;
 
+# Checkmk's own web UI (Monitoring -> Checkmk shows it inside Helix). Same origin as Helix, so it can be framed.
+location /cmk/ {
+    proxy_pass         http://127.0.0.1:5050/cmk/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host $http_host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+}
+
 location / {
     proxy_pass         http://127.0.0.1:8082;
     proxy_http_version 1.1;

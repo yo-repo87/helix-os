@@ -219,6 +219,30 @@ def setup_disable():
     return {"ok": True}
 
 
+@router.get("/problems")
+def problems():
+    """What needs attention right now (cached by the alert loop, so the sidebar badge can ask often)."""
+    try:
+        d = json.load(open(os.path.join(STATE_DIR, "monitor_problems.json")))
+    except (OSError, ValueError):
+        return {"at": 0, "problems": [], "total": 0}
+    if time.time() - d.get("at", 0) > 300:
+        return {"at": d.get("at", 0), "problems": [], "total": 0, "stale": True}
+    return d
+
+
+@router.get("/alert-settings")
+def alert_settings():
+    from services import monitor_alerts
+    return monitor_alerts.load_settings()
+
+
+@router.put("/alert-settings")
+def alert_settings_put(req: dict):
+    from services import monitor_alerts
+    return monitor_alerts.save_settings(req)
+
+
 @router.get("/login")
 def setup_login():
     """The Checkmk web login, for the "Show login" button. (The Helix API is unauthenticated today, see CLAUDE.md §29.4.)"""

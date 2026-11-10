@@ -844,6 +844,9 @@ main { padding-bottom: 44px; }
 .accent-swatch:hover { transform:scale(1.1); }
 .accent-swatch.active { box-shadow:0 0 0 3px var(--fg); }
 
+.mon-tabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin:0 0 14px; }
+.mon-tab { padding:7px 16px; font-size:12.5px; color:var(--fg-muted); text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.mon-tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
 /* ── Virtual machines ── */
 .vm-head { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
 .vm-table { width:100%; border-collapse:collapse; font-size:12.5px; }
@@ -945,6 +948,7 @@ main { padding-bottom: 44px; }
   <div class="nav-section">System</div>
   <a href="#dashboard" class="nav-item active" id="nav-dashboard">Dashboard</a>
   <a href="#main" class="nav-item" id="nav-main">Main</a>
+  <a href="#monitoring" class="nav-item" id="nav-monitoring">Monitoring <span id="mon-badge" class="notif-badge" hidden style="position:static;margin-left:6px">0</span></a>
   <div class="nav-section">Storage</div>
   <a href="#shares" class="nav-item" id="nav-shares">Shares</a>
   <a href="#docker" class="nav-item" id="nav-docker">Docker</a>
@@ -1172,10 +1176,11 @@ main { padding-bottom: 44px; }
   </div>
 
   <!-- WireGuard VPN page (hidden until #vpn) -->
-  <!-- Monitoring page (#monitoring) -->
+  <!-- Monitoring (#monitoring, #monitoring/alerts, #monitoring/checkmk) -->
   <div id="monitoring-section" hidden>
-    <div class="vm-head"><a class="panel-action" href="#tools">‹ Tools</a><span class="section-title" style="margin:0">Monitoring</span></div>
-    <div id="mon-body"></div>
+    <div class="dash-head"><div class="section-title" style="margin:0">Monitoring</div></div>
+    <div class="mon-tabs"><a class="mon-tab" data-tab="overview" href="#monitoring">Overview</a><a class="mon-tab" data-tab="alerts" href="#monitoring/alerts">Alerts</a><a class="mon-tab" data-tab="checkmk" href="#monitoring/checkmk">Checkmk</a></div>
+    <div id="mon-pane-overview"></div><div id="mon-pane-alerts" hidden></div><div id="mon-pane-checkmk" hidden></div>
   </div>
 
   <!-- VMs page (hidden until #vms) -->
@@ -1940,7 +1945,6 @@ main { padding-bottom: 44px; }
   <div id="tools-section" hidden>
     <div class="section-title" style="margin-top:0">Tools</div>
     <div class="tool-grid">
-      <a class="tool-card" href="#monitoring"><h3>Monitoring</h3><p>Checkmk: watches disks, containers and VMs for you.</p></a>
       <a class="tool-card" href="#diagnostics"><h3>Diagnostics</h3><p>Syslog, kernel log, and the process list.</p></a>
       <a class="tool-card" href="#hardware"><h3>Hardware</h3><p>Board, CPU, memory, and PCI devices.</p></a>
       <a class="tool-card" href="#scheduler"><h3>Scheduler</h3><p>Cron jobs that survive a reboot.</p></a>
@@ -3179,11 +3183,11 @@ async function refresh() {
 }
 
 // ── Nav hash routing ────────────────────────────────────────────
-const TOOL_HASHES = new Set(['#tools', '#monitoring', '#diagnostics', '#hardware', '#scheduler', '#backup', '#scanner', '#proxy', '#terminal', '#zfs']);
+const TOOL_HASHES = new Set(['#tools', '#diagnostics', '#hardware', '#scheduler', '#backup', '#scanner', '#proxy', '#terminal', '#zfs']);
 const SETTINGS_HASHES = new Set(['#config', '#notif-config']);
 function routeHash() {
   const h = (location.hash || '#dashboard').split('?')[0];
-  return h.startsWith('#disk/') ? '#disk' : h.startsWith('#vm/') ? '#vmform' : h;
+  return h.startsWith('#disk/') ? '#disk' : h.startsWith('#vm/') ? '#vmform' : h.startsWith('#monitoring/') ? '#monitoring' : h;
 }
 function handleHash() {
   const raw = (location.hash || '#dashboard').split('?')[0];
@@ -3193,6 +3197,7 @@ function handleHash() {
     const href = el.getAttribute('href');
     el.classList.toggle('active', href === raw
       || (el.id === 'nav-vms' && inVms)
+      || (el.id === 'nav-monitoring' && raw.startsWith('#monitoring'))
       || (el.id === 'nav-main' && (raw === '#main' || hash === '#disk'))
       || (el.id === 'nav-tools' && TOOL_HASHES.has(raw))
       || (el.id === 'nav-settings' && SETTINGS_HASHES.has(raw)));
@@ -3696,9 +3701,9 @@ function renderNotifications(items) {
     <div class="notif-item ${n.read ? '' : 'unread'}">
       <span class="notif-dot ${n.level}"></span>
       <div class="notif-body">
-        <div class="notif-title">${n.title}</div>
-        <div class="notif-msg">${n.message}</div>
-        <div class="notif-time">${fmtAge(n.ts)}${n.source ? ' · ' + n.source : ''}</div>
+        <div class="notif-title">${_esc(n.title)}</div>
+        <div class="notif-msg">${_esc(n.message)}</div>
+        <div class="notif-time">${fmtAge(n.ts)}${n.source ? ' · ' + _esc(n.source) : ''}${n.source === 'monitoring' ? ' · <a href="#monitoring/alerts" onclick="toggleNotifPanel && toggleNotifPanel(false)">open</a>' : ''}</div>
       </div>
     </div>`).join('');
 }

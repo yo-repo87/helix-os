@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth, vmconsole
 from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp
+import threading
+from services import monitor_alerts
 from services.drive_health import poll_loop
 from services.drive_history import history_poll_loop
 from routers.audit import AuditMiddleware
@@ -18,6 +20,7 @@ from routers.audit import AuditMiddleware
 async def lifespan(app: FastAPI):
     task1 = asyncio.create_task(poll_loop())
     task2 = asyncio.create_task(history_poll_loop())
+    threading.Thread(target=monitor_alerts.loop, daemon=True, name="monitor-alerts").start()   # Checkmk -> notification bell
     yield
     task1.cancel()
     task2.cancel()

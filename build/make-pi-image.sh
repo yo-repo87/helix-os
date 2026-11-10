@@ -23,8 +23,8 @@ WORK_DIR="/tmp/helix-pi-build"
 VERSION="$(date +%Y%m%d)"
 IMG_NAME="helix-os-pi-${VERSION}.img"
 IMG_PATH="$SCRIPT_DIR/../$IMG_NAME"
-IMG_SIZE_MB=2048       # 2GB image
-BOOT_SIZE_MB=512       # FAT32 boot partition
+IMG_SIZE_MB=4096       # 4GB image (the data partition is grown to fill the SD card at first boot)
+BOOT_SIZE_MB=2560      # FAT32 boot partition: holds the image plus the .new and .prev copies an update needs
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do

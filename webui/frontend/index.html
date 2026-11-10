@@ -4155,13 +4155,26 @@ async function osuCheck() {
   }
 }
 
+// An in-page confirmation. Browsers let people silence a page's confirm() pop-ups ("prevent additional dialogs"), after which
+// confirm() quietly answers "no" and a button looks dead. This cannot be silenced.
+function askConfirm(title, message, okLabel) {
+  return new Promise(resolve => {
+    showModal(title, `<p style="font-size:13px;white-space:pre-line;margin:0">${_esc(message)}</p>`,
+      `<button class="ctr-btn" id="ask-no">Cancel</button><button class="settings-btn primary" id="ask-yes">${_esc(okLabel || 'OK')}</button>`);
+    const done = (v) => { document.getElementById('modal-overlay').style.display = 'none'; resolve(v); };
+    document.getElementById('ask-yes').onclick = () => done(true);
+    document.getElementById('ask-no').onclick = () => done(false);
+  });
+}
+
 async function osuApply() {
-  if (!confirm('Download and install the new OS image?\n\nYour settings, apps and data are preserved. A reboot is required to finish.')) return;
+  if (!await askConfirm('Install the update?', 'Download and install the new OS image?\n\nYour settings, apps and data are preserved. A reboot is required to finish.', 'Download and install')) return;
   const log = document.getElementById('osu-log');
   const st = document.getElementById('osu-apply-status');
   if (log) { log.hidden = false; log.textContent = 'Starting…\n'; }
   if (st) { st.textContent = 'Running…'; st.style.color = 'var(--fg-muted)'; }
-  await fetchJSON('/api/osupdate/apply', {method:'POST'}).catch(()=>{});
+  try { await fetchJSON('/api/osupdate/apply', {method:'POST'}); }
+  catch (e) { if (log) log.textContent += 'Could not start the update: ' + errText(e) + '\n'; if (st) { st.textContent = 'failed'; st.style.color = 'var(--err)'; } return; }
   if (_osuES) _osuES.close();
   _osuES = new EventSource('/api/osupdate/stream');
   _osuES.onmessage = e => {
@@ -4185,15 +4198,15 @@ async function osuAfterApply() {
 }
 
 async function osuReboot() {
-  if (!confirm('Reboot now to finish applying the update?')) return;
+  if (!await askConfirm('Reboot now?', 'Reboot now to finish applying the update?', 'Reboot')) return;
   await fetchJSON('/api/osupdate/reboot', {method:'POST'}).catch(()=>{});
   alert('Rebooting… reconnect in about a minute.');
 }
 
 async function osuRollback() {
-  if (!confirm('Roll back to the previously installed OS image? A reboot is required.')) return;
+  if (!await askConfirm('Roll back?', 'Roll back to the previously installed OS image? A reboot is required.', 'Roll back')) return;
   const d = await fetchJSON('/api/osupdate/rollback', {method:'POST'}).catch(()=>null);
-  if (d && d.ok) { if (confirm('Rolled back to the previous image. Reboot now?')) osuReboot(); }
+  if (d && d.ok) { if (await askConfirm('Rolled back', 'Rolled back to the previous image. Reboot now?', 'Reboot')) osuReboot(); }
   else alert('Rollback failed: ' + ((d && d.message) || 'unknown'));
 }
 

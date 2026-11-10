@@ -145,7 +145,10 @@ async function monPromoCheck() {
   let d; try { d = await monApi('/prompt'); } catch (_) { return; }
   const promo = document.getElementById('mon-promo');
   if (promo) { promo.dataset.on = d.show && d.state === 'later' ? '1' : '0'; promo.hidden = !(promo.dataset.on === '1' && !(location.hash && location.hash !== '#dashboard' && location.hash !== '#')); }
-  if (d.show && d.state === 'pending' && !document.getElementById('modal-overlay').style.display.includes('flex')) {
+  // Only once per page load, only on the dashboard or Main (never on top of Settings, an update, a form), and never over another dialog.
+  const quiet = !location.hash || ['#dashboard', '#main'].includes(location.hash);
+  if (d.show && d.state === 'pending' && !mon.promptShown && quiet && !document.getElementById('modal-overlay').style.display.includes('flex')) {
+    mon.promptShown = true;
     const nm = d.provider === 'netdata' ? 'Netdata' : 'Checkmk';
     showModal('Turn on monitoring?', `<p style="font-size:13px;margin:0 0 10px">Your array is up. Helix can now watch this server for you with <b>${nm}</b>:</p>
       <ul style="font-size:12.5px;margin:0 0 10px 18px;line-height:1.7"><li>disk health, the array, containers, VMs, shares, CPU and memory</li><li>new containers and VMs are added by themselves</li><li>problems show up on the notification bell (and email/Discord if you set those up)</li></ul>

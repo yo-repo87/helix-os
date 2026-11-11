@@ -70,12 +70,24 @@ def run(cmd, timeout=120, input=None, check=False):
     return r
 
 
+def mem_total_mb():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal"):
+                return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
 def provider():
     import platform
     p = settings().get("provider")
     if p in ("checkmk", "netdata"):
         return p
-    return "checkmk" if platform.machine() in ("x86_64", "AMD64") else "netdata"
+    # Checkmk needs about 1.2 GB for itself; on a machine with less than 4 GB that starves everything else (a 3 GB test VM
+    # could not even start Emby). Netdata needs about 150 MB. A saved choice above always wins.
+    return "checkmk" if platform.machine() in ("x86_64", "AMD64") and mem_total_mb() >= 4000 else "netdata"
 
 
 def settings():

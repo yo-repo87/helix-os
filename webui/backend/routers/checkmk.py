@@ -181,7 +181,13 @@ def _provider() -> str:
         p = json.load(open(os.path.join(HELIX_CONFIG, "checkmk", "monitor.json"))).get("provider")
     except (OSError, ValueError):
         p = None
-    return p if p in ("checkmk", "netdata") else ("checkmk" if platform.machine() in ("x86_64", "AMD64") else "netdata")
+    if p in ("checkmk", "netdata"):
+        return p
+    try:
+        mem_mb = next(int(l.split()[1]) // 1024 for l in open("/proc/meminfo") if l.startswith("MemTotal"))
+    except (OSError, StopIteration):
+        mem_mb = 0
+    return "checkmk" if platform.machine() in ("x86_64", "AMD64") and mem_mb >= 4000 else "netdata"      # same rule as helix-monitor
 
 
 @router.get("/setup")

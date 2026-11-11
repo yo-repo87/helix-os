@@ -22,6 +22,17 @@ def _is_helix_app(name: str) -> bool:
     """True when the container belongs to an app installed through Helix (Apps page)."""
     return os.path.isfile(os.path.join(HELIX_CONFIG, "apps", name, "docker-compose.yml"))
 
+def _app_name(name: str, project: str = "") -> str:
+    """The Helix app a container belongs to, or "". By name first; then by its compose project label, so a leftover duplicate
+    such as "b4d1a98c331c_emby" (compose renames the old container when it recreates one) still maps to the app "emby"."""
+    if _is_helix_app(name):
+        return name
+    if not project:
+        rc, out = _docker("inspect", "-f", '{{index .Config.Labels "com.docker.compose.project"}}', name, timeout=15)
+        project = out.strip() if rc == 0 else ""
+    return project if project and _is_helix_app(project) else ""
+
+
 def _docker_available() -> bool:
     return os.path.exists(DOCKER_SOCKET)
 
@@ -33,7 +44,8 @@ def list_containers():
         "ps", "-a",
         "--format", '{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}",'
                     '"status":"{{.Status}}","state":"{{.State}}","ports":"{{.Ports}}",'
-                    '"created":"{{.CreatedAt}}","size":"{{.Size}}"}'
+                    '"created":"{{.CreatedAt}}","size":"{{.Size}}",'
+                    '"project":"{{.Label "com.docker.compose.project"}}"}'
     )
     if rc != 0:
         return {"available": True, "containers": [], "error": out}
@@ -41,7 +53,8 @@ def list_containers():
     for line in out.splitlines():
         try:
             c = json.loads(line)
-            c["app"] = _is_helix_app(c.get("name", ""))      # has a compose project + settings to edit
+            c["app_name"] = _app_name(c.get("name", ""), c.pop("project", "") or "-")
+            c["app"] = bool(c["app_name"])                   # belongs to an app with a compose project + settings to edit
             containers.append(c)
         except json.JSONDecodeError:
             pass
@@ -103,9 +116,15 @@ def remove_container(name: str, volumes: bool = False):
     still be listed as installed). Your data folders are never deleted."""
     if name in ("checkmk", "netdata"):
         raise HTTPException(409, "This is Helix's monitoring server (Monitoring tab). It cannot be removed here: use Monitoring → Turn off to stop it. It is removed only when the array is deleted.")
-    if _is_helix_app(name):
+    app = _app_name(name)
+    if app:
+        # Removing any container of a Helix app removes the app (compose down + its saved record), otherwise the catalog
+        # keeps saying "installed" for something that no longer exists. A renamed leftover is removed explicitly too.
         from routers.apps import remove_app
-        return remove_app(name, purge=True)
+        res = remove_app(app, purge=True)
+        if name != app:
+            _docker("rm", "-f", name, timeout=60)
+        return res
     rc, out = _docker("rm", "-f", *(["-v"] if volumes else []), name, timeout=60)
     if rc != 0:
         raise HTTPException(500, out)

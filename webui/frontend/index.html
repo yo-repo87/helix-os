@@ -3072,7 +3072,7 @@ function ctrButtons(c, compact) {
   return (up ? b('stop', 'Stop', 'Stop the container') : b('start', 'Start', 'Start the container'))
     + b('restart', compact ? '↻' : 'Restart', 'Restart the container')
     + `<button class="ctr-btn" title="Show the container's log" onclick="ctrLogs('${n}')">${compact ? '☰' : 'Logs'}</button>`
-    + (c.app ? `<button class="ctr-btn" title="Edit this app's settings (tokens, folders, variables)" onclick="closeModal();openAppForm('configure','${n}')">⚙${compact ? '' : ' Configure'}</button>` : '')
+    + (c.app ? `<button class="ctr-btn" title="Edit this app's settings (tokens, folders, variables)" onclick="closeModal();openAppForm('configure','${_esc(c.app_name || c.name)}')">⚙${compact ? '' : ' Configure'}</button>` : '')
     + (c.name === 'checkmk'
         ? `<span class="vm-dim" style="font-size:11px;padding:0 6px" title="Helix's monitoring server. It is removed only when the array is deleted. Stop it from Monitoring → Turn off.">${compact ? '🔒' : '🔒 Managed by Monitoring'}</span>`
         : `<button class="ctr-btn" style="color:var(--err)" title="Remove this container" onclick="ctrRemove('${n}',${!!c.app})">${compact ? '✕' : 'Remove'}</button>`);

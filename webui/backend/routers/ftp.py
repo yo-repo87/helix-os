@@ -85,12 +85,16 @@ local_enable={yes_no(cfg.get('local_users', True))}
 write_enable={yes_no(cfg.get('write_enable', True))}
 local_umask=022
 local_root=/mnt/user
+xferlog_enable=YES
+xferlog_std_format=NO
+log_ftp_protocol=YES
+vsftpd_log_file=/var/log/vsftpd.log
 guest_enable={yes_no(cfg.get('local_users', True))}
 guest_username=helix
 virtual_use_local_privs=YES
 no_anon_password=YES
 hide_ids=YES
-chroot_local_user={yes_no(cfg.get('chroot_local', True))}
+chroot_local_user=YES
 allow_writeable_chroot=YES
 pasv_enable=YES
 pasv_min_port={cfg.get('passive_min_port', 60000)}
@@ -180,6 +184,13 @@ def put_config(req: FtpCfg):
         return {"ok": False, "error": "The anonymous folder must be inside /mnt (for example /mnt/user)."}
     _save_cfg(cfg)
     return _apply(cfg)
+
+
+@router.get("/log")
+def ftp_log(lines: int = 60):
+    """Recent FTP commands and replies (logins, 530 rejections ...), so a refused connection can be explained."""
+    rc, out = _run("tail", "-n", str(max(10, min(lines, 300))), "/var/log/vsftpd.log")
+    return {"lines": out.splitlines() if rc == 0 else [], "note": "" if rc == 0 else "No FTP log yet: it starts with the first connection."}
 
 
 @router.get("/status")

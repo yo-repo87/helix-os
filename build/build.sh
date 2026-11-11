@@ -80,6 +80,13 @@ PKG_LIST=$(grep -v '^\s*#' "$BUILD_DIR/config/packages-base.list" \
          | sed "s/KERNEL_PKG_PLACEHOLDER/$KERNEL_PKG/" \
          | tr '\n' ' ' | sed 's/ $//')
 
+# Packages that exist for one architecture only (config/packages-<arch>.list)
+ARCH_LIST="$BUILD_DIR/config/packages-$ARCH.list"
+if [ -f "$ARCH_LIST" ]; then
+    ARCH_PKGS=$(grep -v '^\s*#' "$ARCH_LIST" | grep -v '^\s*$' | tr '\n' ' ' | sed 's/ $//')
+    PKG_LIST="$PKG_LIST $ARCH_PKGS"
+fi
+
 # Hypervisor stack (VM Manager), per architecture
 VM_LIST="$BUILD_DIR/config/packages-vm-$ARCH.list"
 if [ -f "$VM_LIST" ]; then

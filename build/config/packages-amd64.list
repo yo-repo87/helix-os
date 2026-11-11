@@ -1,0 +1,3 @@
+# x86-64-only packages for features the web UI offers (GPU page: Intel and AMD usage readouts). Free, in Debian main.
+intel-gpu-tools
+rocm-smi

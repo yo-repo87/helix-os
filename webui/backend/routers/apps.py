@@ -248,7 +248,9 @@ def _ensure_dirs(template: dict, vars_map: dict) -> None:
         if v.get("type") != "path":
             continue
         val = vars_map.get(v["key"], "")
-        if val.startswith("/mnt/"):
+        # Only the app's own settings folder is created for it. Media/library folders are never
+        # created automatically (the user points them at existing folders, or leaves them unused).
+        if val.startswith("/mnt/user/appdata/"):
             try:
                 Path(val).mkdir(parents=True, exist_ok=True)
             except OSError as e:
@@ -320,6 +322,12 @@ def _apply_extras(compose: dict, extras: dict) -> dict:
 def _write_compose(app_dir: Path, template: dict, vars_map: dict, extras: dict | None = None) -> Path:
     compose = _substitute_vars(template["compose"], vars_map)
     compose = _apply_extras(compose, extras if extras is not None else _read_extras(app_dir))
+    # a folder left empty is "not used": drop its mapping instead of mounting ':/path'
+    for svc in (compose.get("services") or {}).values():
+        if isinstance(svc.get("volumes"), list):
+            svc["volumes"] = [x for x in svc["volumes"] if not (isinstance(x, str) and x.startswith(":"))]
+            if not svc["volumes"]:
+                del svc["volumes"]
     if "version" not in compose:
         compose = {"version": "3.8", **compose}
     dest = app_dir / "docker-compose.yml"

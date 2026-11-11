@@ -3393,8 +3393,10 @@ function pathPickerHtml(v, shares) {
   const sp = splitUserPath(v.value);
   const known = new Set(shares);
   const list = (sp && !known.has(sp[0])) ? [...shares, sp[0]].sort((a, b) => a.localeCompare(b)) : shares;
-  const mode = sp ? sp[0] : '__custom__';
-  const opts = list.map(n => `<option value="${_esc(n)}" ${n === mode ? 'selected' : ''}>${_esc(n)}${known.has(n) ? '' : ' (not created yet)'}</option>`).join('')
+  const optional = !!v.optional;            // media-style folders: may be left unused
+  const mode = (optional && !v.value) ? '__none__' : (sp ? sp[0] : '__custom__');
+  const opts = (optional ? `<option value="__none__" ${mode === '__none__' ? 'selected' : ''}>Not used (add it under Extra folders)</option>` : '')
+             + list.map(n => `<option value="${_esc(n)}" ${n === mode ? 'selected' : ''}>${_esc(n)}${known.has(n) ? '' : ' (not created yet)'}</option>`).join('')
              + `<option value="__custom__" ${mode === '__custom__' ? 'selected' : ''}>Other path…</option>`;
   const k = _esc(v.key);
   return `<div class="appf-path" data-key="${k}" style="flex:1;min-width:0">
@@ -3412,11 +3414,15 @@ function pathPickerHtml(v, shares) {
 
 function pathPickerUpdate(box) {
   const ps = box.querySelector('.appf-ps').value, pf = box.querySelector('.appf-pf');
+  const none = ps === '__none__';
   const custom = ps === '__custom__';
-  box.querySelector('.appf-slash').style.display = custom ? 'none' : '';
+  box.querySelector('.appf-slash').style.display = (custom || none) ? 'none' : '';
+  pf.style.display = none ? 'none' : '';
   pf.placeholder = custom ? '/full/path/on/this/server' : 'folder inside the share — type a new name to create it';
   let full = '', err = '';
-  if (custom) {
+  if (none) {
+    full = '';
+  } else if (custom) {
     full = pf.value.trim();
     if (full && !full.startsWith('/')) err = 'Enter an absolute path starting with /';
   } else {
@@ -3427,8 +3433,8 @@ function pathPickerUpdate(box) {
   box.querySelector('.appf-var').value = full;
   box.dataset.invalid = err ? '1' : '';
   const sub = pf.value.trim().replace(/^\/+|\/+$/g, '');
-  const isNew = !custom && sub && box._known && !box._known.has(sub);
-  const noShare = !custom && _pickerShares && !_pickerShares.includes(ps);
+  const isNew = !custom && !none && sub && box._known && !box._known.has(sub);
+  const noShare = !custom && !none && _pickerShares && !_pickerShares.includes(ps);
   box.querySelector('.appf-pp').innerHTML = err
     ? `<span style="color:var(--err)">${_esc(err)}</span>`
     : (full ? `→ <span class="mono">${_esc(full)}</span>` : '')
@@ -3439,7 +3445,7 @@ function pathPickerUpdate(box) {
 async function pathPickerSuggest(box) {      // suggest the folders that already exist at the level being typed
   const ps = box.querySelector('.appf-ps').value;
   const dl = box.querySelector('datalist');
-  if (ps === '__custom__') { dl.innerHTML = ''; box._known = null; pathPickerUpdate(box); return; }
+  if (ps === '__custom__' || ps === '__none__') { dl.innerHTML = ''; box._known = null; pathPickerUpdate(box); return; }
   const sub = box.querySelector('.appf-pf').value.trim().replace(/^\/+/, '');
   const parent = sub.includes('/') ? sub.slice(0, sub.lastIndexOf('/')) : '';
   const dir = '/mnt/user/' + ps + (parent ? '/' + parent : '');
@@ -3470,10 +3476,15 @@ async function openAppForm(mode, name) {
   try {
     if (mode === 'install') {
       const t = await apiFetch(`/api/apps/templates/${encodeURIComponent(name)}`);
-      title = `Install ${t.title}`; vars = (t.vars || []).map(v => ({...v, value: v.default}));
+      title = `Install ${t.title}`; vars = (t.vars || []).map(v => {
+        // media/library folders are optional and start empty: nothing is mapped or created unless you pick one
+        const opt = v.type === 'path' && /^\/mnt\//.test(v.default || '') && !/^\/mnt\/user\/appdata(\/|$)/.test(v.default);
+        return {...v, optional: opt, value: opt ? '' : v.default};
+      });
     } else {
       const c = await apiFetch(`/api/apps/${encodeURIComponent(name)}/config`);
-      title = `Configure ${c.title}`; vars = c.vars || []; extras = c.extras || extras;
+      title = `Configure ${c.title}`;
+      vars = (c.vars || []).map(v => ({...v, optional: v.type === 'path' && /^\/mnt\//.test(v.default || '') && !/^\/mnt\/user\/appdata(\/|$)/.test(v.default)})); extras = c.extras || extras;
       if (!c.template_available) note = 'This app\'s template source is no longer available, so its settings cannot be changed. Re-enable the source first.';
     }
   } catch (e) { alert('Could not load the app settings: ' + e.message); return; }

@@ -1,0 +1,38 @@
+{
+  "name": "jellyfin-enhanced",
+  "title": "Jellyfin Enhanced",
+  "description": "Jellyfin with Emby-ported features: user settings copy, PIN codes, version merging, TVDB bundled, backups, bulk editor, and more.",
+  "category": "Media",
+  "icon": "jellyfin",
+  "port": 8096,
+  "vars": [
+    {"key": "MEDIA_PATH",  "label": "Media library path",  "default": "/mnt/user/media"},
+    {"key": "CONFIG_PATH", "label": "Config/data path",    "default": "/mnt/user/appdata/jellyfin-enhanced"}
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-enhanced": {
+        "image": "jellyfin/jellyfin:latest",
+        "container_name": "jellyfin-enhanced",
+        "hostname": "jellyfin-enhanced",
+        "network_mode": "host",
+        "volumes": [
+          "{{CONFIG_PATH}}/config:/config",
+          "{{CONFIG_PATH}}/cache:/cache",
+          "{{MEDIA_PATH}}:/media:ro",
+          "/etc/localtime:/etc/localtime:ro"
+        ],
+        "devices": [
+          "/dev/dri:/dev/dri",
+          "/dev/vchiq:/dev/vchiq"
+        ],
+        "restart": "unless-stopped",
+        "environment": {
+          "JELLYFIN_PublishedServerUrl": "http://0.0.0.0:8096",
+          "TZ": "UTC"
+        }
+      }
+    }
+  },
+  "notes": "Jellyfin Enhanced includes: user settings copy, PIN code authentication, automatic version merging, TVDB bundled, scheduled backups, bulk metadata editor, and filename identification improvements. Source: https://github.com/yo-repo87/Jellyfin_Enhanced"
+}

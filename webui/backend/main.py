@@ -20,7 +20,9 @@ from routers.audit import AuditMiddleware
 async def lifespan(app: FastAPI):
     task1 = asyncio.create_task(poll_loop())
     task2 = asyncio.create_task(history_poll_loop())
-    threading.Thread(target=monitor_alerts.loop, daemon=True, name="monitor-alerts").start()   # Checkmk -> notification bell
+    threading.Thread(target=monitor_alerts.loop, daemon=True, name="monitor-alerts").start()
+    from routers import ftp as _ftp
+    threading.Thread(target=_ftp.apply_saved, daemon=True, name="ftp-restore").start()          # RAM root: re-create the FTP server setup after a reboot   # Checkmk -> notification bell
     yield
     task1.cancel()
     task2.cancel()

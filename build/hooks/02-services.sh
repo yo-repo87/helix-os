@@ -24,6 +24,9 @@ systemctl disable cloud-init-local    2>/dev/null || true
 # Docker's data-root must live on the array/cache, never in the RAM root, so it is
 # started by helix-array-start (after the drives are mounted), not at boot.
 systemctl disable docker.service docker.socket containerd.service 2>/dev/null || true
+# FTP: the Debian package enables vsftpd at install. Helix starts it itself when FTP is enabled in Settings (routers/ftp.py
+# regenerates /etc/vsftpd.conf and starts it at every boot), so it must not listen with the package defaults before that.
+systemctl disable vsftpd.service 2>/dev/null || true
 # Same for libvirt: its state lives on the array, so helix-vm-start (run by helix-array-start) starts it.
 systemctl disable libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket virtlogd.service virtlockd.service \
     virtlogd.socket virtlockd.socket virtlogd-admin.socket virtlockd-admin.socket libvirt-guests.service 2>/dev/null || true

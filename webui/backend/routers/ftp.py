@@ -84,6 +84,12 @@ anon_root={cfg.get('anon_root', '/mnt/user')}
 local_enable={yes_no(cfg.get('local_users', True))}
 write_enable={yes_no(cfg.get('write_enable', True))}
 local_umask=022
+local_root=/mnt/user
+guest_enable={yes_no(cfg.get('local_users', True))}
+guest_username=helix
+virtual_use_local_privs=YES
+no_anon_password=YES
+hide_ids=YES
 chroot_local_user={yes_no(cfg.get('chroot_local', True))}
 allow_writeable_chroot=YES
 pasv_enable=YES
@@ -121,22 +127,67 @@ def get_config():
     return _load_cfg()
 
 
+def _installed() -> bool:
+    import shutil
+    return shutil.which("vsftpd") is not None or os.path.exists("/usr/sbin/vsftpd")
+
+
+def _listening(port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _apply(cfg: dict) -> dict:
+    """Write vsftpd.conf and start/stop the service. Returns {ok, error, active}; never claims success it did not verify."""
+    if not _installed():
+        return {"ok": False, "active": False, "error": "The FTP server (vsftpd) is not installed on this system. Update Helix OS to a version that includes it."}
+    if not _write_vsftpd(cfg):
+        return {"ok": False, "active": False, "error": "Could not write /etc/vsftpd.conf."}
+    if not cfg["enabled"]:
+        _run("systemctl", "disable", "--now", "vsftpd")
+        return {"ok": True, "active": False}
+    rc, out = _run("systemctl", "enable", "--now", "vsftpd")
+    _run("systemctl", "restart", "vsftpd")           # --now does not restart a service that is already running with old settings
+    import time
+    for _ in range(10):
+        if _listening(cfg["port"]):
+            return {"ok": True, "active": True}
+        time.sleep(0.5)
+    _, log = _run("journalctl", "-u", "vsftpd", "-n", "5", "--no-pager")
+    return {"ok": False, "active": False, "error": f"vsftpd did not start listening on port {cfg['port']}. {log.strip()[-300:]}"}
+
+
+def apply_saved() -> None:
+    """Called when the backend starts: the root file system is RAM, so /etc/vsftpd.conf and the enabled service are gone after a reboot."""
+    try:
+        cfg = _load_cfg()
+        if cfg.get("enabled"):
+            _apply(cfg)
+    except Exception:                                  # noqa: BLE001 - boot must not fail because of FTP
+        pass
+
+
 @router.put("/config")
 def put_config(req: FtpCfg):
     cfg = req.dict()
+    if not (1 <= cfg["port"] <= 65535) or not (1024 <= cfg["passive_min_port"] <= cfg["passive_max_port"] <= 65535):
+        return {"ok": False, "error": "Ports must be 1-65535, and the passive range 1024-65535 with min not above max."}
+    if not cfg["anon_root"].startswith("/mnt/") or ".." in cfg["anon_root"].split("/"):
+        return {"ok": False, "error": "The anonymous folder must be inside /mnt (for example /mnt/user)."}
     _save_cfg(cfg)
-    if _write_vsftpd(cfg):
-        if cfg["enabled"]:
-            _run("systemctl", "enable", "--now", "vsftpd")
-        else:
-            _run("systemctl", "disable", "--now", "vsftpd")
-    return {"ok": True}
+    return _apply(cfg)
 
 
 @router.get("/status")
 def ftp_status():
     rc, out = _run("systemctl", "is-active", "vsftpd")
-    return {"active": rc == 0, "state": out.strip()}
+    cfg = _load_cfg()
+    return {"active": rc == 0, "state": out.strip(), "installed": _installed(), "port": cfg["port"], "listening": _listening(cfg["port"]),
+            "anonymous": cfg["allow_anonymous"], "local_users": cfg["local_users"]}
 
 
 @router.post("/start")

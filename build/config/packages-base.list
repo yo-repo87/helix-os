@@ -69,6 +69,15 @@ tcpdump
 # ── Boot splash (animated helix; theme in build/boot-assets/plymouth-helix) ──
 plymouth
 
+# ── Tools the web UI calls for features it offers (UPS page, CPU page, drive LED, Let's Encrypt) ──
+apcupsd
+linux-cpupower
+ledmon
+certbot
+
+# ── FTP server (Settings -> FTP; configured by routers/ftp.py) ──
+vsftpd
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 sudo
 ca-certificates

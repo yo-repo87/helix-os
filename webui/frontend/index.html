@@ -4032,10 +4032,18 @@ async function loadFtpConfig() {
     document.getElementById('ftp-pasv-max').value   = cfg.passive_max_port || 60100;
     const badge = document.getElementById('ftp-status-badge');
     if (badge) {
-      badge.textContent = status.active ? 'Running' : 'Stopped';
-      badge.style.color = status.active ? 'var(--ok)' : 'var(--fg-muted)';
+      badge.textContent = !status.installed ? 'Not installed' : (status.listening ? 'Running' : 'Stopped');
+      badge.style.color = status.listening ? 'var(--ok)' : (!status.installed ? 'var(--err)' : 'var(--fg-muted)');
     }
+    ftpMessage(!status.installed ? 'The FTP server is not installed on this system. Update Helix OS to a version that includes it.'
+      : status.listening ? `Listening on port ${status.port}. Connect to ftp://${location.hostname}:${status.port}/ with ${status.anonymous ? 'user "anonymous" (any password)' : ''}${status.anonymous && status.local_users ? ' or ' : ''}${status.local_users ? 'a Helix user name and password (Users page)' : ''}. Users land in the shares (/mnt/user).` : '', !status.installed);
   } catch {}
+}
+function ftpMessage(text, bad) {
+  const badge = document.getElementById('ftp-status-badge'); if (!badge) return;
+  let el = document.getElementById('ftp-msg');
+  if (!el) { el = document.createElement('div'); el.id = 'ftp-msg'; el.style.cssText = 'font-size:11.5px;margin-top:6px;max-width:560px'; badge.parentNode.appendChild(el); }
+  el.textContent = text; el.style.color = bad ? 'var(--err)' : 'var(--fg-muted)'; el.hidden = !text;
 }
 
 async function ftpSave() {
@@ -4051,12 +4059,13 @@ async function ftpSave() {
       passive_max_port: parseInt(document.getElementById('ftp-pasv-max')?.value) || 60100,
       local_users: true, anon_root: '/mnt/user', banner: 'Welcome to Helix OS FTP',
     })
-  }).catch(e=>({ok:false}));
+  }).catch(e=>({ok:false, error: errText(e)}));
   const badge = document.getElementById('ftp-status-badge');
   if (badge) {
-    badge.textContent = d.ok ? 'Saved — checking…' : 'Failed';
-    badge.style.color = d.ok ? 'var(--ok)' : 'var(--warn)';
-    if (d.ok) setTimeout(loadFtpConfig, 1500);
+    badge.textContent = d.ok ? 'Saved' : 'Failed';
+    badge.style.color = d.ok ? 'var(--ok)' : 'var(--err)';
+    if (!d.ok) ftpMessage(d.error || 'Could not apply the FTP settings.', true);
+    setTimeout(loadFtpConfig, d.ok ? 800 : 6000);
   }
 }
 

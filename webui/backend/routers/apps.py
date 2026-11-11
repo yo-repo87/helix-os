@@ -86,6 +86,12 @@ def create_source(req: SourceCreate):
     return {**src, "count": len(found)}
 
 
+@router.post("/sources/restore-defaults")
+def restore_defaults():
+    from services.template_loader import restore_default_sources
+    return {"added": restore_default_sources()}
+
+
 @router.patch("/sources/{source_id}")
 def update_source(source_id: str, enabled: bool | None = None):
     sources = load_sources()

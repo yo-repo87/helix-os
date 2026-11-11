@@ -102,6 +102,16 @@ def load_sources() -> list[dict]:
     return sources
 
 
+def restore_default_sources() -> list[str]:
+    """Re-add any default source that is missing (e.g. removed earlier). Returns the ids added."""
+    sources = load_sources()
+    have = {s["id"] for s in sources}
+    added = [dict(d) for d in DEFAULT_SOURCES if d["id"] not in have]
+    if added:
+        save_sources(sources + added)
+    return [d["id"] for d in added]
+
+
 def _remember_defaults(ids) -> None:
     try:
         Path(SOURCES_SEEN).write_text(json.dumps(sorted(set(ids))))

@@ -1177,6 +1177,7 @@ main { padding-bottom: 44px; }
           <input class="form-input" id="src-url" placeholder="https://raw.githubusercontent.com/…/templates.json">
         </div>
         <button class="form-btn" onclick="addSource()">Add Source</button>
+        <button class="form-btn" onclick="restoreSources()" title="Re-add the built-in sources (Helix, Unraid CA, Pi-Hosted) if you removed one">Restore default sources</button>
       </div>
     </div>
   </div>
@@ -3626,6 +3627,15 @@ function renderSources(sources) {
       </div>` : ''}
     </div>`;
   }).join('');
+}
+
+async function restoreSources() {
+  if (!liveMode) return;
+  try {
+    const d = await fetchJSON('/api/apps/sources/restore-defaults', {method: 'POST'});
+    alert(d.added.length ? 'Restored: ' + d.added.join(', ') : 'All default sources are already in the list.');
+    await loadSources(); setTimeout(loadApps, 500);
+  } catch (e) { alert('Could not restore: ' + (errText ? errText(e) : e)); }
 }
 
 async function addSource() {

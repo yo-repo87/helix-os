@@ -4604,22 +4604,26 @@ async function setUserPassword(username) {
   if (!liveMode) { alert('Demo mode — connect backend.'); return; }
   const pw = document.getElementById('pw-' + username).value;
   if (!pw) return;
-  await fetch(API + '/api/users/' + username + '/password', {
-    method: 'PUT', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({password: pw}),
-  }).catch(()=>{});
+  try {
+    await fetchJSON('/api/users/' + encodeURIComponent(username) + '/password', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+  } catch (e) { alert('Password NOT changed: ' + errText(e)); return; }     // it used to say "updated" even when the server refused
   document.getElementById('pw-' + username).value = '';
-  alert('Password updated.');
+  alert('Password updated for ' + username + '. It is used for console and SSH login and FTP. SMB needs its own: use "Set Samba password".');
 }
 
 async function setSambaPassword(username) {
   if (!liveMode) { alert('Demo mode — connect backend.'); return; }
   const pw = document.getElementById('pw-' + username).value;
   if (!pw) { alert('Enter a password first in the Set password field.'); return; }
-  await fetch(API + '/api/users/' + username + '/samba-password', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({password: pw}),
-  }).catch(()=>{});
+  try {
+    await fetchJSON('/api/users/' + encodeURIComponent(username) + '/samba-password', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+  } catch (e) { alert('Samba password NOT set: ' + errText(e)); return; }
   alert('Samba password set.');
 }
 

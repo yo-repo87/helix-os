@@ -338,7 +338,7 @@ for helper in \
     /build/array/sbin/helix-mover \
     /build/array/sbin/helix-vm-start /build/array/sbin/helix-vm-stop \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
-    /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor; do
+    /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor /build/addins/helix-addin; do
     if [ -f "$helper" ]; then
         install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
         echo "  installed /usr/local/sbin/$(basename "$helper")"

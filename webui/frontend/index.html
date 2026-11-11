@@ -1988,6 +1988,7 @@ main { padding-bottom: 44px; }
       <span class="section-title" style="margin:0">GPU Management</span>
       <button class="settings-btn" onclick="loadGpuMgmt()" style="font-size:11px">↺ Refresh</button>
     </div>
+    <div id="addins-gpu"></div>
     <!-- Sub-tabs -->
     <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border)">
       <button class="gpu-tab active" id="gpu-tab-monitor" onclick="switchGpuTab('monitor')" style="padding:7px 18px;font-size:12px;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);cursor:pointer">Monitor</button>
@@ -6064,7 +6065,51 @@ function switchGpuTab(tab) {
   });
 }
 
+async function loadAddins(page, elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  let d;
+  try { d = await fetchJSON('/api/addins/?page=' + page); } catch (e) { return; }
+  // Offer an add-in only when its hardware is present (or it is already installed).
+  const list = d.addins.filter(a => a.hardware_found || a.installed || a.job !== 'idle');
+  el.innerHTML = list.map(a => {
+    let state, btn = '';
+    if (a.job === 'running') state = '<span style="color:var(--accent)">Working…</span>';
+    else if (a.installed && a.needs_reinstall) { state = '<span style="color:var(--warn)">Installed for an older kernel: reinstall it</span>'; btn = `<button class="settings-btn" onclick="addinInstall('${a.id}','${elId}')">Reinstall</button>`; }
+    else if (a.installed) { state = '<span style="color:var(--ok,#4f8a10)">Installed</span>' + (a.reboot ? ' (reboot if the driver is not active yet)' : ''); btn = `<button class="settings-btn" onclick="addinRemove('${a.id}','${elId}')">Remove</button>`; }
+    else btn = `<button class="settings-btn" onclick="addinInstall('${a.id}','${elId}')">Install (~${a.size_mb} MB)</button>`;
+    return `<div style="background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:12px 16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b>${_esc(a.title)}</b><span style="font-size:12px">${state||''}</span><span style="margin-left:auto">${btn}</span></div>
+      <div style="font-size:12px;color:var(--fg-muted);margin-top:6px">${_esc(a.description)}</div>
+      <pre id="addin-log-${a.id}" style="display:${a.job==='idle'?'none':'block'};max-height:200px;overflow:auto;font-size:11px;background:var(--bg);padding:8px;border-radius:6px;margin:8px 0 0"></pre></div>`;
+  }).join('');
+  list.filter(a => a.job === 'running').forEach(a => addinWatch(a.id, page, elId));
+}
+async function addinInstall(id, elId) { await _addinGo(id, 'install', elId); }
+async function addinRemove(id, elId) {
+  if (!await askConfirm('Remove this add-in?', 'Its packages and the copy kept on the array are deleted.')) return;
+  await _addinGo(id, 'remove', elId);
+}
+async function _addinGo(id, verb, elId) {
+  try { await fetchJSON(`/api/addins/${id}/${verb}`, {method: 'POST'}); }
+  catch (e) { alert(errText ? errText(e) : e); return; }
+  await loadAddins('gpu', elId);
+  addinWatch(id, 'gpu', elId);
+}
+function addinWatch(id, page, elId) {
+  const t = setInterval(async () => {
+    const pre = document.getElementById('addin-log-' + id);
+    if (!pre) { clearInterval(t); return; }
+    try {
+      const d = await fetchJSON(`/api/addins/${id}/log`);
+      pre.style.display = 'block'; pre.textContent = d.log; pre.scrollTop = pre.scrollHeight;
+      if (d.state !== 'running') { clearInterval(t); setTimeout(() => { loadAddins(page, elId).then(() => { const p2 = document.getElementById('addin-log-' + id); if (p2) { p2.style.display = 'block'; p2.textContent = d.log; } }); if (page === 'gpu') _loadGpuMonitor(); }, 500); }
+    } catch (e) {}
+  }, 2000);
+}
+
 async function loadGpuMgmt() {
+  loadAddins('gpu', 'addins-gpu');
   switchGpuTab(_gpuMgmtTab);
   if (_gpuMgmtTab === 'monitor') await _loadGpuMonitor();
   else await _loadGpuOc();

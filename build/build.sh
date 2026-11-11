@@ -168,7 +168,7 @@ fi
 # Copy helper script trees the hooks install into the image (network bring-up,
 # array/share/gpu helpers). Without these the services that reference
 # /usr/local/sbin/helix-* fail at boot (e.g. no network config is applied).
-for helper in network array shares gpu checkmk; do
+for helper in network array shares gpu checkmk addins; do
     if [ -d "$SCRIPT_DIR/../$helper" ]; then
         echo "  Copying $helper/ into chroot..."
         rm -rf "$ROOTFS_DIR/build/$helper"

@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""helix-addin: install optional software (add-ins) onto the RAM-root OS and keep it across reboots.
+
+Runs as root (the web backend calls it through sudo). The root filesystem lives in RAM, so an
+add-in is downloaded once, its .deb files are kept on the array (<cache|disk1>/system/addins/<id>/),
+and `restore` re-installs them from that folder at every array start, with no network needed.
+
+  helix-addin install <id>    manifest JSON on stdin
+  helix-addin remove  <id>
+  helix-addin restore         (called by helix-array-start; runs in the background)
+  helix-addin status          JSON: what is installed, where its cache is
+
+A manifest entry is data only: apt sources, package names and a short list of named post-install
+actions. Nothing in it is ever run as a shell command, so a bad manifest cannot run code as root.
+"""
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+
+HELIX_CONFIG = os.environ.get("HELIX_CONFIG", "/boot/config")
+STATE_FILE = os.path.join(HELIX_CONFIG, "addins.json")
+ALLOWED_HOSTS = {"deb.debian.org", "security.debian.org", "nvidia.github.io", "developer.download.nvidia.com"}
+ALLOWED_POST = {"depmod", "swap-nouveau", "docker-nvidia-runtime"}
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+PKG_RE = re.compile(r"^[a-z0-9][a-zA-Z0-9.+:$()-]{0,80}$")
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def run(cmd, check=True, **kw):
+    log("$ " + " ".join(cmd))
+    r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+    if r.stdout.strip():
+        log(r.stdout.rstrip()[-4000:])
+    if check and r.returncode != 0:
+        raise SystemExit(f"FAILED ({r.returncode}): {' '.join(cmd)}")
+    return r
+
+
+def subst(s):
+    arch = subprocess.run(["dpkg", "--print-architecture"], text=True, capture_output=True).stdout.strip()
+    return (s.replace("$(KVER)", os.uname().release).replace("$(ARCH)", arch)
+             .replace("$(CODENAME)", "bookworm"))
+
+
+def validate(e):
+    """Return a cleaned copy of a manifest entry or raise SystemExit with the reason."""
+    if not isinstance(e, dict) or not ID_RE.match(str(e.get("id", ""))):
+        raise SystemExit("invalid add-in id")
+    apt = e.get("apt") or {}
+    pkgs = apt.get("packages") or []
+    if not pkgs or not all(isinstance(p, str) and PKG_RE.match(p) for p in pkgs):
+        raise SystemExit("invalid package list")
+    srcs = []
+    for s in apt.get("sources") or []:
+        name = str(s.get("name", ""))
+        line = str(s.get("line", ""))
+        if not re.match(r"^[a-z0-9-]{1,32}$", name):
+            raise SystemExit("invalid source name")
+        m = re.match(r"^deb (\[[^\]\n]*\] )?(https?://[^ \n]+)( [^\n]+)?$", line)
+        if not m or urllib.parse.urlparse(m.group(2)).hostname not in ALLOWED_HOSTS:
+            raise SystemExit(f"source not allowed: {line[:80]}")
+        key = s.get("key_url")
+        if key and (urllib.parse.urlparse(key).scheme != "https" or urllib.parse.urlparse(key).hostname not in ALLOWED_HOSTS):
+            raise SystemExit("key url not allowed")
+        srcs.append({"name": name, "line": line, "key_url": key})
+    post = e.get("post") or []
+    if not all(p in ALLOWED_POST for p in post):
+        raise SystemExit("unknown post-install action")
+    return {"id": e["id"], "title": str(e.get("title", e["id"]))[:80], "version": str(e.get("version", "1")),
+            "apt": {"sources": srcs, "packages": pkgs}, "post": post, "reboot": bool(e.get("reboot"))}
+
+
+def storage_root():
+    forced = os.environ.get("HELIX_ADDIN_ROOT")
+    if forced:
+        return forced
+    for pat in ("/mnt/cache[0-9]*", "/mnt/disk[0-9]*"):
+        for m in sorted(glob.glob(pat)):
+            if os.path.ismount(m):
+                return os.path.join(m, "system", "addins")
+    raise SystemExit("Start the array first: add-ins are stored on the array so they survive a reboot.")
+
+
+def load_state():
+    try:
+        return json.load(open(STATE_FILE))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st):
+    os.makedirs(HELIX_CONFIG, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    json.dump(st, open(tmp, "w"), indent=1)
+    os.replace(tmp, STATE_FILE)
+
+
+def write_sources(e):
+    for s in e["apt"]["sources"]:
+        line = subst(s["line"])
+        if s["key_url"]:
+            keyfile = f"/usr/share/keyrings/helix-{e['id']}-{s['name']}.asc"
+            run(["curl", "-fsSL", "--retry", "3", "-o", keyfile, s["key_url"]])
+            line = line.replace("KEYRING", keyfile)
+        open(f"/etc/apt/sources.list.d/helix-{e['id']}-{s['name']}.list", "w").write(line + "\n")
+
+
+def post_actions(e):
+    for p in e["post"]:
+        if p == "depmod":
+            run(["depmod", "-a"], check=False)
+        elif p == "swap-nouveau":
+            # nouveau is loaded by udev before this runs; the NVIDIA driver cannot bind while it is.
+            open("/etc/modprobe.d/helix-blacklist-nouveau.conf", "w").write("blacklist nouveau\noptions nouveau modeset=0\n")
+            run(["modprobe", "-r", "nouveau"], check=False)
+            run(["modprobe", "nvidia"], check=False)
+        elif p == "docker-nvidia-runtime" and os.path.exists("/usr/bin/nvidia-ctk"):
+            before = open("/etc/docker/daemon.json").read() if os.path.exists("/etc/docker/daemon.json") else ""
+            run(["nvidia-ctk", "runtime", "configure", "--runtime=docker"], check=False)
+            after = open("/etc/docker/daemon.json").read() if os.path.exists("/etc/docker/daemon.json") else ""
+            if before != after and subprocess.run(["systemctl", "is-active", "--quiet", "docker"]).returncode == 0:
+                run(["systemctl", "restart", "docker"], check=False)
+
+
+def install_debs(cache):
+    debs = sorted(glob.glob(os.path.join(cache, "archives", "*.deb")))
+    if not debs:
+        raise SystemExit("no packages in the cache")
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    run(["dpkg", "--force-confold", "-i", *debs], env=env)
+
+
+def cmd_install(aid):
+    e = validate(json.load(sys.stdin))
+    if e["id"] != aid:
+        raise SystemExit("id mismatch")
+    root = storage_root()
+    cache = os.path.join(root, e["id"])
+    os.makedirs(os.path.join(cache, "archives", "partial"), exist_ok=True)
+    log("STEP 1/5 Adding package sources")
+    write_sources(e)
+    log("STEP 2/5 Reading package lists")
+    run(["apt-get", "update"], check=False)
+    log("STEP 3/5 Downloading packages to the array")
+    pk = [subst(p) for p in e["apt"]["packages"]]
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    for old in glob.glob(os.path.join(cache, "archives", "*.deb")):
+        os.remove(old)
+    run(["apt-get", "install", "-y", "--download-only", "--no-install-recommends",
+         "-o", f"Dir::Cache::archives={cache}/archives", *pk], env=env)
+    log("STEP 4/5 Installing")
+    install_debs(cache)
+    log("STEP 5/5 Finishing")
+    post_actions(e)
+    size = sum(os.path.getsize(f) for f in glob.glob(os.path.join(cache, "archives", "*.deb")))
+    e["kver"] = os.uname().release
+    json.dump(e, open(os.path.join(cache, "entry.json"), "w"), indent=1)
+    st = load_state()
+    st[e["id"]] = {"version": e["version"], "kver": e["kver"], "installed": int(time.time()), "cache": cache, "bytes": size}
+    save_state(st)
+    log("DONE" + (" - reboot to finish" if e["reboot"] else ""))
+
+
+def cmd_restore():
+    st = load_state()
+    for aid, rec in st.items():
+        try:
+            e = json.load(open(os.path.join(rec["cache"], "entry.json")))
+        except (OSError, ValueError):
+            log(f"{aid}: cache missing, skipping (reinstall it from the page)")
+            continue
+        if e.get("kver") != os.uname().release:
+            log(f"{aid}: built for kernel {e.get('kver')}, running {os.uname().release}; reinstall it from the page")
+            continue
+        log(f"{aid}: restoring from {rec['cache']}")
+        try:
+            install_debs(rec["cache"])
+            post_actions(validate(e))
+            log(f"{aid}: restored")
+        except SystemExit as ex:
+            log(f"{aid}: restore failed: {ex}")
+
+
+def cmd_remove(aid):
+    st = load_state()
+    rec = st.pop(aid, None)
+    if rec:
+        try:
+            e = validate(json.load(open(os.path.join(rec["cache"], "entry.json"))))
+            names = [re.sub(r"_.*", "", os.path.basename(f)) for f in glob.glob(os.path.join(rec["cache"], "archives", "*.deb"))]
+            run(["dpkg", "--purge", "--force-depends", *[n for n in names if n in {subst(p) for p in e["apt"]["packages"]}]], check=False)
+        except (OSError, ValueError, SystemExit):
+            pass
+        run(["rm", "-rf", rec["cache"]], check=False)
+    for f in glob.glob(f"/etc/apt/sources.list.d/helix-{aid}-*.list"):
+        os.remove(f)
+    save_state(st)
+    log("DONE")
+
+
+def main():
+    a = sys.argv[1:]
+    if os.geteuid() != 0:
+        raise SystemExit("must run as root")
+    if a[:1] == ["install"] and len(a) == 2:
+        cmd_install(a[1])
+    elif a[:1] == ["remove"] and len(a) == 2:
+        cmd_remove(a[1])
+    elif a == ["restore"]:
+        cmd_restore()
+    elif a == ["status"]:
+        print(json.dumps(load_state()))
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

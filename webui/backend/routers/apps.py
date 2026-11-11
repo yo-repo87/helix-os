@@ -63,11 +63,27 @@ def create_source(req: SourceCreate):
         "url":     req.url,
         "enabled": req.enabled,
     }
+    if any(x["id"] == src["id"] for x in load_sources()):
+        raise HTTPException(409, f"Source id '{src['id']}' already exists")
+    # Try it first: a source that yields nothing should say why instead of silently adding an empty entry.
+    try:
+        from services import template_loader as _tl
+        found = {"portainer": _tl._load_portainer, "unraid-xml": _tl._load_unraid_xml_url,
+                 "unraid-ca-feed": _tl._load_unraid_ca_feed}[req.type](src)
+    except Exception as e:
+        invalidate_cache(src["id"])
+        raise HTTPException(400, f"Could not read {req.url}: {e}. If it is a private repository, make it public or use a direct link to a file.")
+    if not found:
+        invalidate_cache(src["id"])
+        hint = {"unraid-xml": "no Unraid template .xml files were found there",
+                "portainer": "no Portainer templates were found there (expected a templates JSON file)",
+                "unraid-ca-feed": "the feed contained no apps"}[req.type]
+        raise HTTPException(400, f"Nothing to add: {hint}.")
     try:
         add_source(src)
     except ValueError as e:
         raise HTTPException(409, str(e))
-    return src
+    return {**src, "count": len(found)}
 
 
 @router.patch("/sources/{source_id}")

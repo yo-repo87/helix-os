@@ -3635,11 +3635,14 @@ async function addSource() {
   const url  = document.getElementById('src-url').value.trim();
   if (!name || !url) { alert('Name and URL are required'); return; }
   try {
-    await fetch(API + '/api/apps/sources', {
+    const r = await fetch(API + '/api/apps/sources', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name, type, url, enabled: true}),
     });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(d.detail || ('Could not add the source (HTTP ' + r.status + ')')); return; }
+    alert(`Added "${name}": ${d.count} app${d.count === 1 ? '' : 's'} found.`);
     document.getElementById('src-name').value = '';
     document.getElementById('src-url').value  = '';
     await loadSources();

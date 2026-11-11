@@ -444,19 +444,42 @@ def _parse_unraid_xml(xml_text: str, source_id: str) -> dict | None:
     }
 
 
+_GH_REPO = re.compile(r"^https?://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?(?:tree/([\w./-]+))?$")
+
+
+def _github_xml_urls(url: str) -> list[str] | None:
+    """If `url` is a GitHub repository page, the raw URLs of every .xml file in it (else None)."""
+    m = _GH_REPO.match(url.strip())
+    if not m:
+        return None
+    owner, repo, ref = m.group(1), m.group(2), m.group(3) or "HEAD"
+    tree = json.loads(_fetch(f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1"))
+    paths = [t["path"] for t in tree.get("tree", []) if t.get("type") == "blob" and t["path"].lower().endswith(".xml")]
+    return [f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{p}" for p in paths[:400]]
+
+
 def _load_unraid_xml_url(source: dict) -> list[dict]:
-    """Load a single XML template from a URL."""
+    """Load Unraid template XML: one file URL, or every .xml in a GitHub repository."""
     cached = _cache_load(source["id"])
     if cached is not None:
         return cached
 
+    result: list[dict] = []
     try:
-        raw  = _fetch(source["url"])
-        t    = _parse_unraid_xml(raw.decode("utf-8", errors="replace"), source["id"])
-        result = [t] if t else []
+        urls = _github_xml_urls(source["url"])
+        if urls is None:
+            urls = [source["url"]]
+        for u in urls:
+            try:
+                t = _parse_unraid_xml(_fetch(u).decode("utf-8", errors="replace"), source["id"])
+            except Exception as e:
+                log.warning("Skipping template %s: %s", u, e)
+                continue
+            if t:
+                result.append(t)
     except Exception as e:
-        log.warning("Failed to fetch XML template %s: %s", source["url"], e)
-        result = []
+        log.warning("Failed to fetch XML templates %s: %s", source["url"], e)
+        raise
 
     _cache_save(source["id"], result)
     return result

@@ -144,6 +144,12 @@ if command -v dockerd >/dev/null 2>&1; then
     fi
 fi
 
+# ── Add-ins (NVIDIA driver etc.): re-install from the copy kept on the array, in the background ──
+# The root filesystem is RAM, so they vanish at every boot. DKMS compiles can take minutes.
+if [ -x /usr/local/sbin/helix-addin ]; then
+    ( HELIX_CONFIG="$HELIX_CONFIG" nohup python3 /usr/local/sbin/helix-addin restore >/var/log/helix-addin-restore.log 2>&1 & )
+fi
+
 # ── Share services (SMB / NFS) ────────────────────────────────────────────────
 if [ -x /usr/local/sbin/helix-shares-apply ]; then
     HELIX_CONFIG="$HELIX_CONFIG" /usr/local/sbin/helix-shares-apply >/dev/null 2>&1 \

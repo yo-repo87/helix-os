@@ -429,6 +429,21 @@ main {
 .ctr-state.running { background: var(--ok-dim); color: var(--ok); }
 .ctr-state.stopped { background: var(--surface-hi); color: var(--fg-muted); }
 .ctr-actions { display: flex; gap: 4px; }
+.ctr-live { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; width: 330px; justify-content: flex-end; font-size: 10.5px;
+  color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
+.ctr-live .cl { display: flex; align-items: center; gap: 5px; }
+.ctr-live .cl:nth-child(1) { width: 104px; } .ctr-live .cl:nth-child(2) { width: 112px; } .ctr-live .cl-net { width: 100px; flex-direction: column; align-items: flex-start; gap: 0; line-height: 1.25; }
+.ctr-live .cl-net .cl-k { display: none; }
+td .ctr-live { width: auto; justify-content: flex-start; }
+.container-row .ctr-name { min-width: 110px; }
+.container-row .ctr-actions { min-width: 152px; justify-content: flex-end; }
+.ctr-live .cl-k { color: var(--fg-dim); font-size: 9.5px; letter-spacing: .04em; }
+.ctr-live svg { display: block; }
+.ctr-live .cl-bar { width: 44px; height: 5px; border-radius: 3px; background: var(--surface-hi); overflow: hidden; }
+.ctr-live .cl-bar i { display: block; height: 100%; background: var(--ok); }
+.ctr-live .cl-bar i.hi { background: var(--warn); }
+.ctr-live .cl-bar i.crit { background: var(--err); }
+@media (max-width: 1100px) { .ctr-live .cl-net, .ctr-live .cl-k { display: none; } .ctr-live { width: auto; } }
 .ctr-btn {
   padding: 2px 7px; border: 1px solid var(--border-str); border-radius: 4px;
   background: transparent; color: var(--fg-muted); cursor: pointer;
@@ -1941,7 +1956,7 @@ main { padding-bottom: 44px; }
     <div class="data-wrap">
       <table class="data-table">
         <thead><tr>
-          <th>Container</th><th>Status</th><th>Ports</th><th>Folders</th><th></th>
+          <th>Container</th><th>Status</th><th>Live</th><th>Ports</th><th>Folders</th><th></th>
         </tr></thead>
         <tbody id="docker-tbody"></tbody>
       </table>
@@ -3025,6 +3040,7 @@ function renderContainers(containers, available) {
       <div class="container-row">
         <span class="ctr-dot ${_esc(c.state)}"></span>
         <span class="ctr-name">${_esc(c.name)}</span>
+        <span class="ctr-live" data-live="${_esc(c.name)}">${ctrLiveHtml(c)}</span>
         <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
         <div class="ctr-actions">${ctrButtons(c, true)}</div>
       </div>`).join('')
@@ -3039,11 +3055,12 @@ function renderContainers(containers, available) {
         <td><span class="ctr-dot ${_esc(c.state)}"></span> <strong>${_esc(c.name)}</strong>${c.app ? ' <span style="font-size:10px;color:var(--accent)">app</span>' : ''}
             <div style="font-size:11px;color:var(--fg-dim)">${_esc((c.image || '').split('/').pop())}</div></td>
         <td>${_esc(c.status || c.state || '')}</td>
+        <td><span class="ctr-live" data-live="${_esc(c.name)}">${ctrLiveHtml(c)}</span></td>
         <td style="font-size:11px;color:var(--fg-muted);max-width:200px;word-break:break-word">${_esc(c.ports || '—')}</td>
         <td class="mnt-cell" data-mnt="${_esc(c.name)}" style="font-size:11px;color:var(--fg-muted);max-width:240px;white-space:pre-wrap;overflow-wrap:anywhere">…</td>
         <td style="white-space:nowrap"><div class="ctr-actions">${ctrButtons(c, false)}</div></td>
       </tr>`).join('')
-      : '<tr><td colspan="5" style="color:var(--fg-dim);padding:16px">No containers yet. Install one from the Apps page.</td></tr>';
+      : '<tr><td colspan="6" style="color:var(--fg-dim);padding:16px">No containers yet. Install one from the Apps page.</td></tr>';
   }
   const un = document.getElementById('docker-unavail');
   if (un) un.hidden = _dockerAvailable !== false;
@@ -3065,6 +3082,56 @@ async function fillMounts(containers) {
     } catch (e) { cell.textContent = '—'; }
   }));
 }
+
+// ── Live per-container resource use (CPU / RAM / network) ───────────────────
+const _ctrLive = {};            // name -> {cpu, mem, memLimit, rx, tx, hist: [cpu...]}
+function fmtRate(bps) {
+  if (bps == null) return '…';
+  const u = ['B/s', 'KB/s', 'MB/s', 'GB/s']; let i = 0, v = bps;
+  while (v >= 1000 && i < 3) { v /= 1000; i++; }
+  return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + ' ' + u[i];
+}
+function fmtMem(b) {
+  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(1) + ' GB';
+  return Math.round(b / 1024 ** 2) + ' MB';
+}
+function ctrSpark(h) {          // CPU history as a tiny line chart
+  if (!h || h.length < 2) return '<svg width="46" height="16"></svg>';
+  const mx = Math.max(20, ...h), w = 46, ht = 16, st = w / (h.length - 1);
+  const pts = h.map((v, i) => `${(i * st).toFixed(1)},${(ht - 1 - (v / mx) * (ht - 2)).toFixed(1)}`).join(' ');
+  return `<svg width="${w}" height="${ht}" viewBox="0 0 ${w} ${ht}"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+}
+function ctrLiveHtml(c) {
+  if (c.state !== 'running') return '';
+  const d = _ctrLive[c.name];
+  if (!d) return '<span class="cl"><span class="cl-k">…</span></span>';
+  const memPct = d.memLimit ? Math.min(100, d.mem / d.memLimit * 100) : 0;
+  const cls = memPct >= 90 ? 'crit' : memPct >= 70 ? 'hi' : '';
+  return `<span class="cl" title="CPU use (one core = 100%)"><span class="cl-k">CPU</span>${ctrSpark(d.hist)}<b style="min-width:34px;text-align:right">${d.cpu.toFixed(d.cpu < 10 ? 1 : 0)}%</b></span>`
+    + `<span class="cl" title="Memory in use${d.memLimit ? ' of ' + fmtMem(d.memLimit) : ''}"><span class="cl-k">RAM</span><span class="cl-bar"><i class="${cls}" style="width:${memPct.toFixed(0)}%"></i></span><b style="min-width:48px;text-align:right">${fmtMem(d.mem)}</b></span>`
+    + `<span class="cl cl-net" title="Network: download / upload"><span class="cl-k">NET</span><span>↓ ${fmtRate(d.rx)}</span><span>↑ ${fmtRate(d.tx)}</span></span>`;
+}
+let _ctrLiveBusy = false;
+async function pollCtrLive() {
+  if (!liveMode || document.hidden || _ctrLiveBusy || !_containers.some(c => c.state === 'running')) return;
+  const h = location.hash || '#dashboard';
+  if (h !== '#dashboard' && h !== '#docker' && h !== '') return;
+  _ctrLiveBusy = true;
+  try {
+    const r = await apiFetch('/api/docker/stats');
+    for (const s of (r.stats || [])) {
+      const d = _ctrLive[s.name] || (_ctrLive[s.name] = {hist: []});
+      Object.assign(d, {cpu: s.cpu_pct || 0, mem: s.mem_bytes || 0, memLimit: s.mem_limit || 0, rx: s.rx_bps, tx: s.tx_bps});
+      d.hist.push(d.cpu); if (d.hist.length > 30) d.hist.shift();
+    }
+    document.querySelectorAll('.ctr-live[data-live]').forEach(el => {
+      const c = _containers.find(x => x.name === el.dataset.live);
+      if (c) el.innerHTML = ctrLiveHtml(c);
+    });
+  } catch (e) { /* docker busy or not available: keep the last values */ }
+  _ctrLiveBusy = false;
+}
+setInterval(pollCtrLive, 3000);
 
 // Action buttons for one container (compact on the dashboard, labelled in the Manage dialog).
 function ctrButtons(c, compact) {

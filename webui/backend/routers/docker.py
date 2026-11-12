@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-import subprocess, json, os
+import subprocess, json, os, re, threading, time
 from config import DOCKER_SOCKET, HELIX_CONFIG
 
 router = APIRouter(prefix="/api/docker", tags=["docker"])
@@ -130,18 +130,67 @@ def remove_container(name: str, volumes: bool = False):
         raise HTTPException(500, out)
     return {"ok": True, "message": f"Removed {name}"}
 
+_UNITS = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+          "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "tib": 1024 ** 4}
+
+
+def _bytes(txt: str) -> float:
+    """'12.3MiB', '1.5kB', '0B' -> bytes."""
+    m = re.match(r"\s*([\d.]+)\s*([A-Za-z]*)", txt or "")
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1)) * _UNITS.get(m.group(2).lower() or "b", 1)
+    except ValueError:
+        return 0.0
+
+
+def _pair(txt: str) -> tuple[float, float]:
+    a, _, b = (txt or "").partition("/")
+    return _bytes(a), _bytes(b)
+
+
+_stats_lock = threading.Lock()
+_stats_last: dict = {"t": 0.0, "stats": [], "net": {}}
+
+
 @router.get("/stats")
 def docker_stats():
+    """Live per-container CPU / memory / network. Network rates are the change in docker's
+    cumulative counters between two samples, so they need at least two polls to appear.
+    Samples are shared: callers within 2 s get the previous result (docker stats is slow)."""
     if not _docker_available():
         return {"available": False}
-    rc, out = _docker(
-        "stats", "--no-stream", "--format",
-        '{"name":"{{.Name}}","cpu":"{{.CPUPerc}}","mem":"{{.MemUsage}}","net":"{{.NetIO}}"}'
-    )
-    stats = []
-    for line in out.splitlines():
-        try:
-            stats.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
-    return {"available": True, "stats": stats}
+    with _stats_lock:
+        now = time.time()
+        if now - _stats_last["t"] < 2.0 and _stats_last["stats"]:
+            return {"available": True, "stats": _stats_last["stats"]}
+        rc, out = _docker(
+            "stats", "--no-stream", "--format",
+            '{"name":"{{.Name}}","cpu":"{{.CPUPerc}}","mem":"{{.MemUsage}}","net":"{{.NetIO}}"}',
+            timeout=20)
+        stats, prev = [], _stats_last["net"]
+        net: dict = {}
+        for line in out.splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            used, limit = _pair(r.get("mem", ""))
+            rx, tx = _pair(r.get("net", ""))
+            name = r.get("name", "")
+            rx_bps = tx_bps = None
+            if name in prev:
+                t0, rx0, tx0 = prev[name]
+                dt = now - t0
+                if dt > 0.5 and rx >= rx0 and tx >= tx0:      # a restarted container resets its counters
+                    rx_bps, tx_bps = (rx - rx0) / dt, (tx - tx0) / dt
+            net[name] = (now, rx, tx)
+            try:
+                cpu = float(r.get("cpu", "0").strip("%"))
+            except ValueError:
+                cpu = 0.0
+            stats.append({**r, "cpu_pct": cpu, "mem_bytes": used, "mem_limit": limit,
+                          "rx_bytes": rx, "tx_bytes": tx, "rx_bps": rx_bps, "tx_bps": tx_bps})
+        _stats_last.update(t=now, stats=stats, net=net)
+        return {"available": True, "stats": stats}

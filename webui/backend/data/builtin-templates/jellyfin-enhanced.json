@@ -41,7 +41,8 @@
         "environment": {
           "TZ": "UTC"
         },
-        "restart": "unless-stopped"
+        "restart": "unless-stopped",
+        "hostname": "jellyfin-enhanced"
       }
     }
   }

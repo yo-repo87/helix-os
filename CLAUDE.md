@@ -473,8 +473,8 @@ All files renamed from `hive-*` → `helix-*`. All internal references (`HIVE_CO
 
 | Output | Script | Target |
 |--------|--------|--------|
-| `helix-os-YYYYMMDD.iso` | `build/make-iso.sh` | x86_64 USB / VM |
-| `helix-os-pi-YYYYMMDD.img.xz` | `build/make-pi-image.sh` | Raspberry Pi 4B / 5 SD card |
+| `helix-os-<version>.iso` | `build/make-iso.sh` | x86_64 USB / VM |
+| `helix-os-pi-<version>.img.xz` | `build/make-pi-image.sh` | Raspberry Pi 4B / 5 SD card |
 
 ### Build pipeline
 
@@ -1175,7 +1175,7 @@ Consolidated since 0.1.1:
   nothing read it. `helix-firstboot` now loads `*.pub` from there into the `helix`
   user's `authorized_keys` (login is key-only, root disabled), before the HELIXDATA
   early-exit so it works on CD boot too. On a writable medium the keys persist.
-- **Writable disk image for Proxmox.** `helix-os-disk-YYYYMMDD.qcow2` (built with
+- **Writable disk image for Proxmox.** `helix-os-disk-<version>.qcow2` (built with
   `HELIX_OUTPUT=<dir> write-usb.sh` → raw → `qemu-img convert -c`). Boots via its
   own GRUB and has ~1.7 GB free on `/boot`, so OTA applies (the ISO-as-CD can't —
   `/boot` is read-only). `build/grub/grub.cfg` now uses serial+console terminals

@@ -20,7 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/../output"
 ISO_STAGING="$SCRIPT_DIR/../iso-staging"
 ISO_OUT="${1:-}"
-VERSION="$(date +%Y%m%d)"
+# File names carry the Helix OS version (build/config/VERSION), not the build date.
+VERSION="$(tr -d " \n" < "$SCRIPT_DIR/config/VERSION")"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do

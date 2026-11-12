@@ -22,7 +22,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/../output"
 WORK_DIR="/tmp/helix-x86-build"
-VERSION="$(date +%Y%m%d)"
+# File names carry the Helix OS version (build/config/VERSION), not the build date.
+VERSION="$(tr -d " \n" < "$SCRIPT_DIR/config/VERSION")"
 IMG_NAME="helix-os-amd64-${VERSION}.img"
 IMG_PATH="$SCRIPT_DIR/../$IMG_NAME"
 IMG_SIZE_MB=2048       # 2 GB image

@@ -20,7 +20,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/../output"
 WORK_DIR="/tmp/helix-pi-build"
-VERSION="$(date +%Y%m%d)"
+# File names carry the Helix OS version (build/config/VERSION), not the build date.
+VERSION="$(tr -d " \n" < "$SCRIPT_DIR/config/VERSION")"
 IMG_NAME="helix-os-pi-${VERSION}.img"
 IMG_PATH="$SCRIPT_DIR/../$IMG_NAME"
 IMG_SIZE_MB=4096       # 4GB image (the data partition is grown to fill the SD card at first boot)

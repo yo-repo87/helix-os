@@ -44,6 +44,12 @@ export GH_TOKEN
 VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST")"
 NOTES="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("notes",""))' "$MANIFEST")"
 TAG="v$VERSION"
+# Tag the commit these images were built from (without --target GitHub tags the default
+# branch, which once left v3.3.0 pointing at old code). The commit must be on GitHub.
+TARGET="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+if ! gh api "repos/$REPO/commits/$TARGET" >/dev/null 2>&1; then
+    echo "ERROR: commit $TARGET is not on GitHub yet; push the branch first"; exit 1
+fi
 
 echo "Publishing $REPO release $TAG"
 ASSETS=("$MANIFEST")
@@ -57,6 +63,7 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}"
 else
     gh release create "$TAG" --repo "$REPO" $PRERELEASE \
+        --target "$TARGET" \
         --title "Helix OS $TAG" \
         --notes "${NOTES:-Helix OS $TAG}" \
         "${ASSETS[@]}"

@@ -16,8 +16,8 @@
   --fg:            #e0e0e0;
   --fg-muted:      #787878;
   --fg-dim:        #454545;
-  --accent:        #f07820;
-  --accent-dim:    rgba(240,120,32,.13);
+  --accent:        #3b82f6;
+  --accent-dim:    rgba(59,130,246,.15);
   --ok:            #3fb950;
   --ok-dim:        rgba(63,185,80,.13);
   --warn:          #d4a017;
@@ -38,8 +38,8 @@
     --fg:         #181818;
     --fg-muted:   #606060;
     --fg-dim:     #b0b0b0;
-    --accent:     #d96214;
-    --accent-dim: rgba(217,98,20,.11);
+    --accent:     #2563eb;
+    --accent-dim: rgba(37,99,235,.11);
     --ok:         #237d3a;
     --ok-dim:     rgba(35,125,58,.11);
     --warn:       #9a6b00;
@@ -52,14 +52,14 @@
 :root[data-theme="light"] {
   --bg:#ebebeb;--surface:#fff;--surface-hi:#f4f4f4;--border:#dedede;
   --border-str:#c8c8c8;--fg:#181818;--fg-muted:#606060;--fg-dim:#b0b0b0;
-  --accent:#d96214;--accent-dim:rgba(217,98,20,.11);--ok:#237d3a;
+  --accent:#2563eb;--accent-dim:rgba(37,99,235,.11);--ok:#237d3a;
   --ok-dim:rgba(35,125,58,.11);--warn:#9a6b00;--warn-dim:rgba(154,107,0,.11);
   --err:#c82020;--err-dim:rgba(200,32,32,.11);color-scheme:light;
 }
 :root[data-theme="dark"] {
   --bg:#141414;--surface:#1d1d1d;--surface-hi:#252525;--border:#2a2a2a;
   --border-str:#3a3a3a;--fg:#e0e0e0;--fg-muted:#787878;--fg-dim:#454545;
-  --accent:#f07820;--accent-dim:rgba(240,120,32,.13);--ok:#3fb950;
+  --accent:#3b82f6;--accent-dim:rgba(59,130,246,.15);--ok:#3fb950;
   --ok-dim:rgba(63,185,80,.13);--warn:#d4a017;--warn-dim:rgba(212,160,23,.13);
   --err:#f85149;--err-dim:rgba(248,81,73,.13);color-scheme:dark;
 }
@@ -67,7 +67,7 @@
 :root[data-theme="dark-gray"] {
   --bg:#1e2124;--surface:#282b2e;--surface-hi:#30343a;--border:#3a3e45;
   --border-str:#4a5059;--fg:#dde1e7;--fg-muted:#7e8694;--fg-dim:#4a5059;
-  --accent:#f07820;--accent-dim:rgba(240,120,32,.13);--ok:#3fb950;
+  --accent:#3b82f6;--accent-dim:rgba(59,130,246,.15);--ok:#3fb950;
   --ok-dim:rgba(63,185,80,.13);--warn:#d4a017;--warn-dim:rgba(212,160,23,.13);
   --err:#f85149;--err-dim:rgba(248,81,73,.13);color-scheme:dark;
 }
@@ -83,7 +83,7 @@
 :root[data-theme="white"] {
   --bg:#ffffff;--surface:#f8f8f8;--surface-hi:#f0f0f0;--border:#e0e0e0;
   --border-str:#cccccc;--fg:#1a1a1a;--fg-muted:#666666;--fg-dim:#bbbbbb;
-  --accent:#f07820;--accent-dim:rgba(240,120,32,.10);--ok:#1a7f37;
+  --accent:#2563eb;--accent-dim:rgba(37,99,235,.10);--ok:#1a7f37;
   --ok-dim:rgba(26,127,55,.10);--warn:#9a6700;--warn-dim:rgba(154,103,0,.10);
   --err:#cf222e;--err-dim:rgba(207,34,46,.10);color-scheme:light;
 }
@@ -1475,7 +1475,7 @@ main { padding-bottom: 44px; }
             <label style="font-size:12px;color:var(--fg-muted);width:60px">Theme</label>
             <div style="display:flex;gap:8px;flex-wrap:wrap" id="theme-swatches">
               <button class="theme-swatch" data-theme="dark"       title="Black (default)"
-                style="background:#141414;border-color:#f07820" onclick="applyTheme('dark')">
+                style="background:#141414;border-color:#3b82f6" onclick="applyTheme('dark')">
                 <span style="color:#e0e0e0;font-size:9px">Black</span></button>
               <button class="theme-swatch" data-theme="dark-gray"  title="Dark Gray"
                 style="background:#1e2124;border-color:#888" onclick="applyTheme('dark-gray')">
@@ -1494,7 +1494,9 @@ main { padding-bottom: 44px; }
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px">
             <label style="font-size:12px;color:var(--fg-muted);width:60px">Accent</label>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="accent-swatch" data-accent="#f07820" title="Orange (default)"
+              <button class="accent-swatch" data-accent="#3b82f6" title="Blue (default)"
+                style="background:#3b82f6" onclick="applyAccent('#3b82f6')"></button>
+              <button class="accent-swatch" data-accent="#f07820" title="Orange"
                 style="background:#f07820" onclick="applyAccent('#f07820')"></button>
               <button class="accent-swatch" data-accent="#38bdf8" title="Teal"
                 style="background:#38bdf8" onclick="applyAccent('#38bdf8')"></button>
@@ -5973,9 +5975,9 @@ async function loadTerminal() {
     theme: {
       background:  '#0d0d0d',
       foreground:  '#d8d8d8',
-      cursor:      '#f07820',
+      cursor:      '#3b82f6',
       cursorAccent:'#141414',
-      selectionBackground: 'rgba(240,120,32,0.3)',
+      selectionBackground: 'rgba(59,130,246,0.3)',
       black:   '#141414', red:    '#e06c75', green:  '#98c379',
       yellow:  '#e5c07b', blue:   '#61afef', magenta:'#c678dd',
       cyan:    '#56b6c2', white:  '#abb2bf',
@@ -8556,7 +8558,7 @@ function _drawVnstatChart(canvas, rows, legendEl) {
   const cH = H - pad.top - pad.bottom;
   const barW = Math.max(2, (cW / rows.length) - 1);
 
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#f07820';
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3b82f6';
   const muted  = getComputedStyle(document.documentElement).getPropertyValue('--fg-muted').trim() || '#888';
   const dim    = getComputedStyle(document.documentElement).getPropertyValue('--fg-dim').trim() || '#555';
 
@@ -8642,7 +8644,7 @@ function _drawDriveHistory(canvas, history, legendEl) {
   const cW = W - pad.left - pad.right;
   const cH = H - pad.top - pad.bottom;
 
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#f07820';
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3b82f6';
   const warn   = getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() || '#e6a817';
   const dim    = getComputedStyle(document.documentElement).getPropertyValue('--fg-dim').trim() || '#555';
 

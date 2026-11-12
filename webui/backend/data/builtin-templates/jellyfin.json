@@ -3,7 +3,7 @@
   "title": "Jellyfin",
   "description": "Free software media system \u2014 stream movies, TV, music, and photos.",
   "category": "Media",
-  "icon": "jellyfin",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
   "port": 8096,
   "vars": [
     {

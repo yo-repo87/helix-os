@@ -3,7 +3,7 @@
   "title": "Jellyfin Enhanced",
   "description": "Jellyfin with Emby-style extras: copy settings when creating a user, easy PIN sign-in on your network, scheduled backups, automatic merging of duplicate movies, a bulk metadata editor and TheTVDB built in. Media folders are optional: leave them unused and add libraries under Extra folders.",
   "category": "Media",
-  "icon": "jellyfin",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
   "port": 8097,
   "vars": [
     {

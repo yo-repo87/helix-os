@@ -5117,7 +5117,7 @@
     }
    ],
    "image": "linuxserver/jellyfin:latest",
-   "logo": "https://raw.githubusercontent.com/pi-hosted/pi-hosted/master/images/jellyfin.png",
+   "logo": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
    "name": "jellyfin",
    "officialDoc": "https://docs.linuxserver.io/images/docker-jellyfin",
    "platform": "linux",
@@ -13214,6 +13214,53 @@
    ],
    "webpage": "https://zoneminder.com/",
    "id": 300
+  },
+  {
+   "categories": [
+    "Video",
+    "Music",
+    "Photos"
+   ],
+   "description": "Jellyfin with Emby-style extras: copy settings when creating a user, easy PIN sign-in on your network, scheduled backups, automatic merging of duplicate movies, a bulk metadata editor and TheTVDB built in. Web UI on port 8097.",
+   "env": [
+    {
+     "default": "America/New_York",
+     "label": "TZ",
+     "name": "TZ"
+    }
+   ],
+   "logo": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+   "name": "jellyfin-enhanced",
+   "platform": "linux",
+   "ports": [
+    "8097:8096/tcp",
+    "8920:8920/tcp"
+   ],
+   "restart_policy": "unless-stopped",
+   "title": "Jellyfin Enhanced",
+   "type": 1,
+   "volumes": [
+    {
+     "bind": "/mnt/user/appdata/Jellyfin-Enhanced",
+     "container": "/config"
+    },
+    {
+     "bind": "/mnt/user/appdata/Jellyfin-Enhanced/cache",
+     "container": "/cache"
+    },
+    {
+     "bind": "/mnt/user/media/TV",
+     "container": "/data/tvshows"
+    },
+    {
+     "bind": "/mnt/user/media/Movies",
+     "container": "/data/movies"
+    }
+   ],
+   "webpage": "https://github.com/yo-repo87/Jellyfin_Enhanced",
+   "image": "ghcr.io/yo-repo87/jellyfin-enhanced:latest",
+   "id": 301,
+   "note": "<b>Template created by Pi-Hosted Series</b><br><b>Check our Github page: <a href=\"https://github.com/pi-hosted/pi-hosted\" target=\"_blank\">https://github.com/pi-hosted/pi-hosted</a></b><br><br><b>Official Webpage: </b><a href=\"https://github.com/yo-repo87/Jellyfin_Enhanced\" target=\"_blank\">https://github.com/yo-repo87/Jellyfin_Enhanced</a><br><br>"
   }
  ],
  "_helix": {

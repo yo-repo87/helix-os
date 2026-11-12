@@ -13261,6 +13261,61 @@
    "image": "ghcr.io/yo-repo87/jellyfin-enhanced:latest",
    "id": 301,
    "note": "<b>Template created by Pi-Hosted Series</b><br><b>Check our Github page: <a href=\"https://github.com/pi-hosted/pi-hosted\" target=\"_blank\">https://github.com/pi-hosted/pi-hosted</a></b><br><br><b>Official Webpage: </b><a href=\"https://github.com/yo-repo87/Jellyfin_Enhanced\" target=\"_blank\">https://github.com/yo-repo87/Jellyfin_Enhanced</a><br><br>"
+  },
+  {
+   "categories": [
+    "Tools",
+    "Other"
+   ],
+   "description": "Flashforge's Flash Studio (Orca-Flashforge) 3D-printer slicer in your browser. Open port 6080 (noVNC) to use it; LAN printers work because it uses host networking. Cloud account, camera and MQTT features need Flashforge's closed network plugin and are not available.",
+   "env": [
+    {
+     "default": "1000",
+     "label": "PUID",
+     "name": "PUID"
+    },
+    {
+     "default": "1000",
+     "label": "PGID",
+     "name": "PGID"
+    },
+    {
+     "default": "America/New_York",
+     "label": "TZ",
+     "name": "TZ"
+    },
+    {
+     "default": "1920",
+     "label": "DISPLAY_WIDTH",
+     "name": "DISPLAY_WIDTH"
+    },
+    {
+     "default": "1080",
+     "label": "DISPLAY_HEIGHT",
+     "name": "DISPLAY_HEIGHT"
+    }
+   ],
+   "logo": "https://raw.githubusercontent.com/FlashForge/Orca-Flashforge/main/resources/images/Orca-Flashforge_192px.png",
+   "name": "flashstudio",
+   "network": "host",
+   "platform": "linux",
+   "restart_policy": "unless-stopped",
+   "title": "Flash Studio",
+   "type": 1,
+   "volumes": [
+    {
+     "bind": "/mnt/user/appdata/FlashStudio",
+     "container": "/config"
+    },
+    {
+     "bind": "/mnt/user/appdata/FlashStudio/prints",
+     "container": "/prints"
+    }
+   ],
+   "webpage": "https://github.com/yo-repo87/flashstudio",
+   "image": "ghcr.io/yo-repo87/flashstudio:latest",
+   "id": 302,
+   "note": "<b>Template created by Pi-Hosted Series</b><br><b>Check our Github page: <a href=\"https://github.com/pi-hosted/pi-hosted\" target=\"_blank\">https://github.com/pi-hosted/pi-hosted</a></b><br><br><b>Official Webpage: </b><a href=\"https://github.com/yo-repo87/flashstudio\" target=\"_blank\">https://github.com/yo-repo87/flashstudio</a><br><br>"
   }
  ],
  "_helix": {

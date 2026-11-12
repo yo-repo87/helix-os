@@ -1952,6 +1952,7 @@ main { padding-bottom: 44px; }
   <div id="docker-section" hidden>
     <div class="dash-head">
       <div class="section-title" style="margin:0">Docker</div>
+      <span style="font-size:11px;color:var(--fg-dim);margin-left:auto;margin-right:12px" title="Running containers are sorted by CPU and memory use and re-sorted as that changes; stopped ones are listed last. The list holds still while your pointer is over it.">Busiest first</span>
       <a href="#apps" class="panel-action">Browse apps</a>
     </div>
     <p id="docker-unavail" hidden style="font-size:12px;color:var(--fg-muted);margin:0 0 8px">Docker is not available on this system, so containers cannot be started.</p>
@@ -3028,32 +3029,19 @@ async function createNewShare() {
 
 let _containers = [];
 function renderContainers(containers, available) {
-  _containers = containers || [];
+  _containers = sortContainers(containers || []);
+  _ctrOrder = _containers.map(c => c.name);
   if (available != null) _dockerAvailable = available;
   const running = _containers.filter(c => c.state === 'running').length;
   const val = document.getElementById('docker-val');
   if (val) val.innerHTML = `${running}<span style="font-size:14px;color:var(--fg-muted)">/${_containers.length}</span>`;
   const sub = document.getElementById('docker-sub');
   if (sub) sub.textContent = `${running} running · ${_containers.length - running} stopped`;
-  const list = document.getElementById('containers-list');
-  const glance = _containers.slice(0, 5);
-  if (list) {
-    list.innerHTML = glance.length ? glance.map(c => `
-      <div class="container-row">
-        <span class="ctr-dot ${_esc(c.state)}"></span>
-        <span class="ctr-name">${_esc(c.name)}</span>
-        <span class="ctr-live" data-live="${_esc(c.name)}">${ctrLiveHtml(c)}</span>
-        <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
-        <div class="ctr-actions">${ctrButtons(c, true)}</div>
-      </div>`).join('')
-      : '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">No containers yet.</div>';
-    if (_containers.length > 5) list.insertAdjacentHTML('beforeend',
-      `<div style="padding:8px 16px;font-size:11px"><a href="#docker" class="panel-action">${_containers.length - 5} more</a></div>`);
-  }
+  renderCtrGlance();
   const tb = document.getElementById('docker-tbody');
   if (tb) {
     tb.innerHTML = _containers.length ? _containers.map(c => `
-      <tr>
+      <tr data-name="${_esc(c.name)}">
         <td><span class="ctr-dot ${_esc(c.state)}"></span> <strong>${_esc(c.name)}</strong>${c.app ? ' <span style="font-size:10px;color:var(--accent)">app</span>' : ''}
             <div style="font-size:11px;color:var(--fg-dim)">${_esc((c.image || '').split('/').pop())}</div></td>
         <td>${_esc(c.status || c.state || '')}</td>
@@ -3084,6 +3072,93 @@ async function fillMounts(containers) {
     } catch (e) { cell.textContent = '—'; }
   }));
 }
+
+// Dashboard glance: the five busiest containers.
+function renderCtrGlance() {
+  const list = document.getElementById('containers-list');
+  const glance = _containers.slice(0, 5);
+  if (list) {
+    list.innerHTML = glance.length ? glance.map(c => `
+      <div class="container-row" data-name="${_esc(c.name)}">
+        <span class="ctr-dot ${_esc(c.state)}"></span>
+        <span class="ctr-name">${_esc(c.name)}</span>
+        <span class="ctr-live" data-live="${_esc(c.name)}">${ctrLiveHtml(c)}</span>
+        <span class="ctr-state ${_esc(c.state)}">${_esc(c.state)}</span>
+        <div class="ctr-actions">${ctrButtons(c, true)}</div>
+      </div>`).join('')
+      : '<div style="padding:14px 16px;font-size:12px;color:var(--fg-dim)">No containers yet.</div>';
+    if (_containers.length > 5) list.insertAdjacentHTML('beforeend',
+      `<div style="padding:8px 16px;font-size:11px"><a href="#docker" class="panel-action">${_containers.length - 5} more</a></div>`);
+  }
+}
+
+// ── Busiest containers first ─────────────────────────────────────────────────
+// Running containers sorted by use (CPU averaged over the last 3 samples, in % of one
+// core, plus memory in % of the limit/host RAM), then paused, then stopped (A-Z).
+// Two containers within 2 points keep their places, so the list doesn't jitter, and
+// nothing moves while the pointer is over a list (a button never slides away).
+let _ctrOrder = [];               // names in the order last shown
+let _ctrHold = false;
+function ctrScore(c) {
+  if (c.state !== 'running') return -1;
+  const d = _ctrLive[c.name];
+  if (!d) return 0;
+  const h = d.hist.slice(-3), cpu = h.reduce((a, b) => a + b, 0) / (h.length || 1);
+  return cpu + (d.memLimit ? d.mem / d.memLimit * 100 : 0);
+}
+function sortContainers(list) {
+  const prev = new Map(_ctrOrder.map((n, i) => [n, i]));
+  if (_ctrHold && prev.size)
+    return [...list].sort((a, b) => (prev.get(a.name) ?? 1e9) - (prev.get(b.name) ?? 1e9));
+  const rank = c => c.state === 'running' ? 0 : (c.state === 'paused' || c.state === 'restarting') ? 1 : 2;
+  const sc = new Map(list.map(c => [c.name, ctrScore(c)]));
+  return [...list].sort((a, b) => {
+    const r = rank(a) - rank(b);
+    if (r) return r;
+    if (rank(a) === 0) {
+      const d = sc.get(b.name) - sc.get(a.name);
+      if (Math.abs(d) >= 2) return d;
+      if (prev.has(a.name) && prev.has(b.name)) return prev.get(a.name) - prev.get(b.name);
+      if (d) return d;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+// Re-order the lists in place; moved rows slide to their new position.
+function _flip(box, change) {
+  const before = new Map([...box.querySelectorAll('[data-name]')].map(e => [e.dataset.name, e.getBoundingClientRect().top]));
+  change();
+  box.querySelectorAll('[data-name]').forEach(e => {
+    const t = before.get(e.dataset.name);
+    if (t == null) return;
+    const dy = t - e.getBoundingClientRect().top;
+    if (Math.abs(dy) < 1) return;
+    e.style.transition = 'none'; e.style.transform = `translateY(${dy}px)`;
+    e.getBoundingClientRect();
+    requestAnimationFrame(() => { e.style.transition = 'transform .45s ease'; e.style.transform = ''; });
+  });
+}
+function reorderContainers() {
+  if (_ctrHold || !_containers.length) return;
+  const sorted = sortContainers(_containers), names = sorted.map(c => c.name);
+  if (names.join('\n') === _ctrOrder.join('\n')) return;
+  _containers = sorted; _ctrOrder = names;
+  const tb = document.getElementById('docker-tbody');
+  if (tb) _flip(tb, () => names.forEach(n => {
+    const r = tb.querySelector(`tr[data-name="${CSS.escape(n)}"]`);
+    if (r) tb.appendChild(r);
+  }));
+  const list = document.getElementById('containers-list');
+  if (list) _flip(list, renderCtrGlance);
+}
+document.addEventListener('DOMContentLoaded', () => {
+  ['containers-list', 'docker-tbody'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('mouseenter', () => { _ctrHold = true; });
+    el.addEventListener('mouseleave', () => { _ctrHold = false; reorderContainers(); });
+  });
+});
 
 // ── Live per-container resource use (CPU / RAM / network) ───────────────────
 const _ctrLive = {};            // name -> {cpu, mem, memLimit, rx, tx, hist: [cpu...]}
@@ -3130,6 +3205,7 @@ async function pollCtrLive() {
       const c = _containers.find(x => x.name === el.dataset.live);
       if (c) el.innerHTML = ctrLiveHtml(c);
     });
+    reorderContainers();
   } catch (e) { /* docker busy or not available: keep the last values */ }
   _ctrLiveBusy = false;
 }

@@ -158,7 +158,7 @@ def get_template(name: str):
     templates = load_all_templates()
     for t in templates:
         if t.get("name") == name:
-            return t
+            return {**t, "options": _options_info(t.get("compose") or {}, None)}
     raise HTTPException(404, f"Template '{name}' not found")
 
 
@@ -311,7 +311,158 @@ def _clean_extras(raw: dict | None) -> dict:
         if ":" in host or ":" in cont:
             raise HTTPException(400, "Folder paths cannot contain ':'")
         vols.append({"host": host, "container": cont, "ro": bool(v.get("ro"))})
-    return {"env": env, "volumes": vols}
+    out = {"env": env, "volumes": vols}
+    if raw.get("options") is not None:
+        out["options"] = _clean_options(raw["options"])
+    return out
+
+
+# ── Container options (restart policy, privileged, log limit …) ───────────────
+# Stored in extras.json as "options". Absent = the template's compose is used unchanged.
+
+RESTART_POLICIES = ("unless-stopped", "always", "on-failure", "no")
+_BOOL_OPTIONS = ("privileged", "init", "localtime", "log_limit", "gpu_dri")
+_LOG_LIMIT = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
+
+
+def _num_option(label: str, val, lo: float, hi: float) -> str:
+    val = str(val if val is not None else "").strip()
+    if not val:
+        return ""
+    try:
+        n = float(val)
+    except ValueError:
+        raise HTTPException(400, f"{label}: enter a number, or leave it empty for no limit (got {val!r})")
+    if not lo <= n <= hi:
+        raise HTTPException(400, f"{label}: must be between {lo:g} and {hi:g} (got {val})")
+    return f"{n:g}"
+
+
+def _clean_options(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "Container options must be an object")
+    restart = str(raw.get("restart") or "unless-stopped")
+    if restart not in RESTART_POLICIES:
+        raise HTTPException(400, f"Restart policy must be one of {', '.join(RESTART_POLICIES)}")
+    opts = {"restart": restart}
+    for k in _BOOL_OPTIONS:
+        opts[k] = bool(raw.get(k))
+    opts["memory_gb"] = _num_option("Memory limit (GB)", raw.get("memory_gb"), 0.1, 4096)
+    opts["cpus"] = _num_option("CPU limit (cores)", raw.get("cpus"), 0.1, float(os.cpu_count() or 1))
+    return opts
+
+
+def _main_service(compose: dict) -> str | None:
+    """The service the user is configuring: the first one that publishes ports (or uses host
+    networking), else the last one (helpers such as databases are usually listed first)."""
+    services = compose.get("services") or {}
+    if not services:
+        return None
+    for n, svc in services.items():
+        if isinstance(svc, dict) and (svc.get("ports") or svc.get("network_mode") == "host"):
+            return n
+    return list(services)[-1]
+
+
+def _is_localtime(v) -> bool:
+    return isinstance(v, str) and v.split(":", 1)[0] == "/etc/localtime"
+
+
+def _is_dri(d) -> bool:
+    return isinstance(d, str) and d.split(":", 1)[0].startswith("/dev/dri")
+
+
+def _mem_to_gb(v) -> str:
+    """'2g' / '512m' / 2147483648 -> '2' / '0.5' / '2' (for showing a template's own limit)."""
+    m = re.match(r"^\s*([\d.]+)\s*([kmgt]?)b?\s*$", str(v or "").lower())
+    if not m:
+        return ""
+    n = float(m.group(1)) * {"": 1 / 1024**3, "k": 1 / 1024**2, "m": 1 / 1024, "g": 1, "t": 1024}[m.group(2)]
+    return f"{round(n, 2):g}"
+
+
+def _effective_options(compose: dict) -> dict:
+    """The options a compose project currently has (what the form shows)."""
+    services = compose.get("services") or {}
+    main = services.get(_main_service(compose)) or {}
+    allsvc = [s for s in services.values() if isinstance(s, dict)]
+    restart = main.get("restart") or "no"
+    return {
+        "restart":    restart if restart in RESTART_POLICIES else "unless-stopped",
+        "privileged": bool(main.get("privileged")),
+        "init":       bool(main.get("init")),
+        "localtime":  any(_is_localtime(v) for v in (main.get("volumes") or [])),
+        "log_limit":  bool(allsvc) and all(bool(s.get("logging")) for s in allsvc),
+        "gpu_dri":    any(_is_dri(d) for d in (main.get("devices") or [])),
+        "memory_gb":  _mem_to_gb(main.get("mem_limit")),
+        "cpus":       f"{float(main['cpus']):g}" if main.get("cpus") else "",
+    }
+
+
+def _host_timezone() -> str:
+    try:
+        from routers.settings import _detect_timezone
+        return _detect_timezone()
+    except Exception:
+        return "UTC"
+
+
+def _apply_options(compose: dict, opts: dict | None) -> dict:
+    if not opts:
+        return compose
+    services = compose.get("services") or {}
+    main_name = _main_service(compose)
+    for n, svc in services.items():
+        if not isinstance(svc, dict):
+            continue
+        # restart policy and log size apply to every container of the app (incl. its database)
+        svc["restart"] = opts["restart"]
+        if opts["log_limit"]:
+            svc["logging"] = json.loads(json.dumps(_LOG_LIMIT))
+        elif svc.get("logging") == _LOG_LIMIT:
+            del svc["logging"]
+        if n != main_name:
+            continue
+        for key in ("privileged", "init"):
+            if opts[key]:
+                svc[key] = True
+            else:
+                svc.pop(key, None)
+        vols = [v for v in (svc.get("volumes") or []) if not _is_localtime(v)]
+        env = svc.get("environment") or {}
+        if isinstance(env, list):
+            env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
+        if opts["localtime"]:
+            vols.append("/etc/localtime:/etc/localtime:ro")
+            env.setdefault("TZ", _host_timezone())
+        if vols:
+            svc["volumes"] = vols
+        else:
+            svc.pop("volumes", None)
+        if env:
+            svc["environment"] = env
+        devs = [d for d in (svc.get("devices") or []) if not _is_dri(d)]
+        if opts["gpu_dri"]:
+            devs.append("/dev/dri:/dev/dri")
+        if devs:
+            svc["devices"] = devs
+        else:
+            svc.pop("devices", None)
+        svc.pop("mem_limit", None)
+        svc.pop("cpus", None)
+        if opts["memory_gb"]:
+            svc["mem_limit"] = f"{int(float(opts['memory_gb']) * 1024)}m"
+        if opts["cpus"]:
+            svc["cpus"] = float(opts["cpus"])
+    return compose
+
+
+def _options_info(compose: dict, saved: dict | None) -> dict:
+    """Current option values for the form plus what this host can offer."""
+    return {"values": saved or _effective_options(compose),
+            "gpu_dri_available": os.path.isdir("/dev/dri"),
+            "max_cpus": os.cpu_count() or 1,
+            "timezone": _host_timezone()}
 
 
 def _read_extras(app_dir: Path) -> dict:
@@ -322,11 +473,11 @@ def _read_extras(app_dir: Path) -> dict:
 
 
 def _apply_extras(compose: dict, extras: dict) -> dict:
-    """Merge extras into the first service of the compose project."""
+    """Merge extras into the app's main service (not a helper such as its database)."""
     services = compose.get("services") or {}
     if not services or not (extras.get("env") or extras.get("volumes")):
         return compose
-    svc = services[next(iter(services))]
+    svc = services[_main_service(compose)]
     if extras.get("env"):
         env = svc.get("environment") or {}
         if isinstance(env, list):
@@ -343,7 +494,9 @@ def _apply_extras(compose: dict, extras: dict) -> dict:
 
 def _write_compose(app_dir: Path, template: dict, vars_map: dict, extras: dict | None = None) -> Path:
     compose = _substitute_vars(template["compose"], vars_map)
-    compose = _apply_extras(compose, extras if extras is not None else _read_extras(app_dir))
+    extras = extras if extras is not None else _read_extras(app_dir)
+    compose = _apply_extras(compose, extras)
+    compose = _apply_options(compose, extras.get("options"))
     # a folder left empty is "not used": drop its mapping instead of mounting ':/path'
     for svc in (compose.get("services") or {}).values():
         if isinstance(svc.get("volumes"), list):
@@ -443,7 +596,7 @@ def _do_install(name: str, vars_map: dict, extras: dict | None = None) -> None:
 class InstallRequest(BaseModel):
     name: str
     vars: dict[str, str] = {}
-    extras: dict | None = None      # {"env": {...}, "volumes": [{host, container, ro}]}
+    extras: dict | None = None      # {"env": {...}, "volumes": [{host, container, ro}], "options": {...}}
 
 
 @router.post("/install")
@@ -470,9 +623,15 @@ def get_app_config(name: str):
     t = {x["name"]: x for x in load_all_templates()}.get(name)
     cur = installed[name].get("vars", {})
     tvars = [{**v, "value": cur.get(v["key"], v.get("default", ""))} for v in (t.get("vars", []) if t else [])]
+    extras = _read_extras(installed[name]["dir"])
+    try:
+        current = yaml.safe_load(Path(installed[name]["compose_path"]).read_text()) or {}
+    except Exception:
+        current = (t or {}).get("compose") or {}
     return {"name": name, "title": t["title"] if t else name,
             "template_available": t is not None,
-            "vars": tvars, "extras": _read_extras(installed[name]["dir"])}
+            "vars": tvars, "extras": extras,
+            "options": _options_info(current, extras.get("options"))}
 
 
 class ConfigUpdate(BaseModel):

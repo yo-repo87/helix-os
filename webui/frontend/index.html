@@ -3540,7 +3540,7 @@ function initPathPickers() {
 
 async function openAppForm(mode, name) {
   if (!liveMode) { alert('Demo mode — connect backend.'); return; }
-  let title, vars, extras = {env: {}, volumes: []}, note = '';
+  let title, vars, extras = {env: {}, volumes: []}, note = '', opts = {values: {}};
   try {
     if (mode === 'install') {
       const t = await apiFetch(`/api/apps/templates/${encodeURIComponent(name)}`);
@@ -3549,10 +3549,11 @@ async function openAppForm(mode, name) {
         const opt = v.type === 'path' && /^\/mnt\//.test(v.default || '') && !/^\/mnt\/user\/appdata(\/|$)/.test(v.default);
         return {...v, optional: opt, value: opt ? '' : v.default};
       });
+      opts = t.options || opts;
     } else {
       const c = await apiFetch(`/api/apps/${encodeURIComponent(name)}/config`);
       title = `Configure ${c.title}`;
-      vars = (c.vars || []).map(v => ({...v, optional: v.type === 'path' && /^\/mnt\//.test(v.default || '') && !/^\/mnt\/user\/appdata(\/|$)/.test(v.default)})); extras = c.extras || extras;
+      vars = (c.vars || []).map(v => ({...v, optional: v.type === 'path' && /^\/mnt\//.test(v.default || '') && !/^\/mnt\/user\/appdata(\/|$)/.test(v.default)})); extras = c.extras || extras; opts = c.options || opts;
       if (!c.template_available) note = 'This app\'s template source is no longer available, so its settings cannot be changed. Re-enable the source first.';
     }
   } catch (e) { alert('Could not load the app settings: ' + e.message); return; }
@@ -3584,6 +3585,7 @@ async function openAppForm(mode, name) {
       <datalist id="appf-vh-list">${(_pickerShares || ['appdata']).map(n => `<option value="/mnt/user/${_esc(n)}/">`).join('')}</datalist>
       <div id="appf-vol"></div>
       <div><button class="ctr-btn" onclick="appfAddVol()">+ Add folder</button></div>
+      ${appfOptionsHtml(opts)}
       <div id="appf-msg" style="font-size:12px;color:var(--err)"></div>
     </div>`;
   const actions = mode === 'install'
@@ -3609,7 +3611,46 @@ function appfCollect() {
     host: r.querySelector('.appf-vh').value.trim(), container: r.querySelector('.appf-vc').value.trim(),
     ro: r.querySelector('.appf-vr').checked,
   })).filter(v => v.host || v.container);
-  return {vars, extras: {env, volumes}};
+  const options = {restart: document.getElementById('appf-o-restart').value};
+  document.querySelectorAll('.appf-opt').forEach(i => { options[i.dataset.key] = i.checked; });
+  options.memory_gb = document.getElementById('appf-o-mem').value.trim();
+  options.cpus = document.getElementById('appf-o-cpus').value.trim();
+  return {vars, extras: {env, volumes, options}};
+}
+
+// ── Container options: restart policy and other docker run switches ─────────────
+// Saved with the app (extras.options) and written into its compose file.
+function appfOptionsHtml(o) {
+  const v = o.values || {};
+  const restart = [
+    ['unless-stopped', 'Unless stopped (recommended)'],
+    ['always', 'Always'],
+    ['on-failure', 'Only if it crashes'],
+    ['no', 'Never (start it by hand)'],
+  ];
+  const toggle = (key, label, tip, show = true) => !show ? '' : `<div class="settings-toggle-row">
+      <span class="settings-label">${label}${tipHtml(tip)}</span>
+      <label class="toggle-switch"><input type="checkbox" class="appf-opt" data-key="${key}" ${v[key] ? 'checked' : ''}><span class="toggle-track"></span></label>
+    </div>`;
+  return `<div class="form-label" style="margin-top:10px">Container options${tipHtml('How Docker runs this app. Restart policy and log limit apply to every container of the app (for example its database too); the others apply to the app\'s main container.')}</div>
+    <div class="settings-row">
+      <label class="settings-label">Restart policy${tipHtml('What Docker does when the container stops or the server restarts. Unless stopped: the app comes back after a crash or reboot, but stays off if you stopped it. Always: like that, but it also starts again at the next reboot even if you stopped it. Only if it crashes: restarted after an error, not after a reboot. Never: you start it yourself.')}</label>
+      <select class="settings-select" id="appf-o-restart">${restart.map(([k, l]) =>
+        `<option value="${k}" ${(v.restart || 'unless-stopped') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    </div>
+    ${toggle('log_limit', 'Limit log size', 'Keep at most 3 log files of 10 MB each. Without this, a chatty app\'s log can grow until the disk is full.')}
+    ${toggle('localtime', 'Use this server\'s time zone', `Gives the app the server's clock time zone (${_esc(o.timezone || 'UTC')}) so its logs and schedules show local time.`)}
+    ${toggle('init', 'Clean up stray processes (init)', 'Runs a tiny init process inside the container that reaps leftover child processes and passes stop signals on. Helps apps that leave zombie processes or are slow to stop.')}
+    ${toggle('gpu_dri', 'Intel / AMD graphics (/dev/dri)', 'Gives the app the server\'s Intel or AMD graphics device, e.g. for hardware video transcoding in Plex, Emby or Jellyfin.', o.gpu_dri_available || v.gpu_dri)}
+    ${toggle('privileged', 'Privileged mode', 'Gives the container full access to the server\'s hardware and kernel. Only turn this on if the app\'s instructions ask for it; turning it off for an app that needs it can stop the app from working.')}
+    <div class="settings-row">
+      <label class="settings-label">Memory limit (GB)${tipHtml('The most memory the app may use. Leave empty for no limit. If the app goes over it, Docker stops the app.')}</label>
+      <input class="settings-input" id="appf-o-mem" type="number" min="0.1" step="0.1" placeholder="No limit" value="${_esc(v.memory_gb || '')}">
+    </div>
+    <div class="settings-row">
+      <label class="settings-label">CPU limit (cores)${tipHtml(`How many CPU cores' worth of time the app may use (this server has ${o.max_cpus || '?'}). Leave empty for no limit.`)}</label>
+      <input class="settings-input" id="appf-o-cpus" type="number" min="0.1" max="${o.max_cpus || ''}" step="0.1" placeholder="No limit" value="${_esc(v.cpus || '')}">
+    </div>`;
 }
 
 async function appfSubmit(mode, name) {

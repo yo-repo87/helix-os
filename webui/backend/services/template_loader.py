@@ -1,7 +1,7 @@
 """
 Template source loader — fetches, parses and caches app templates from:
 
-  builtin    — apps/templates/*.json  (our own format, always available)
+  builtin    — data/builtin-templates/*.json  (our own format, always available)
   portainer  — Portainer v1/v2 JSON template files (URL or local path)
   unraid-ca  — Unraid Community Applications: individual XML templates or the
                full AppFeed (Squidly's aggregated JSON/gz)
@@ -32,7 +32,7 @@ from services import pathmap
 log = logging.getLogger(__name__)
 
 TEMPLATES_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "../../apps/templates")
+    os.path.join(os.path.dirname(__file__), "../data/builtin-templates")
 )
 CACHE_DIR   = os.path.join(STATE_DIR, "template_cache")
 # Persistent (/boot/config): custom sources were in RAM and vanished on every reboot.

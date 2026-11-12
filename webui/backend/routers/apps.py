@@ -2,7 +2,7 @@
 Apps router — template catalog + source management + install/remove lifecycle.
 
 Template sources (GET /api/apps/sources):
-  builtin      — apps/templates/*.json
+  builtin      — data/builtin-templates/*.json
   unraid-ca    — Unraid Community Applications AppFeed (default enabled)
   portainer    — Any Portainer v1/v2 JSON template URL
   unraid-xml   — Individual Unraid XML template URLs

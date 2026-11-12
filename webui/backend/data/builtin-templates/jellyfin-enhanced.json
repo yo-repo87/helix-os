@@ -1,0 +1,48 @@
+{
+  "name": "jellyfin-enhanced",
+  "title": "Jellyfin Enhanced",
+  "description": "Jellyfin with Emby-style extras: copy settings when creating a user, easy PIN sign-in on your network, scheduled backups, automatic merging of duplicate movies, a bulk metadata editor and TheTVDB built in. Media folders are optional: leave them unused and add libraries under Extra folders.",
+  "category": "Media",
+  "icon": "jellyfin",
+  "port": 8097,
+  "vars": [
+    {
+      "key": "CONFIG_PATH",
+      "label": "Settings folder",
+      "default": "/mnt/user/appdata/jellyfin-enhanced",
+      "type": "path"
+    },
+    {
+      "key": "MEDIA_PATH",
+      "label": "Media library (optional)",
+      "default": "/mnt/user/media",
+      "type": "path"
+    },
+    {
+      "key": "PORT",
+      "label": "Web port",
+      "default": "8097",
+      "type": "port"
+    }
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-enhanced": {
+        "image": "ghcr.io/yo-repo87/jellyfin-enhanced:latest",
+        "container_name": "jellyfin-enhanced",
+        "ports": [
+          "{{PORT}}:8096"
+        ],
+        "volumes": [
+          "{{CONFIG_PATH}}/config:/config",
+          "{{CONFIG_PATH}}/cache:/cache",
+          "{{MEDIA_PATH}}:/media:ro"
+        ],
+        "environment": {
+          "TZ": "UTC"
+        },
+        "restart": "unless-stopped"
+      }
+    }
+  }
+}

@@ -63,6 +63,23 @@ for i in "${!CACHE_DISKS[@]}"; do
     fi
 done
 
+# ── Unmount and export ZFS pools ──────────────────────────────────────────────
+if command -v zpool &>/dev/null; then
+    helix_log "Exporting ZFS pools..."
+    zpool list -H -o name 2>/dev/null | while read -r pool; do
+        if [ -n "$pool" ]; then
+            # First try to unmount all filesystems in the pool
+            zfs umount -a 2>/dev/null || true
+            # Then export the pool
+            if zpool export -f "$pool" 2>/dev/null; then
+                helix_log "Exported ZFS pool: $pool"
+            else
+                helix_log "WARN: Could not export ZFS pool $pool"
+            fi
+        fi
+    done
+fi
+
 # ── Unmount parity drives ─────────────────────────────────────────────────────
 idx=1
 for dev in "${PARITY_DEVS[@]}"; do

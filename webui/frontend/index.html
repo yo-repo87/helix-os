@@ -2045,10 +2045,29 @@ main { padding-bottom: 44px; }
       <span class="section-title" style="margin:0">ZFS Pools</span>
       <div style="display:flex;gap:8px">
         <button class="settings-btn" onclick="loadZfs()" style="font-size:11px">↺ Refresh</button>
+        <button class="settings-btn" onclick="showZfsDiscover()" style="font-size:11px">📀 Discover</button>
         <button class="settings-btn primary" onclick="zfsNewPool()" style="font-size:11px">+ New Pool</button>
       </div>
     </div>
+
     <div id="zfs-unavail" hidden style="color:var(--fg-muted);font-size:13px;padding:20px 0">ZFS not available on this system.</div>
+
+    <!-- Discovery Panel -->
+    <div id="zfs-discover-panel" hidden style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-weight:600;font-size:13px">Discover & Import Pools</span>
+        <button class="ctr-btn" onclick="document.getElementById('zfs-discover-panel').hidden=true">✕</button>
+      </div>
+      <div id="zfs-discover-list" style="font-size:12px;color:var(--fg-muted)">Scanning…</div>
+    </div>
+
+    <!-- Available Drives -->
+    <div id="zfs-available-panel" hidden style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:8px">Available Drives (for new pools)</div>
+      <div id="zfs-available-list" style="font-size:12px;color:var(--fg-dim)">Loading…</div>
+    </div>
+
+    <!-- Pools List -->
     <div id="zfs-pools-list"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
   </div>
 
@@ -8235,25 +8254,94 @@ async function loadZfs() {
   const unavail = document.getElementById('zfs-unavail');
   if (!list) return;
   try {
-    const d = await fetchJSON('/api/zfs/pools');
-    if (!d.available) { unavail && (unavail.hidden = false); list.innerHTML = ''; return; }
-    if (!d.pools.length) { list.innerHTML = '<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">No ZFS pools found.</div>'; return; }
-    list.innerHTML = d.pools.map(p => `
+    const [pools_data, available_data] = await Promise.all([
+      fetchJSON('/api/zfs/pools'),
+      fetchJSON('/api/zfs/available-drives').catch(() => null)
+    ]);
+
+    if (!pools_data.available) { unavail && (unavail.hidden = false); list.innerHTML = ''; return; }
+
+    unavail && (unavail.hidden = true);
+
+    // Show available drives panel if there are drives
+    if (available_data && available_data.available.length > 0) {
+      const av_panel = document.getElementById('zfs-available-panel');
+      if (av_panel) {
+        av_panel.hidden = false;
+        const av_list = document.getElementById('zfs-available-list');
+        av_list.innerHTML = available_data.available.map(d =>
+          `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0">
+            <span>${d.device}: ${d.model || 'Unknown'} (${d.size || '?'})</span>
+            <span style="font-size:10px;color:var(--fg-dim)">${d.health === 'PASSED' ? '✓' : '⚠'}</span>
+          </div>`
+        ).join('');
+      }
+    }
+
+    if (!pools_data.pools.length) {
+      list.innerHTML = '<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">No ZFS pools found.</div>';
+      return;
+    }
+
+    list.innerHTML = pools_data.pools.map(p => `
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <span style="font-weight:700;font-size:14px">${p.name}</span>
-          <span style="font-size:11px;padding:2px 7px;border-radius:3px;background:${p.health==='ONLINE'?'var(--ok-dim)':p.health==='DEGRADED'?'var(--warn-dim)':'var(--err-dim)'};color:${p.health==='ONLINE'?'var(--ok)':p.health==='DEGRADED'?'var(--warn)':'var(--err)'}">${p.health}</span>
-          <span style="font-size:11px;color:var(--fg-muted)">${p.alloc} / ${p.size} used · ${p.frag} frag</span>
-          <div style="margin-left:auto;display:flex;gap:6px">
+          <span style="font-size:11px;padding:2px 7px;border-radius:3px;background:var(--${p.colour}-dim);color:var(--${p.colour})">${p.health}</span>
+          <span style="font-size:11px;color:var(--fg-muted)"><span style="width:80px;display:inline-block;background:var(--border);border-radius:2px;height:6px;position:relative">
+            <span style="display:block;background:var(--${p.colour});height:100%;width:${p.cap_pct}%;border-radius:2px"></span>
+          </span> ${p.cap}%</span>
+          <span style="font-size:11px;color:var(--fg-muted)">${p.alloc} / ${p.size} · frag ${p.frag}</span>
+          <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
             <button class="ctr-btn" onclick="zfsScrub('${p.name}')">Scrub</button>
+            <button class="ctr-btn" onclick="zfsExpandPool('${p.name}')">+ Drives</button>
             <button class="ctr-btn" onclick="loadZfsSnaps('${p.name}')">Snapshots</button>
             <button class="ctr-btn" onclick="zfsNewSnap('${p.name}')">+ Snap</button>
-            <button class="ctr-btn" onclick="zfsDestroy('${p.name}')" style="color:var(--err)">Destroy</button>
+            <button class="ctr-btn" onclick="zfsConfirmDestroy('${p.name}')" style="color:var(--err)">Remove</button>
           </div>
         </div>
+        ${p.datasets && p.datasets.length > 1 ? `<div style="font-size:11px;color:var(--fg-dim);padding:6px 0;border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+          ${p.datasets.map(ds => `<div>${ds.name}: ${ds.used} · ${ds.mountpoint !== '-' ? ds.mountpoint : 'not mounted'}</div>`).join('')}
+        </div>` : ''}
         <div id="zfs-snaps-${p.name}" hidden></div>
       </div>`).join('');
   } catch(e) { list.innerHTML = `<div style="color:var(--err);padding:20px">${e.message}</div>`; }
+}
+
+async function showZfsDiscover() {
+  const panel = document.getElementById('zfs-discover-panel');
+  const list = document.getElementById('zfs-discover-list');
+  if (!panel) return;
+  panel.hidden = false;
+  list.innerHTML = 'Scanning for importable pools…';
+  try {
+    const d = await fetchJSON('/api/zfs/discover');
+    if (!d.discovered.length) {
+      list.innerHTML = '<div style="color:var(--fg-dim);font-size:11px">No importable pools found.</div>';
+      return;
+    }
+    list.innerHTML = d.discovered.map(p => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;margin-bottom:6px;background:var(--bg);border-radius:4px">
+        <div>
+          <div style="font-weight:600;font-size:12px">${p.name}</div>
+          <div style="font-size:11px;color:var(--fg-dim)">${p.state || 'Unknown state'}</div>
+        </div>
+        <button class="settings-btn primary" onclick="zfsImportPool('${p.name}')" style="font-size:11px">Import</button>
+      </div>`).join('');
+  } catch(e) { list.innerHTML = `<div style="color:var(--err);font-size:11px">${e.message}</div>`; }
+}
+
+async function zfsImportPool(pool) {
+  try {
+    await fetchJSON('/api/zfs/import', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pool})
+    });
+    showToast(`Pool ${pool} imported and added as a share`);
+    loadZfs();
+    showZfsDiscover(); // Refresh discover panel
+  } catch(e) { showToast(`Import failed: ${e.message}`, true); }
 }
 
 async function zfsScrub(pool) {
@@ -8315,45 +8403,195 @@ async function zfsDestroySnap(name) {
   } catch(e) { showToast(`Error: ${e.message}`, true); }
 }
 
-async function zfsDestroy(pool) {
-  if (!confirm(`DESTROY pool "${pool}"?\nAll data will be permanently lost.`)) return;
-  try {
-    await fetchJSON(`/api/zfs/pools/${pool}?force=true`, {method:'DELETE'});
-    showToast(`Pool ${pool} destroyed`); loadZfs();
-  } catch(e) { showToast(`Error: ${e.message}`, true); }
-}
-
-function zfsNewPool() {
+function zfsConfirmDestroy(pool) {
   const body = `
     <div style="display:flex;flex-direction:column;gap:10px">
-      <div class="form-field"><label class="form-label">Pool name</label><input class="form-input" id="zp-name" placeholder="data"></div>
-      <div class="form-field"><label class="form-label">Devices (space-separated)</label><input class="form-input" id="zp-devs" placeholder="/dev/sdb /dev/sdc"></div>
-      <div class="form-field"><label class="form-label">RAID type</label>
-        <select class="form-input" id="zp-raid">
-          <option value="mirror">Mirror (RAID-1)</option>
-          <option value="raidz">RAID-Z (RAID-5)</option>
-          <option value="raidz2">RAID-Z2 (RAID-6)</option>
-          <option value="stripe">Stripe (no parity)</option>
-        </select>
-      </div>
-      <div class="form-field"><label class="form-label">Mountpoint (optional)</label><input class="form-input" id="zp-mnt" placeholder="/mnt/data"></div>
-      <div style="font-size:11px;color:var(--warn)">⚠ This will format the selected devices. Ensure no existing data.</div>
+      <div style="font-size:13px;color:var(--fg)">To confirm pool removal, type the pool name:</div>
+      <div style="font-family:monospace;font-size:14px;font-weight:700;background:var(--surface);padding:8px;border-radius:4px;text-align:center">${pool}</div>
+      <input class="form-input" id="zp-confirm" placeholder="Type pool name" style="font-family:monospace">
+      <div style="font-size:11px;color:var(--warn)">⚠ All data on this pool will be lost.</div>
     </div>`;
-  openModal('Create ZFS Pool', body, [
-    {label:'Create Pool', primary:true, onclick: async () => {
-      const payload = {
-        name: document.getElementById('zp-name').value,
-        vdevs: document.getElementById('zp-devs').value.trim().split(/\s+/),
-        raid: document.getElementById('zp-raid').value,
-        mountpoint: document.getElementById('zp-mnt').value,
-      };
+  openModal(`Remove Pool`, body, [
+    {label:'Remove Pool', primary:true, onclick: async () => {
+      const confirm_val = document.getElementById('zp-confirm').value;
+      if (confirm_val !== pool) { showToast('Pool name does not match', true); return; }
       try {
-        await fetchJSON('/api/zfs/pools', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-        closeModal(); loadZfs(); showToast(`Pool ${payload.name} created`);
+        await fetchJSON(`/api/zfs/pools/${pool}`, {method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:pool})});
+        closeModal(); loadZfs(); showToast(`Pool ${pool} removed`);
       } catch(e) { showToast(`Error: ${e.message}`, true); }
     }},
     {label:'Cancel', onclick: closeModal}
   ]);
+}
+
+function zfsNewPool() {
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow-y:auto">
+      <div class="form-field"><label class="form-label">Pool name</label><input class="form-input" id="zp-name" placeholder="tank" style="font-family:monospace"></div>
+      <div class="form-field">
+        <label class="form-label">RAID type</label>
+        <select class="form-input" id="zp-raid" onchange="updateRaidHelp()">
+          <option value="stripe">Stripe (no redundancy)</option>
+          <option value="mirror">Mirror (2 drives, 50% capacity)</option>
+          <option value="raidz1">RAID-Z1 (3+ drives, N-1 usable, 1 drive failure)</option>
+          <option value="raidz2">RAID-Z2 (4+ drives, N-2 usable, 2 drive failures)</option>
+          <option value="raidz3">RAID-Z3 (5+ drives, N-3 usable, 3 drive failures)</option>
+        </select>
+        <div id="zp-raid-help" style="font-size:11px;color:var(--fg-dim);margin-top:4px"></div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">Select devices</label>
+        <div id="zp-device-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:8px"></div>
+        <div style="font-size:10px;color:var(--fg-dim);margin-top:4px" id="zp-device-status"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="zp-encrypt" onchange="updateEncryption()">
+        <label style="font-size:12px;cursor:pointer;flex:1" for="zp-encrypt">Enable encryption (optional)</label>
+      </div>
+      <div id="zp-encrypt-fields" hidden style="display:flex;flex-direction:column;gap:8px;padding:8px;background:var(--surface);border-radius:4px">
+        <input class="form-input" id="zp-passphrase" type="password" placeholder="Encryption passphrase">
+        <input class="form-input" id="zp-passphrase2" type="password" placeholder="Confirm passphrase">
+      </div>
+      <div style="font-size:11px;color:var(--fg-dim)">✓ Pool will be automatically added as a share</div>
+      <div style="font-size:11px;color:var(--warn)">⚠ All data on selected devices will be lost.</div>
+    </div>`;
+  openModal('Create ZFS Pool', body, [
+    {label:'Create Pool', primary:true, onclick: async () => {
+      const name = document.getElementById('zp-name').value;
+      const devs = Array.from(document.querySelectorAll('#zp-device-list input[type="checkbox"]:checked')).map(el => el.value);
+      const raid = document.getElementById('zp-raid').value;
+      if (!name) { showToast('Pool name required', true); return; }
+      if (!devs.length) { showToast('Select at least one device', true); return; }
+      const payload = {
+        name, devices: devs, raid_type: raid, encryption: document.getElementById('zp-encrypt').checked,
+        passphrase: document.getElementById('zp-passphrase').value || null,
+        auto_share: true,
+      };
+      try {
+        await fetchJSON('/api/zfs/pools', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        closeModal(); loadZfs(); showToast(`Pool ${name} created successfully`);
+      } catch(e) { showToast(`Error: ${e.message}`, true); }
+    }},
+    {label:'Cancel', onclick: closeModal}
+  ]);
+  // Load available devices
+  loadZfsDevicesForCreation();
+  updateRaidHelp();
+}
+
+async function loadZfsDevicesForCreation() {
+  const list = document.getElementById('zp-device-list');
+  try {
+    const d = await fetchJSON('/api/zfs/available-drives');
+    if (!d.available.length) {
+      list.innerHTML = '<div style="color:var(--fg-dim);text-align:center;padding:20px">No available drives</div>';
+      return;
+    }
+    list.innerHTML = d.available.map(dev => `
+      <label style="display:flex;align-items:center;padding:6px;cursor:pointer">
+        <input type="checkbox" value="${dev.device}" style="margin-right:8px">
+        <span>${dev.device}: ${dev.model || 'Unknown'}</span>
+        <span style="margin-left:auto;font-size:10px;color:var(--fg-dim)">${dev.size || '?'}</span>
+      </label>`).join('');
+    updateDeviceStatus();
+  } catch(e) { list.innerHTML = `<div style="color:var(--err);font-size:11px">${e.message}</div>`; }
+}
+
+function updateDeviceStatus() {
+  const devs = Array.from(document.querySelectorAll('#zp-device-list input[type="checkbox"]:checked')).length;
+  const raid = document.getElementById('zp-raid').value;
+  const min_map = {stripe:1, mirror:2, raidz1:3, raidz2:4, raidz3:5};
+  const min = min_map[raid] || 1;
+  const el = document.getElementById('zp-device-status');
+  if (devs < min) el.textContent = `${raid} requires at least ${min} devices (${devs} selected)`;
+  else el.textContent = `✓ ${devs} device(s) selected`;
+  el.style.color = devs >= min ? 'var(--ok)' : 'var(--warn)';
+}
+
+function updateRaidHelp() {
+  const raid = document.getElementById('zp-raid').value;
+  const help_map = {
+    stripe: 'No redundancy, full capacity but any drive failure loses all data',
+    mirror: 'Two drives mirrored, 1 drive failure tolerated, 50% usable capacity',
+    raidz1: 'Single parity, 1 drive failure tolerated, (N-1)/N usable capacity',
+    raidz2: 'Dual parity, 2 drive failures tolerated, (N-2)/N usable capacity',
+    raidz3: 'Triple parity, 3 drive failures tolerated, (N-3)/N usable capacity',
+  };
+  document.getElementById('zp-raid-help').textContent = help_map[raid] || '';
+  updateDeviceStatus();
+}
+
+function updateEncryption() {
+  const checked = document.getElementById('zp-encrypt').checked;
+  document.getElementById('zp-encrypt-fields').hidden = !checked;
+}
+
+async function zfsExpandPool(pool) {
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--fg-dim)">Adding drives to ${pool}</div>
+      <div class="form-field">
+        <label class="form-label">RAID type for new devices</label>
+        <select class="form-input" id="zpe-raid" onchange="updateRaidHelp2()">
+          <option value="mirror">Mirror (pair)</option>
+          <option value="raidz1">RAID-Z1 (triplet, N-1 usable)</option>
+          <option value="raidz2">RAID-Z2 (quad, N-2 usable)</option>
+          <option value="stripe">Stripe (single device)</option>
+        </select>
+        <div id="zpe-raid-help" style="font-size:11px;color:var(--fg-dim);margin-top:4px"></div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">Select drives to add</label>
+        <div id="zpe-device-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:8px"></div>
+      </div>
+      <div style="font-size:11px;color:var(--warn)">⚠ All data on selected drives will be lost.</div>
+    </div>`;
+  openModal(`Expand Pool: ${pool}`, body, [
+    {label:'Add Drives', primary:true, onclick: async () => {
+      const devs = Array.from(document.querySelectorAll('#zpe-device-list input[type="checkbox"]:checked')).map(el => el.value);
+      const raid = document.getElementById('zpe-raid').value;
+      if (!devs.length) { showToast('Select at least one drive', true); return; }
+      try {
+        await fetchJSON(`/api/zfs/pools/${pool}/expand`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({pool, devices: devs, raid_type: raid})
+        });
+        closeModal(); loadZfs(); showToast(`Added ${devs.length} device(s) to ${pool}`);
+      } catch(e) { showToast(`Error: ${e.message}`, true); }
+    }},
+    {label:'Cancel', onclick: closeModal}
+  ]);
+  loadZfsDevicesForExpansion();
+  document.getElementById('zpe-raid-help').textContent = 'Mirror (pair): two drives mirrored';
+}
+
+async function loadZfsDevicesForExpansion() {
+  const list = document.getElementById('zpe-device-list');
+  try {
+    const d = await fetchJSON('/api/zfs/available-drives');
+    if (!d.available.length) {
+      list.innerHTML = '<div style="color:var(--fg-dim);text-align:center;padding:20px">No available drives</div>';
+      return;
+    }
+    list.innerHTML = d.available.map(dev => `
+      <label style="display:flex;align-items:center;padding:6px;cursor:pointer">
+        <input type="checkbox" value="${dev.device}" style="margin-right:8px">
+        <span>${dev.device}: ${dev.model || 'Unknown'}</span>
+        <span style="margin-left:auto;font-size:10px;color:var(--fg-dim)">${dev.size || '?'}</span>
+      </label>`).join('');
+  } catch(e) { list.innerHTML = `<div style="color:var(--err);font-size:11px">${e.message}</div>`; }
+}
+
+function updateRaidHelp2() {
+  const raid = document.getElementById('zpe-raid').value;
+  const help_map = {
+    stripe: 'Add single drives (no redundancy)',
+    mirror: 'Add pairs of drives (mirrored)',
+    raidz1: 'Add triple (single parity)',
+    raidz2: 'Add quad or more (dual parity)',
+  };
+  document.getElementById('zpe-raid-help').textContent = help_map[raid] || '';
 }
 
 // ── Reverse Proxy ─────────────────────────────────────────────────────────────

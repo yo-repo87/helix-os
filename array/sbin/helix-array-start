@@ -18,6 +18,17 @@ helix_log "Starting array..."
 load_disk_config
 ensure_dirs
 
+# ── Auto-import ZFS pools ─────────────────────────────────────────────────────
+# If there are importable ZFS pools (e.g., from TrueNAS drives), import them automatically.
+if command -v zpool &>/dev/null; then
+    helix_log "Checking for importable ZFS pools..."
+    zpool import -a 2>/dev/null || true
+    # Mount any filesystems that are not yet mounted
+    if command -v zfs &>/dev/null; then
+        zfs mount -a 2>/dev/null || true
+    fi
+fi
+
 # ── Mount parity drives ───────────────────────────────────────────────────────
 # SnapRAID keeps its parity FILE on a mounted file system (/mnt/parityN), so a parity disk needs
 # one like any other disk. A new parity disk shows up on Main as unmountable; Format creates it.

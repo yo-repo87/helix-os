@@ -2408,3 +2408,45 @@ df -h | grep user                              # /mnt/user should appear
 ### Release Notes in Manifest
 "Helix OS 3.3.4 (amd64 and arm64). Comprehensive storage driver support for real hardware: RAID cards (MegaRAID, Marvell, QLA2xxx), hypervisor storage (Hyper-V, Xen), network drivers (10/25GbE, InfiniBand), and crypto accelerators. Fixes boot detection for disks behind RAID controllers. Includes container resource display, Jellyfin Enhanced, and all prior features."
 
+---
+
+## 44. OTA Update Fix: Corrected Manifest SHA256 Hashes (2026-11-13, post-release)
+
+**Problem:** The v3.3.4 release had an OTA update manifest with incorrect SHA256 hashes. All amd64 and arm64 files had identical hashes, causing `POST /api/osupdate/apply` on test VMs to fail with checksum mismatches.
+
+**Root Cause:** The build pipeline (`build/build.sh` and `build/make-update-bundle.sh`) generated output files into `dist/update/`, and when building both architectures in sequence, the second architecture's files **overwrote** the first architecture's files before the manifest was generated. Result: `amd64-filesystem.squashfs` and `arm64-filesystem.squashfs` were identical binary copies in `dist/update/`, even though the saved builds in `/home/pi/helix-work/out-amd64-final/` and `out-arm64-final/` were correct.
+
+**Symptoms:**
+- VM reports: "Update verification failed: SHA256 mismatch"
+- Manifest had identical hashes for all architectures (obviously wrong)
+- Both OTA files were physically identical on disk
+
+**Fix (2026-11-13):**
+1. Located correct builds in `/home/pi/helix-work/out-amd64-final/boot/` and `out-arm64-final/boot/`
+2. Verified correctness via `cmp` (they differed) and `sha256sum`
+3. Copied correct per-arch files to `dist/update/`:
+   - amd64: 985 MB filesystem.squashfs (hash: `9419813...`)
+   - arm64: 962 MB filesystem.squashfs (hash: `b3e1716...`)
+   - vmlinuz and initrd.img also differ per-arch
+4. Regenerated `helix-release.json` with correct hashes
+5. Re-uploaded all 7 files to GitHub release v3.3.4 with `--clobber`
+
+**Correct Hashes (now verified):**
+
+| File | Size | SHA256 |
+|------|------|--------|
+| amd64-filesystem.squashfs | 985 MB | `9419813297815c4433237ed351c43388913132c049cf9bd8d3962cb6f4478e2f` |
+| amd64-vmlinuz | 8.3 MB | `d8808aa4ca188560da1e6d749dcb930c87a5fd8b11ebff1f3fa6d728af35203d` |
+| amd64-initrd.img | 8.9 MB | `ecb38fc25fa829127af6e23f5b963897ad3c695b57b608591776607b71b6c32b` |
+| arm64-filesystem.squashfs | 962 MB | `b3e1716ccfba43b4a064b247ca849003d789529b25754745ae936edd138c2b1c` |
+| arm64-vmlinuz | 32.8 MB | `84b9c190bb4589c4a9527e3191fec051f9f115e88f0a3e8afae96ba0dfb4dfef` |
+| arm64-initrd.img | 8.9 MB | `ba482942f7878be03f2f8049aa5573064b818255ea51cf6a622c3dc4a6a9ed12` |
+
+**Result:** Test VMs can now successfully update to v3.3.4 via OTA. Manifest verified on GitHub.
+
+**Prevention (for next release):** Modify the build pipeline:
+- Have `build/build.sh` copy output to separate per-arch directories (`dist/update/amd64/`, `dist/update/arm64/`)
+- Have `build/make-update-bundle.sh` verify checksums of input files before bundling
+- Only merge into the final `dist/update/` after both architectures are verified
+- This prevents cross-architecture overwrites and catches manifest generation bugs early
+

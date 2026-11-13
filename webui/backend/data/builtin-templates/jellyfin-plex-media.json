@@ -1,0 +1,51 @@
+{
+  "name": "jellyfin-plex-media",
+  "title": "Jellyfin Plex - Media Hub",
+  "description": "Jellyfin Plex Enhancement with media library integration. Includes volumes for movies, TV, music, and metadata caching.",
+  "category": "Media",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+  "port": 3000,
+  "vars": [
+    {
+      "key": "WEB_PORT",
+      "label": "Web port",
+      "default": "3000",
+      "type": "port"
+    },
+    {
+      "key": "MEDIA_PATH",
+      "label": "Media library root",
+      "default": "/mnt/user/media",
+      "type": "path"
+    }
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-plex": {
+        "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
+        "container_name": "jellyfin-plex-media",
+        "restart": "unless-stopped",
+        "ports": ["$WEB_PORT:3000"],
+        "volumes": [
+          "$MEDIA_PATH:/media:ro"
+        ],
+        "environment": {"NODE_ENV": "production"},
+        "healthcheck": {
+          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
+          "interval": 30,
+          "timeout": 3,
+          "retries": 3,
+          "start_period": 10
+        }
+      }
+    }
+  },
+  "extras": [
+    {
+      "key": "CACHE_PATH",
+      "label": "Metadata cache folder",
+      "default": "/mnt/user/appdata/jellyfin-plex-cache",
+      "type": "path"
+    }
+  ]
+}

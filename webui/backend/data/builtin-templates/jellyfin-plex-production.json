@@ -1,0 +1,78 @@
+{
+  "name": "jellyfin-plex-production",
+  "title": "Jellyfin Plex - Production",
+  "description": "Jellyfin Plex Enhancement with full production features: Jellyfin backend integration, persistent caching, backups, and complete library management. Recommended for power users.",
+  "category": "Media",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+  "port": 3000,
+  "note": "Full production setup with persistent storage. Requires Jellyfin backend server.",
+  "vars": [
+    {
+      "key": "WEB_PORT",
+      "label": "Web port",
+      "default": "3000",
+      "type": "port"
+    },
+    {
+      "key": "JELLYFIN_URL",
+      "label": "Jellyfin server URL",
+      "default": "http://jellyfin:8096",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "label": "Jellyfin API Key",
+      "default": "",
+      "type": "string"
+    },
+    {
+      "key": "CONFIG_PATH",
+      "label": "Configuration folder",
+      "default": "/mnt/user/appdata/jellyfin-plex",
+      "type": "path"
+    },
+    {
+      "key": "MEDIA_PATH",
+      "label": "Media library root",
+      "default": "/mnt/user/media",
+      "type": "path"
+    }
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-plex": {
+        "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
+        "container_name": "jellyfin-plex-prod",
+        "restart": "unless-stopped",
+        "ports": ["$WEB_PORT:3000"],
+        "volumes": [
+          "$CONFIG_PATH:/app/config",
+          "$MEDIA_PATH:/media:ro"
+        ],
+        "environment": {
+          "NODE_ENV": "production",
+          "JELLYFIN_API_URL": "$JELLYFIN_URL",
+          "JELLYFIN_API_KEY": "$API_KEY"
+        },
+        "networks": ["helix_network"],
+        "healthcheck": {
+          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
+          "interval": 30,
+          "timeout": 3,
+          "retries": 3,
+          "start_period": 10
+        },
+        "depends_on": {
+          "jellyfin": {"condition": "service_healthy"}
+        }
+      }
+    },
+    "networks": {
+      "helix_network": {"external": true}
+    }
+  },
+  "options": {
+    "restart_policy": "unless-stopped",
+    "log_limit": "10m"
+  }
+}

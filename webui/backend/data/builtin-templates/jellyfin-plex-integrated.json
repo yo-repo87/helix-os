@@ -1,0 +1,60 @@
+{
+  "name": "jellyfin-plex-integrated",
+  "title": "Jellyfin Plex - Integrated",
+  "description": "Jellyfin Plex Enhancement with full Jellyfin backend integration. Configure your Jellyfin server API endpoint for complete library management.",
+  "category": "Media",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+  "port": 3000,
+  "note": "Requires a running Jellyfin server. Get your API key from Jellyfin Settings → Dashboard → API Keys.",
+  "vars": [
+    {
+      "key": "WEB_PORT",
+      "label": "Web port",
+      "default": "3000",
+      "type": "port"
+    },
+    {
+      "key": "JELLYFIN_URL",
+      "label": "Jellyfin server URL",
+      "description": "Full URL to your Jellyfin instance (e.g., http://jellyfin:8096)",
+      "default": "http://jellyfin:8096",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "label": "Jellyfin API Key",
+      "description": "Your API key for authentication",
+      "default": "",
+      "type": "string"
+    }
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-plex": {
+        "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
+        "container_name": "jellyfin-plex-integrated",
+        "restart": "unless-stopped",
+        "ports": ["$WEB_PORT:3000"],
+        "environment": {
+          "NODE_ENV": "production",
+          "JELLYFIN_API_URL": "$JELLYFIN_URL",
+          "JELLYFIN_API_KEY": "$API_KEY"
+        },
+        "networks": ["helix_network"],
+        "healthcheck": {
+          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
+          "interval": 30,
+          "timeout": 3,
+          "retries": 3,
+          "start_period": 10
+        },
+        "depends_on": {
+          "jellyfin": {"condition": "service_healthy"}
+        }
+      }
+    },
+    "networks": {
+      "helix_network": {"external": true}
+    }
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "name": "jellyfin-plex-enhancement",
+  "title": "Jellyfin Plex Enhancement",
+  "description": "Jellyfin frontend with Plex Media Server features: advanced search, curated collections, custom metadata editor, commercial skip detection, music fingerprinting, watch history, favorites, statistics, recommendations, and full backup/restore/import/export capabilities. 95%+ feature parity with Plex v1.43.5.",
+  "category": "Media",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+  "port": 3000,
+  "note": "Jellyfin Plex Enhancement is a frontend replacement that provides Plex-like features for Jellyfin. It requires a Jellyfin backend server running separately.",
+  "vars": [
+    {
+      "key": "WEB_PORT",
+      "label": "Web port",
+      "description": "Port to access the interface",
+      "default": "3000",
+      "type": "port"
+    },
+    {
+      "key": "NODE_ENV",
+      "label": "Environment",
+      "description": "Node environment",
+      "default": "production",
+      "type": "select",
+      "options": ["production", "development"]
+    },
+    {
+      "key": "API_URL",
+      "label": "Jellyfin API URL",
+      "description": "Jellyfin server API endpoint (e.g., http://jellyfin:8096)",
+      "default": "http://jellyfin:8096",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "label": "Jellyfin API Key",
+      "description": "Your Jellyfin API key (get from Jellyfin dashboard)",
+      "default": "",
+      "type": "string"
+    },
+    {
+      "key": "LIBRARY_ID",
+      "label": "Default Library ID",
+      "description": "Default media library ID to load on startup",
+      "default": "",
+      "type": "string"
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "compose": {
+    "services": {
+      "jellyfin-plex-enhancement": {
+        "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
+        "container_name": "jellyfin-plex-enhancement",
+        "restart": "unless-stopped",
+        "ports": [
+          "$WEB_PORT:3000"
+        ],
+        "environment": {
+          "NODE_ENV": "$NODE_ENV",
+          "JELLYFIN_API_URL": "$API_URL",
+          "JELLYFIN_API_KEY": "$API_KEY",
+          "DEFAULT_LIBRARY_ID": "$LIBRARY_ID"
+        },
+        "healthcheck": {
+          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
+          "interval": 30,
+          "timeout": 3,
+          "retries": 3,
+          "start_period": 10
+        },
+        "networks": ["helix_network"]
+      }
+    },
+    "networks": {
+      "helix_network": {
+        "external": true
+      }
+    }
+  },
+  "extras": [
+    {
+      "key": "BACKUP_PATH",
+      "label": "Backup folder",
+      "description": "Persistent path for library backups",
+      "default": "/mnt/user/appdata/jellyfin-plex-backups",
+      "type": "path"
+    },
+    {
+      "key": "METADATA_PATH",
+      "label": "Metadata cache folder",
+      "description": "Local cache for metadata and thumbnails",
+      "default": "/mnt/user/appdata/jellyfin-plex-cache",
+      "type": "path"
+    }
+  ],
+  "features": [
+    "🎬 Dashboard with trending content",
+    "🔍 Advanced search with filters",
+    "⭐ Curated collections & recommendations",
+    "▶️ Full-featured video player",
+    "📊 Statistics & watch history",
+    "📝 Custom metadata editor",
+    "🎵 Music library with fingerprinting",
+    "🚫 Commercial skip detection",
+    "👥 Multi-user support with PIN auth",
+    "💾 Full backup/restore/import/export",
+    "📱 Mobile-first responsive design",
+    "🎨 24 production Vue 3 components"
+  ],
+  "documentation": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement",
+  "requirements": {
+    "jellyfin": "Backend Jellyfin server must be running"
+  },
+  "links": [
+    {
+      "title": "Project Repository",
+      "url": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement"
+    },
+    {
+      "title": "Implementation Details",
+      "url": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement/blob/main/IMPLEMENTATION_STATUS.md"
+    },
+    {
+      "title": "Feature Breakdown",
+      "url": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement/blob/main/PROJECT_SUMMARY.md"
+    }
+  ]
+}

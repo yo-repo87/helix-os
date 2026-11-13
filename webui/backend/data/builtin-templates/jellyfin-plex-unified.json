@@ -1,0 +1,101 @@
+{
+  "name": "jellyfin-plex-unified",
+  "title": "Jellyfin Plex - Unified",
+  "description": "All-in-one single-container solution combining Jellyfin backend (8096) with Plex-enhanced Vue3 frontend (3000). Complete media server with 95%+ Plex feature parity in one container. No separate backend needed.",
+  "category": "Media",
+  "icon": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg",
+  "port": 3000,
+  "note": "Unified single-container: Jellyfin backend on :8096 + Plex UI on :3000. All services in one container = simpler management.",
+  "vars": [
+    {
+      "key": "JELLYFIN_PORT",
+      "label": "Jellyfin API port",
+      "default": "8096",
+      "type": "port"
+    },
+    {
+      "key": "UI_PORT",
+      "label": "Plex UI port",
+      "default": "3000",
+      "type": "port"
+    },
+    {
+      "key": "CONFIG_PATH",
+      "label": "Configuration folder",
+      "default": "/mnt/user/appdata/jellyfin-plex-unified",
+      "type": "path"
+    },
+    {
+      "key": "MEDIA_PATH",
+      "label": "Media library root",
+      "default": "/mnt/user/media",
+      "type": "path"
+    },
+    {
+      "key": "CACHE_PATH",
+      "label": "Cache folder",
+      "default": "/mnt/user/appdata/jellyfin-plex-cache",
+      "type": "path"
+    }
+  ],
+  "compose": {
+    "services": {
+      "jellyfin-plex-unified": {
+        "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:integrated-latest",
+        "container_name": "jellyfin-plex-unified",
+        "restart": "unless-stopped",
+        "ports": [
+          "$JELLYFIN_PORT:8096",
+          "$UI_PORT:3000"
+        ],
+        "volumes": [
+          "$CONFIG_PATH:/config",
+          "$CACHE_PATH:/cache",
+          "$MEDIA_PATH:/media:ro"
+        ],
+        "environment": {
+          "JELLYFIN_PublishedServerUrl": "http://localhost:$JELLYFIN_PORT",
+          "JELLYFIN_CACHE_DIR": "/cache"
+        },
+        "healthcheck": {
+          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8096/health"],
+          "interval": 30,
+          "timeout": 10,
+          "retries": 3,
+          "start_period": 40
+        }
+      }
+    }
+  },
+  "options": {
+    "restart_policy": "unless-stopped",
+    "log_limit": "20m"
+  },
+  "features": [
+    "🎬 Jellyfin backend + Plex UI in ONE container",
+    "🎯 Simple single-port deployment",
+    "⭐ 95%+ Plex feature parity",
+    "▶️ Full-featured video player",
+    "📊 Statistics & watch history",
+    "📝 Custom metadata editor",
+    "🎵 Music library with fingerprinting",
+    "🚫 Commercial skip detection",
+    "👥 Multi-user support with PIN auth",
+    "💾 Full backup/restore/import/export",
+    "📱 Mobile-first responsive design"
+  ],
+  "documentation": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement#unified-single-container",
+  "requirements": {
+    "storage": "20GB+ for Jellyfin metadata and cache"
+  },
+  "links": [
+    {
+      "title": "Project Repository",
+      "url": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement"
+    },
+    {
+      "title": "Integrated Container Docs",
+      "url": "https://github.com/yo-repo87/Jellyfin_Plex_Enhancement/blob/main/docker-compose.integrated.yml"
+    }
+  ]
+}

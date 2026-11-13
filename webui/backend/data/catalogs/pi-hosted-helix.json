@@ -13322,7 +13322,7 @@
    "title": "Jellyfin Plex - Unified",
    "name": "jellyfin-plex-unified",
    "description": "All-in-one single-container Jellyfin + Plex UI. Complete media server with 95%+ Plex feature parity. Jellyfin on :8096, UI on :3000.",
-   "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:integrated-latest",
+   "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
    "type": 1,
    "categories": [
     "Media"

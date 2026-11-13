@@ -2300,3 +2300,50 @@ Built after the user approved the design in §39. First add-in: **NVIDIA GPU sup
 - **Trap:** `gh release upload --clobber` deletes the old asset BEFORE uploading; a GitHub HTTP 500 mid-upload (happened twice with 600 MB files) leaves the release without that file, and running systems then fail to update. After any clobber upload, list the assets and re-upload what is missing (retry loop).
 - **Test VM:** on **3.3.2** (applied with its own updater, staged checksums = manifest, rebooted, array autostarted). Checkmk is running there again.
 - Builds: `/tmp/helix-build` -> `/home/pi/helix-work/build-<arch>` (switch the symlink per arch); last outputs saved in `/home/pi/helix-work/out-<arch>-final`. Boot test: `sudo qemu-system-x86_64 -enable-kvm -m 2048 -cdrom helix-os-X.iso -boot d -display none -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:8094-:80`, wait for `/api/health` to say `"ok"` (nginx answers 502 for ~10 s before the backend is up).
+
+## 42. Comprehensive storage driver support for real hardware (2026-11-13, v3.3.4)
+
+**Problem (recurrence of §19.1):** When booting from Helix media on real hardware with specific RAID/storage controllers, the array disks were not visible. BIOS showed the disks, but after Helix started, `/mnt/disk1`, `/mnt/disk2`, etc. did not exist, so `/mnt/user` (the merged share view) also failed to appear.
+
+**Root cause:** The live-boot initramfs was **packaging** storage drivers but **not loading them** during boot. Two code paths diverged:
+- `build/initramfs/build-initramfs.sh` — included RAID/storage modules in the cpio archive
+- `build/initramfs/init` — the boot script, but modprobe loop was missing those drivers
+
+Without the drivers loaded, devtmpfs never created the `/dev/sd*` nodes for disks behind a RAID card (megaraid_sas, mvsas, qla2xxx), so the array assembly step in `helix-array-start` found no disks.
+
+**Fix (commit `dbb1366`):** Updated both files to load + package comprehensive drivers:
+
+**Storage controllers added:**
+- SATA variants: SIL, SIS (some older boards)
+- RAID cards: MegaRAID SAS, Marvell (mvsas), QLA2xxx, JMB38x, FireWire
+- Hypervisor storage: Hyper-V (hv_storvsc), Xen (xen_blkfront)
+- SCSI/SAS transports: uas (USB Attached SCSI), broader SCSI/CD support
+
+**Network drivers added** (for servers that might need them):
+- Broadcom: bnx2, bnx2x (older server NICs)
+- Intel: ixgbe, i40e (10/25 GbE)
+- Mellanox: mlx4_core, mlx4_en, mlx5_core (InfiniBand)
+- USB and HID peripherals (more device support)
+
+**Crypto/platform drivers added:**
+- AES-NI, cryptd, CRC32 accelerators (for encrypted disks)
+- IPv6, netfilter connection tracking, NAT (for complex networking)
+
+**Why this matters:** Modern servers often use hardware RAID controllers. Consumer/prosumer systems might have older SATA cards. VMs and cloud instances use hypervisor storage. Without drivers, all these configurations boot but can't see the disks. The fix ensures the initramfs covers:
+- VirtIO (KVM/Proxmox/AWS/GCP/Azure)
+- AHCI/SATA (most desktops/servers, including Raspberry Pi)
+- NVMe (modern SSDs)
+- USB (external drives)
+- SD/MMC (Pi and other embedded)
+- RAID cards (common in homelab/server setups)
+- Hypervisor paravirtual drivers (for cloud deployments)
+
+**Testing pending:** The new drivers will load on the next image build + boot from real hardware. Check with:
+```bash
+# After booting the new ISO:
+lsmod | grep -E 'megaraid|mvsas|qla2xxx|ahci|nvme'
+lsblk                                          # should show /dev/sd* for array disks
+df -h | grep user                              # /mnt/user should appear
+```
+
+**Not in 3.3.4 yet:** Images must be rebuilt (`sudo build/build.sh --arch amd64/arm64`) and published as OTA. The code is committed and ready to build.

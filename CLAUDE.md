@@ -2450,3 +2450,56 @@ df -h | grep user                              # /mnt/user should appear
 - Only merge into the final `dist/update/` after both architectures are verified
 - This prevents cross-architecture overwrites and catches manifest generation bugs early
 
+---
+
+## 45. CRITICAL: SHA256 Mismatch in OTA Manifest (2026-11-13)
+
+**Incident:** v3.3.4 release had SHA256 hashes in `helix-release.json` that did NOT match the actual uploaded files. OTA updater failed with: "ERROR: filesystem.squashfs: sha256 mismatch (got a8c90eeb0144…, expected 9419813…)"
+
+**Root Cause:** The `helix-release.json` manifest was generated from an EARLIER build of the amd64 filesystem.squashfs (hash: 9419813...), but when the Pi image was built LATER, a fresh amd64 build was also done, producing a DIFFERENT amd64-filesystem.squashfs (hash: a8c90eeb0144...). The old manifest was uploaded to GitHub, but the new (different) binary files were uploaded, causing the mismatch.
+
+**How it happened:**
+1. `build/build.sh --arch amd64` ran first → created amd64-filesystem.squashfs (hash: 9419813)
+2. `build/make-update-bundle.sh --arch amd64` ran → generated manifest with hash: 9419813
+3. `build/build.sh --arch arm64` ran → ALSO rebuilt amd64 as part of its process!
+4. Fresh amd64-filesystem.squashfs created (hash: a8c90eeb0144) in `output/boot/`
+5. `build/make-pi-image.sh` copied the NEW amd64 files to `dist/update/`
+6. Manifest still had OLD hash: 9419813
+7. Both versions uploaded to GitHub → mismatch
+
+**Fix Applied (2026-11-13):**
+- Recalculated actual SHA256 of all `dist/update/` files
+- Regenerated `helix-release.json` with ACTUAL file hashes
+- Re-uploaded corrected manifest to GitHub
+- OTA now works correctly
+
+**PREVENTION FOR FUTURE RELEASES:**
+
+**BEFORE uploading to GitHub, ALWAYS verify manifest hashes:**
+```bash
+# After all builds complete, before publishing:
+cd dist/update/
+sha256sum amd64-filesystem.squashfs amd64-vmlinuz amd64-initrd.img > /tmp/amd64.actual
+sha256sum arm64-filesystem.squashfs arm64-vmlinuz arm64-initrd.img > /tmp/arm64.actual
+
+# Check manifest
+cat helix-release.json | grep sha256
+
+# Compare - MUST match exactly!
+diff /tmp/amd64.actual <(grep -A0 'amd64.*sha256' helix-release.json)
+```
+
+**BETTER: Automate it in the build pipeline:**
+- `build/build.sh` should NOT rebuild the other arch
+- `build/make-update-bundle.sh` should verify SHA256 of input files vs manifest BEFORE uploading
+- Add a `build/verify-manifest.sh` script that runs before `publish-update.sh`
+- Fail the release if any SHA256 doesn't match
+
+**Lesson:** Never assume that manifest hashes are correct. The build process can regenerate binaries multiple times, and each rebuild may produce slightly different output (even if functionally identical). Always verify hashes match reality before publishing.
+
+**Test:** Manually verify one release by:
+1. Download the squashfs from GitHub
+2. `sha256sum helix-os-3.3.4.img.xz` (or amd64-filesystem.squashfs)
+3. Compare to `helix-release.json` → MUST match exactly
+4. If mismatch found, regenerate manifest and re-upload immediately
+

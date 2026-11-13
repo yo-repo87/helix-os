@@ -57,14 +57,19 @@ fi
 # times out. devtmpfs creates the device nodes automatically as each driver
 # attaches, so no udev is required.
 for mod in \
-    virtio_pci virtio_mmio virtio_blk virtio_scsi \
-    ahci ata_piix ata_generic pata_acpi libata \
+    virtio_pci virtio_mmio virtio_blk virtio_scsi virtio_net \
+    ahci ata_piix ata_generic ata_sil ata_sis pata_acpi libata \
     scsi_mod sd_mod sr_mod cdrom \
     nvme_core nvme \
     usb_common usbcore ehci_pci ehci_hcd ohci_pci ohci_hcd uhci_hcd \
-    xhci_pci xhci_hcd usb_storage uas \
+    xhci_pci xhci_hcd usb_storage uas hid_generic usbhid \
     mmc_core mmc_block sdhci sdhci_pci sdhci_acpi sdhci_pltfm \
     sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm \
+    aesni_intel cryptd crc32c_intel crc32c \
+    megaraid_sas mvsas qla2xxx jmb38x_ms firewire_ohci \
+    hv_storvsc hv_netvsc xen_blkfront xen_netfront \
+    bnx2 bnx2x ixgbe i40e mlx4_core mlx4_en mlx5_core \
+    ipv6 nf_conntrack nf_nat \
     squashfs overlay loop vfat exfat isofs nls_cp437 nls_ascii nls_utf8; do
     modprobe "$mod" 2>/dev/null || true
 done

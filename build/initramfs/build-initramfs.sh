@@ -116,12 +116,17 @@ if [ -d "$SRC_MODS" ]; then
         ext4 mbcache jbd2 crc32c_generic libcrc32c crc16 \
         scsi_mod sd_mod sr_mod cdrom \
         virtio virtio_ring virtio_pci virtio_mmio virtio_blk virtio_scsi \
-        ahci libahci libata ata_piix ata_generic pata_acpi \
+        ahci libahci libata ata_piix ata_generic ata_sil ata_sis pata_acpi \
         nvme nvme_core \
         usb_common usbcore ehci_hcd ehci_pci ohci_hcd ohci_pci uhci_hcd \
         xhci_hcd xhci_pci usb_storage uas \
         mmc_core mmc_block sdhci sdhci_pci sdhci_acpi sdhci_pltfm \
-        sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm; do
+        sdhci_of_arasan sdhci_iproc bcm2835_sdhost dw_mmc dw_mmc_pltfm \
+        aesni_intel cryptd crc32c_intel crc32c \
+        megaraid_sas mvsas qla2xxx jmb38x_ms firewire_ohci hid_generic \
+        usbhid hv_storvsc hv_netvsc xen_blkfront xen_netfront \
+        virtio_net bnx2 bnx2x ixgbe i40e mlx4_core mlx4_en mlx5_core \
+        ipv6 nf_conntrack nf_nat; do
         install_module "$modname"
     done
     # Fresh dependency index for the flattened module set.

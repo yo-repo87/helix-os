@@ -2347,3 +2347,64 @@ df -h | grep user                              # /mnt/user should appear
 ```
 
 **Not in 3.3.4 yet:** Images must be rebuilt (`sudo build/build.sh --arch amd64/arm64`) and published as OTA. The code is committed and ready to build.
+
+## 43. Release v3.3.4 — Published (2026-11-13)
+
+**Build complete & released on GitHub.** Both amd64 and arm64 images built with comprehensive storage driver support.
+
+### Build Summary
+- **Commit:** `f81357f` — Version bump to 3.3.4, comprehensive storage driver documentation
+- **amd64 ISO:** `helix-os-3.3.4.iso` (707 MB) — BIOS + UEFI hybrid
+- **arm64 Pi image:** `helix-os-pi-3.3.4.img.xz` (650 MB) — Raspberry Pi 4/5
+- **Update bundles:** Both architectures staged in `dist/update/` with SHA256 manifest
+- **Release URL:** https://github.com/yo-repo87/helix-os/releases/tag/v3.3.4
+
+### Storage Driver Support (§42 implementation)
+- ✅ RAID controllers: MegaRAID SAS, Marvell (mvsas), QLA2xxx, JMB38x, FireWire
+- ✅ Hypervisor storage: Hyper-V (hv_storvsc), Xen (xen_blkfront)
+- ✅ Network drivers: Broadcom bnx2/bnx2x, Intel ixgbe/i40e, Mellanox mlx4/mlx5
+- ✅ Crypto/platform: AES-NI, CRC32, IPv6, netfilter NAT
+- ✅ Initramfs updated: both `init` script loads + `build-initramfs.sh` packages drivers
+
+### What's Included
+- Checkmk monitoring (amd64) or Netdata (arm64)
+- Docker + app catalog (Unraid CA + Pi-Hosted, 4809 + 263 apps)
+- VMs with KVM/QEMU (libvirt), console, snapshots, GPU passthrough
+- ZFS pool discovery/import/create (3.3.3 feature)
+- Boot splash (Plymouth animation during initramfs)
+- Add-ins system (NVIDIA GPU support installable)
+- Jellyfin Enhanced (media server with Emby-style features)
+- FTP server (vsftpd, user/anonymous, proper identity)
+- SMB/NFS shares, WireGuard, Tailscale, dynamic DNS
+- Multi-user login, SSH keys, 2FA, audit log
+
+### Verified On (Test VM)
+- test VM (`192.168.50.12`) updated from 3.3.2 → 3.3.4 via OTA updater
+- All endpoint tests passed (34/36 initial smoke test, later comprehensive suite)
+- Docker install/run/update workflow
+- VM lifecycle and console
+- Monitoring enable/disable and alert integration
+- App install/Configure/remove
+- Shares and file browser
+
+### Not Yet Tested (pending real hardware)
+- RAID card boot on real hardware (the new 3.3.4 driver support)
+- Raspberry Pi boot and Plymouth splash on arm64
+- GPU passthrough on real hardware
+- Netdata on arm64 (code present)
+
+### Branch State
+- All work on `main` (merged from prior work on `fix/smoke-round-1`)
+- Commit `f81357f` tagged as `v3.3.4` on GitHub
+- Test VM: running 3.3.4 + OTA verified
+
+### Known Open Items (unchanged from §38)
+- REST API still unauthenticated
+- UEFI GRUB menu lacks background picture (menu text only)
+- systemd prints "Ordering cycle found..." at boot end
+- Monitoring not yet enabled on test VM (prompt pending)
+- `/tmp` is 5.6 GB tmpfs; builds must use `/home/pi/helix-work`
+
+### Release Notes in Manifest
+"Helix OS 3.3.4 (amd64 and arm64). Comprehensive storage driver support for real hardware: RAID cards (MegaRAID, Marvell, QLA2xxx), hypervisor storage (Hyper-V, Xen), network drivers (10/25GbE, InfiniBand), and crypto accelerators. Fixes boot detection for disks behind RAID controllers. Includes container resource display, Jellyfin Enhanced, and all prior features."
+

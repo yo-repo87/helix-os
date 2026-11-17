@@ -1,0 +1,99 @@
+#!/bin/bash
+# helix-npm-setup: prepare nginx and Nginx Proxy Manager at boot (CLAUDE.md §54, phase 3).
+# Runs as root from helix-npm-storage.service, after helix-npm-storage and before nginx.
+#
+# Always (nginx must start whether or not NPM runs):
+#   - the /data folders NPM's nginx config includes, the nginx cache folders,
+#   - conf.d/include/resolvers.conf from /etc/resolv.conf.
+# Only when helix-npm-storage reported mode=persistent:
+#   - /etc/nginx/conf.d/production.conf (admin UI on NPM_ADMIN_PORT, LAN only) with a fresh peer secret,
+#   - /run/npm/env for helix-npm.service (secret, ports, first-run admin account),
+#   - /run/npm/enabled, which helix-npm.service requires (ConditionPathExists).
+# Otherwise production.conf and /run/npm/enabled are removed, so NPM stays off.
+#
+# The first-run admin account is generated once and kept in /data/helix-admin.json (root 600);
+# Helix uses it to drive NPM's API. NPM only reads it while it has no users yet.
+set -u
+NPM_DIR=${NPM_DIR:-/opt/npm}
+DATA_DIR=${NPM_DATA_DIR:-/data}
+STATE_FILE=${NPM_STATE_FILE:-/run/helix/npm-storage}
+RUN_DIR=${NPM_RUN_DIR:-/run/npm}
+NGINX_DIR=${NPM_NGINX_DIR:-/etc/nginx}
+ENV_FILE=${NPM_ENV_FILE:-/usr/local/lib/helix/npm.env}
+log() { echo "[helix-npm-setup] $*"; }
+
+NPM_BACKEND_PORT=3781; NPM_ADMIN_PORT=81
+# shellcheck disable=SC1090
+[ -r "$ENV_FILE" ] && . "$ENV_FILE"
+
+# ── Always ───────────────────────────────────────────────────────────────────
+mkdir -p "$DATA_DIR" "$DATA_DIR/logs" \
+    "$DATA_DIR/nginx/default_host" "$DATA_DIR/nginx/default_www" "$DATA_DIR/nginx/proxy_host" \
+    "$DATA_DIR/nginx/redirection_host" "$DATA_DIR/nginx/stream" "$DATA_DIR/nginx/dead_host" \
+    "$DATA_DIR/nginx/temp" "$DATA_DIR/nginx/custom" "$DATA_DIR/custom_ssl" "$DATA_DIR/access" \
+    "$DATA_DIR/letsencrypt-acme-challenge" \
+    /var/log/nginx /var/lib/nginx/cache/public /var/lib/nginx/cache/private "$RUN_DIR"
+# Workers (www-data) read access lists, ACME challenge files and the default page; the rest of
+# /data (database, keys, custom certificates) stays away from everyone else.
+chown root:www-data "$DATA_DIR" "$DATA_DIR/access" "$DATA_DIR/letsencrypt-acme-challenge" "$DATA_DIR/nginx" "$DATA_DIR/nginx/default_www" 2>/dev/null
+chmod 2750 "$DATA_DIR" "$DATA_DIR/access" "$DATA_DIR/letsencrypt-acme-challenge" "$DATA_DIR/nginx" "$DATA_DIR/nginx/default_www"
+chmod 700 "$DATA_DIR/custom_ssl"
+chown -R www-data:www-data /var/lib/nginx 2>/dev/null
+chmod 700 "$RUN_DIR"
+
+# resolver lines (IPv6 addresses in brackets); dropped if resolv.conf has no nameserver.
+RES=$(awk 'BEGIN{ORS=" "} $1=="nameserver" { sub(/%.*$/,"",$2); print ($2 ~ ":")? "["$2"]": $2}' /etc/resolv.conf 2>/dev/null)
+mkdir -p "$NGINX_DIR/conf.d/include"
+if [ -n "${RES// /}" ]; then
+    echo "resolver $RES valid=10s;" > "$NGINX_DIR/conf.d/include/resolvers.conf"
+else
+    rm -f "$NGINX_DIR/conf.d/include/resolvers.conf"
+fi
+
+# ── NPM on or off ────────────────────────────────────────────────────────────
+disable() {
+    rm -f "$NGINX_DIR/conf.d/production.conf" "$RUN_DIR/enabled" "$RUN_DIR/env"
+    log "NPM off: $1"
+    exit 0
+}
+grep -q '^mode=persistent' "$STATE_FILE" 2>/dev/null \
+    || disable "no persistent storage ($(sed -n 's/^reason=//p' "$STATE_FILE" 2>/dev/null || echo 'storage not set up'))"
+[ -x "$NPM_DIR/node/bin/node" ] && [ -f "$NPM_DIR/backend/index.js" ] && [ -f "$NPM_DIR/production.conf.template" ] \
+    || disable "not installed in this image"
+[ -e "$DATA_DIR/.helix-npm-disabled" ] && disable "turned off ($DATA_DIR/.helix-npm-disabled)"
+
+case "$NPM_ADMIN_PORT" in ''|*[!0-9]*) NPM_ADMIN_PORT=81 ;; esac
+case "$NPM_BACKEND_PORT" in ''|*[!0-9]*) NPM_BACKEND_PORT=3781 ;; esac
+SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+[ "${#SECRET}" -eq 64 ] || disable "could not generate the peer secret"
+
+sed -e "s/{{NPM_ADMIN_PORT}}/$NPM_ADMIN_PORT/g" -e "s/{{NPM_PEER_SECRET}}/$SECRET/g" \
+    -e "s/{{NPM_BACKEND_PORT}}/$NPM_BACKEND_PORT/g" \
+    -e "s#root /app/frontend;#root $NPM_DIR/frontend;#" \
+    "$NPM_DIR/production.conf.template" > "$NGINX_DIR/conf.d/production.conf.tmp" \
+    && mv "$NGINX_DIR/conf.d/production.conf.tmp" "$NGINX_DIR/conf.d/production.conf" \
+    || disable "could not write production.conf"
+chmod 600 "$NGINX_DIR/conf.d/production.conf"   # holds the secret; only nginx's root master reads it
+
+# First-run admin account (kept; Helix signs in to NPM's API with it).
+ADMIN="$DATA_DIR/helix-admin.json"
+if [ ! -s "$ADMIN" ]; then
+    PW=$(head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-24)
+    ( umask 077; printf '{"email": "admin@helix.local", "password": "%s"}\n' "$PW" > "$ADMIN" )
+    log "generated the NPM admin account ($ADMIN)"
+fi
+chmod 600 "$ADMIN"; chown root:root "$ADMIN"
+EMAIL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["email"])' "$ADMIN")
+PASS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["password"])' "$ADMIN")
+
+( umask 077
+  {
+    echo "NPM_PEER_SECRET=$SECRET"
+    echo "NPM_BACKEND_PORT=$NPM_BACKEND_PORT"
+    echo "NPM_BACKEND_HOST=127.0.0.1"
+    echo "INITIAL_ADMIN_EMAIL=$EMAIL"
+    echo "INITIAL_ADMIN_PASSWORD=$PASS"
+  } > "$RUN_DIR/env" )
+touch "$RUN_DIR/enabled"
+log "NPM on: admin UI on port $NPM_ADMIN_PORT (LAN only), API on 127.0.0.1:$NPM_BACKEND_PORT"
+exit 0

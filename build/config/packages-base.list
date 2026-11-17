@@ -118,8 +118,13 @@ cron
 vnstat
 
 # ── Web server ────────────────────────────────────────────────────────────────
-nginx
+# OpenResty (nginx + LuaJIT) from openresty.org (repo added by build.sh); hook 03 makes it
+# answer to `nginx` / nginx.service with Helix's /etc/nginx layout (CLAUDE.md §54).
+openresty
+# Node.js runtime (Nginx Proxy Manager)
+libatomic1
 
 # Tailscale (from pkgs.tailscale.com, repo added by build.sh)
 tailscale
 traceroute
+gcc

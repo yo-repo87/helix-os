@@ -52,10 +52,99 @@ if ! ( cd "$HIVE_DIR/backend" && HELIX_CONFIG=/tmp/helix-cfg-check "$VENV_DIR/bi
 fi
 echo "  backend app imports cleanly (uvicorn main:app will start)"
 
+# ── Web server: OpenResty answering as "nginx" (CLAUDE.md §54) ────────────────
+# OpenResty (nginx + LuaJIT, the base Nginx Proxy Manager needs) replaces Debian's nginx.
+# Everything else keeps saying "nginx": the command, nginx.service, /etc/nginx, /run/nginx.pid,
+# so helix-gen-cert, routers/proxy.py and routers/ssl.py need no changes.
+OR_NGINX=/usr/local/openresty/nginx/sbin/nginx
+[ -x "$OR_NGINX" ] || { echo "  ERROR: openresty is not installed (check packages-base.list / the repo in build.sh)" >&2; exit 1; }
+# A reused rootfs may still have Debian's nginx; it owns /usr/sbin/nginx and nginx.service.
+if dpkg-query -W -f='${Status}' nginx-common 2>/dev/null | grep -q installed; then
+    apt-get purge -y nginx nginx-core nginx-common nginx-light nginx-full nginx-extras >/dev/null 2>&1 || true
+fi
+# The package's own unit would start a second server on :80 with OpenResty's sample config.
+systemctl disable openresty 2>/dev/null || true
+systemctl mask openresty 2>/dev/null || ln -sf /dev/null /etc/systemd/system/openresty.service
+
+cat > /usr/sbin/nginx <<'NGXEOF'
+#!/bin/sh
+# Helix: OpenResty with Helix's paths. exec keeps the process name "nginx".
+exec /usr/local/openresty/nginx/sbin/nginx -p /var/lib/nginx/ -c /etc/nginx/nginx.conf -e /var/log/nginx/error.log "$@"
+NGXEOF
+chmod 755 /usr/sbin/nginx
+
+mkdir -p /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/snippets \
+         /var/log/nginx /var/lib/nginx
+chown www-data:www-data /var/lib/nginx 2>/dev/null || true
+# /var/log is RAM; recreate the directories on every boot in case something empties them.
+mkdir -p /etc/tmpfiles.d
+cat > /etc/tmpfiles.d/helix-nginx.conf <<'TMPEOF'
+d /var/log/nginx 0755 root adm -
+d /var/lib/nginx 0755 www-data www-data -
+TMPEOF
+
+# Nginx Proxy Manager, built here (Node, admin UI, certbot + DNS plugins; CLAUDE.md §54).
+# Also installs NPM's nginx includes and mime.types, which the nginx.conf below uses.
+bash /build/proxy/install-npm.sh /build/proxy
+install -m 0644 /build/proxy/nginx.conf /etc/nginx/nginx.conf
+install -m 0644 /build/proxy/helix-lan-only.conf /etc/nginx/helix-lan-only.conf
+mkdir -p /usr/local/lib/helix
+install -m 0644 /build/proxy/npm.env /usr/local/lib/helix/npm.env
+install -m 0755 /build/proxy/helix-npm-setup /usr/local/sbin/helix-npm-setup
+install -m 0755 /build/proxy/helix-npm-storage /usr/local/sbin/helix-npm-storage
+# The folders nginx.conf includes (/data/..., caches); with no storage state NPM stays off.
+mkdir -p /data
+NPM_STATE_FILE=/nonexistent /usr/local/sbin/helix-npm-setup
+
+# Same shape as Debian's nginx.service: the ExecStartPre config test is what
+# helix-gen-cert.service is ordered before.
+cat > /etc/systemd/system/nginx.service <<'UNITEOF'
+[Unit]
+Description=Helix web server (OpenResty)
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/run/nginx.pid
+ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
+ExecReload=/usr/sbin/nginx -g 'daemon on; master_process on;' -s reload
+ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /run/nginx.pid
+TimeoutStopSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+systemctl enable nginx 2>/dev/null || ln -sf /etc/systemd/system/nginx.service /etc/systemd/system/multi-user.target.wants/nginx.service
+
+if [ -d /etc/logrotate.d ]; then
+cat > /etc/logrotate.d/nginx <<'LREOF'
+/var/log/nginx/*.log /var/log/npm/*.log {
+    daily
+    rotate 3
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        [ -s /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)" 2>/dev/null || true
+    endscript
+}
+LREOF
+fi
+echo "  web server: $("$OR_NGINX" -v 2>&1 | head -1)"
+
 # ── Nginx config: reverse proxy to FastAPI backend (HTTP :80 + HTTPS :443) ────
 # Shared proxy block, included by both the HTTP and HTTPS servers.
 mkdir -p /etc/nginx/snippets
 cat > /etc/nginx/snippets/helix-proxy.conf <<'PROXYEOF'
+# NPM's log format ("proxy", the http-level access log) prints $server; NPM's own server blocks
+# declare it, so the Helix UI must too or nginx rejects the config when no NPM host exists yet.
+set $server "127.0.0.1";
+set $port   "8082";
 # SSE / streaming: disable buffering
 proxy_buffering off;
 proxy_cache off;
@@ -463,6 +552,62 @@ ExecStart=/usr/local/sbin/helix-firstboot
 WantedBy=multi-user.target
 FBSVC
 systemctl enable helix-firstboot 2>/dev/null || echo "  (helix-firstboot enable deferred)"
+
+# Nginx Proxy Manager (CLAUDE.md §54). helix-npm-prepare: /data and /etc/letsencrypt on HELIXDATA
+# (helix-npm-storage), then the folders/configs nginx needs and, with persistent storage only,
+# NPM's admin server block + environment (helix-npm-setup). It never fails the boot: without
+# HELIXDATA nginx and the Helix UI run as before and NPM stays off.
+rm -f /etc/systemd/system/helix-npm-storage.service /etc/systemd/system/multi-user.target.wants/helix-npm-storage.service \
+      /etc/systemd/system/nginx.service.d/helix-npm-storage.conf
+cat > /etc/systemd/system/helix-npm-prepare.service <<'NSSVC'
+[Unit]
+Description=Helix OS — prepare Nginx Proxy Manager (storage on HELIXDATA, nginx folders)
+After=helix-firstboot.service local-fs.target
+Before=nginx.service helix-npm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-npm-storage
+ExecStart=/usr/local/sbin/helix-npm-setup
+
+[Install]
+WantedBy=multi-user.target
+NSSVC
+systemctl enable helix-npm-prepare 2>/dev/null || ln -sf /etc/systemd/system/helix-npm-prepare.service /etc/systemd/system/multi-user.target.wants/helix-npm-prepare.service
+mkdir -p /etc/systemd/system/nginx.service.d
+cat > /etc/systemd/system/nginx.service.d/helix-npm-prepare.conf <<'NSDROP'
+[Unit]
+Wants=helix-npm-prepare.service
+After=helix-npm-prepare.service
+NSDROP
+# NPM's backend. Root: NPM writes nginx configs and reloads nginx, and its admin can add custom
+# nginx config (Lua runs in the root master), so NPM is root-equivalent whatever user it runs as.
+# If it stops, nginx keeps serving every host it already has.
+cat > /etc/systemd/system/helix-npm.service <<'NPMSVC'
+[Unit]
+Description=Nginx Proxy Manager (Helix OS)
+After=nginx.service helix-npm-prepare.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/npm/enabled
+
+[Service]
+Type=simple
+EnvironmentFile=/usr/local/lib/helix/npm.env
+EnvironmentFile=/run/npm/env
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--openssl-legacy-provider
+Environment=HOME=/root
+Environment=PATH=/opt/certbot/bin:/opt/npm/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/opt/npm/backend
+ExecStart=/opt/npm/node/bin/node --abort_on_uncaught_exception --max_old_space_size=250 index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+NPMSVC
+systemctl enable helix-npm 2>/dev/null || ln -sf /etc/systemd/system/helix-npm.service /etc/systemd/system/multi-user.target.wants/helix-npm.service
 
 # "Start array on boot" (Unraid parity): runs after config + users are restored and the
 # network is up; a no-op unless autostart=yes in /boot/config/array.cfg.

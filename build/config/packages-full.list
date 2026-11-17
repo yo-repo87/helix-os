@@ -3,7 +3,7 @@
 # ── Array / storage ───────────────────────────────────────────────────────────
 mergerfs
 snapraid
-zfsutils-linux
+# Note: ZFS requires contrib repos; skipped for standard bookworm
 # (snapraid built from source if not in repo — see hooks/03-snapraid.sh)
 
 # ── File sharing ──────────────────────────────────────────────────────────────
@@ -14,13 +14,12 @@ avahi-utils
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 docker.io
-docker-compose-plugin
+docker-compose
 
 # ── Web UI stack ──────────────────────────────────────────────────────────────
-nginx
+openresty
 php8.2-fpm
 php8.2-cli
-php8.2-json
 
 # ── VPN ───────────────────────────────────────────────────────────────────────
 wireguard
@@ -28,7 +27,7 @@ wireguard-tools
 
 # ── UPS monitoring ────────────────────────────────────────────────────────────
 apcupsd
-nut
+# nut - broken dependencies in bookworm
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 # (handled by our Python daemon — no extra packages needed)

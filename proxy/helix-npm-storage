@@ -1,0 +1,100 @@
+#!/bin/sh
+# helix-npm-storage: give Nginx Proxy Manager persistent storage (CLAUDE.md §54, phase 2).
+#
+# NPM keeps its database, generated nginx configs and keys in /data, and certbot keeps
+# certificates in /etc/letsencrypt. The root filesystem is RAM, so both are bind-mounted
+# from the HELIXDATA partition (ext4, on the boot media, mounted at /mnt/data by
+# helix-firstboot). NOT the FAT /boot: FAT has no symlinks (certbot's live/ -> archive/)
+# and no permissions (private keys and DNS-provider tokens would be world-readable).
+#
+# Without HELIXDATA (ISO booted as a CD, mount failure) nothing is mounted and the state
+# says "ram": nginx and the Helix UI still work, NPM stays off.
+#
+#   helix-npm-storage            set up and mount (idempotent; run at boot as root)
+#   helix-npm-storage status     print the state file
+#
+# State: $STATE_FILE, a few KEY=value lines (mode=persistent|ram, reason=...).
+# Test knobs: NPM_DATA_MNT (default /mnt/data), NPM_DATA_DIR (/data), NPM_LE_DIR
+# (/etc/letsencrypt), NPM_LOG_DIR (/var/log/npm), NPM_STATE_FILE (/run/helix/npm-storage).
+set -u
+DATA_MNT=${NPM_DATA_MNT:-/mnt/data}
+DATA_DIR=${NPM_DATA_DIR:-/data}
+LE_DIR=${NPM_LE_DIR:-/etc/letsencrypt}
+LOG_DIR=${NPM_LOG_DIR:-/var/log/npm}
+STATE_FILE=${NPM_STATE_FILE:-/run/helix/npm-storage}
+ROOT=$DATA_MNT/npm
+
+log() { echo "[helix-npm-storage] $*"; }
+
+write_state() {   # mode reason
+    mkdir -p "$(dirname "$STATE_FILE")"
+    printf 'mode=%s\nreason=%s\ndata=%s\nletsencrypt=%s\n' "$1" "$2" "$DATA_DIR" "$LE_DIR" > "$STATE_FILE.tmp" \
+        && mv "$STATE_FILE.tmp" "$STATE_FILE"
+    log "$1: $2"
+}
+
+if [ "${1:-}" = status ]; then
+    cat "$STATE_FILE" 2>/dev/null || echo "mode=unknown"
+    exit 0
+fi
+
+# Already done (service restarted, or run twice).
+if mountpoint -q "$DATA_DIR" && mountpoint -q "$LE_DIR"; then
+    write_state persistent "already mounted from $ROOT"
+    exit 0
+fi
+
+if ! mountpoint -q "$DATA_MNT"; then
+    write_state ram "no HELIXDATA partition mounted at $DATA_MNT (read-only or legacy boot media)"
+    exit 0
+fi
+FSTYPE=$(findmnt -n -o FSTYPE --target "$DATA_MNT" 2>/dev/null)
+case "$FSTYPE" in
+    ext4|ext3|xfs|btrfs) ;;
+    *) write_state ram "$DATA_MNT is ${FSTYPE:-unknown}, which cannot hold certificates safely"; exit 0 ;;
+esac
+if ! touch "$DATA_MNT/.npm-wtest" 2>/dev/null; then
+    write_state ram "$DATA_MNT is read-only"
+    exit 0
+fi
+rm -f "$DATA_MNT/.npm-wtest"
+
+# Layout. The database holds password hashes and API tokens, letsencrypt/ the private keys and
+# DNS-provider credentials: root only, except that nginx workers (www-data) must read access lists
+# and ACME challenge files in data/, hence root:www-data 2750 there (helix-npm-setup applies the
+# same to the subfolders).
+umask 077
+mkdir -p "$ROOT/data" "$ROOT/letsencrypt" "$LOG_DIR" "$DATA_DIR" "$LE_DIR" || {
+    write_state ram "could not create $ROOT"; exit 0; }
+chown root:root "$ROOT" "$ROOT/letsencrypt" 2>/dev/null
+chown root:www-data "$ROOT/data" 2>/dev/null
+chmod 700 "$ROOT"
+chmod 2750 "$ROOT/data"
+chmod 755 "$ROOT/letsencrypt"     # certbot's own layout: archive/ and live/ inside are 700
+chmod 750 "$LOG_DIR"
+
+# NPM writes access and error logs per host into /data/logs. Keep them in RAM (flash wear):
+# on the persistent side, logs is a symlink to the RAM log directory.
+if [ -d "$ROOT/data/logs" ] && [ ! -L "$ROOT/data/logs" ]; then
+    rm -rf "$ROOT/data/logs"
+fi
+[ -L "$ROOT/data/logs" ] || ln -s "$LOG_DIR" "$ROOT/data/logs"
+
+for pair in "$ROOT/data:$DATA_DIR" "$ROOT/letsencrypt:$LE_DIR"; do
+    src=${pair%%:*}; dst=${pair#*:}
+    if ! mountpoint -q "$dst"; then
+        if [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+            # Something in the RAM root already wrote here (e.g. certbot before this ran).
+            # Keep it: copy what is not on the persistent side yet, never overwrite.
+            cp -an "$dst/." "$src/" 2>/dev/null || true
+            log "merged existing $dst into $src"
+        fi
+        if ! mount --bind "$src" "$dst"; then
+            # All or nothing: never leave NPM half on RAM, half persistent.
+            umount "$DATA_DIR" 2>/dev/null; umount "$LE_DIR" 2>/dev/null
+            write_state ram "bind mount $src -> $dst failed"; exit 0
+        fi
+    fi
+done
+write_state persistent "$DATA_DIR and $LE_DIR on $ROOT ($FSTYPE)"
+exit 0

@@ -2503,3 +2503,346 @@ diff /tmp/amd64.actual <(grep -A0 'amd64.*sha256' helix-release.json)
 3. Compare to `helix-release.json` → MUST match exactly
 4. If mismatch found, regenerate manifest and re-upload immediately
 
+
+---
+
+## 46. ZFS import, partitioned array disks, Docker on the wrong disk, dead dialog buttons (2026-11-15)
+
+Found on a real server (192.168.50.142: kernel 6.1.0-50-amd64, 28 GB RAM, Helix 3.3.4, a TrueNAS raidz1 pool `zpool`
+of 4 × 10 TB + cache, two XFS data disks set up before Helix). Everything below is in the repo, **not committed**, and was
+hot-pushed to that box with `vmsh.py --push-dev` (RAM root: gone at reboot). ZFS itself was hot-installed there
+(bookworm-backports 2.3.2 + DKMS, ~5 min on 16 cores), so after a reboot ZFS is missing until an image with §46.1 ships.
+
+### 46.1 ZFS was never in the image
+`zfsutils-linux` was only in `packages-full.list` (images build without `--full`), so `/api/zfs/*` answered
+`available:false` everywhere. **3.3.3's "ZFS pool management" never worked on a shipped image.** `build.sh` now has a ZFS
+step after the package install: adds `bookworm-backports main contrib`, installs `linux-headers-<rootfs kernel>`,
+`zfsutils-linux` + `zfs-dkms` from backports (bookworm's own 2.1 is too old for current TrueNAS/Unraid pools; 2.3.2 imported
+the TrueNAS pool fine), runs `dkms install -k <rootfs kernel>` (zfs-dkms only builds for `uname -r` = the build host),
+packs `zfs.ko`/`spl.ko` into a local `helix-zfs-modules` .deb (`Provides: zfs-modules`), purges dkms/headers/compiler,
+disables `zfs-import-scan`/`zfs-import-cache` (Helix imports pools itself), and fails the build if `modinfo zfs` fails.
+**Not built or boot-tested yet.** Under qemu on the Pi the DKMS compile will be slow (expect an hour+); build on x86.
+
+### 46.2 ZFS router/page bugs (routers/zfs.py, index.html)
+| Bug | Fix |
+|---|---|
+| `zpool`/`zfs` ran as the unprivileged `helix` user (`permission denied` on import scan) | `_run` prefixes `sudo -n` for zpool/zfs/modprobe |
+| Discover parser needed `"  pool:"` (2 spaces); real output has 3 → never listed a pool | `_parse_import_scan` (strip-based, multi-line status/action, device list, `importable`) |
+| **Remove fell back to `zpool destroy -f` when export failed** (busy pool → erased) | export only; 409 with a reason |
+| Remove sent `confirm` in the body, API reads the query → always "Confirmation mismatch" | `?confirm=` |
+| Import 500 after a successful import: `from services import shares_cfg` (no such module) | share step rewritten, errors returned in the reply |
+| TrueNAS pools have `mountpoint=/<pool>` → mounted at `/zpool`, invisible to Files/shares | `_import()`: `-N -R /mnt` (what TrueNAS does), fall back to no altroot if that doubles `/mnt/mnt/` (Helix-created pools use `-m /mnt/<name>`); altroot is not stored in the pool |
+| Array start ran `zpool import -a` (every pool on any disk) | only pools in `HELIX_CONFIG/zfs/pools.json` (`{"name":{"altroot":"/mnt"}}`), each with its altroot |
+| Pool names unchecked (argv) | `_check_pool_name` on every route |
+| Unavailable ZFS said nothing useful | `reason` (tools missing / module not loadable) |
+
+**Sharing an imported pool:** Import (and a new "Share…" button on each pool card, "Not shared" badge) opens one dialog:
+one share per top-level dataset (default; TrueNAS `.system`, `.ix-virt`, `ix-*` and legacy-mounted datasets skipped), the
+whole pool as one share, or none; SMB Public/Private; optional NFS. `POST /api/zfs/pools/{pool}/share`. Shares are
+`shares.cfg` sections with `path=/mnt/<pool>/...` and `zfs_pool=<pool>`; `helix-samba-apply`/`helix-nfs-apply` honour
+`path=` only under `/mnt` (not `/mnt/user`, no `..`) **and only while it is a mount other than `/`** (an exported pool's
+leftover folder is in the RAM root). Array start imports pools before applying shares, so they return by themselves.
+The Shares page measures size from `path=`.
+
+### 46.3 openModal: every dialog that passed a function had dead buttons
+`openModal` pasted `b.onclick` into an `onclick="…"` attribute, so `onclick: async () => …` / `onclick: closeModal` became
+broken attribute text: ZFS Remove/New Pool/Add Drives, the new share dialog and ~8 others did nothing when clicked. Now a
+function is stored in `window._modalFns[i]` and called with no event (so `closeModal()` closes); strings still work
+(and `"` is escaped). Checked in Node by executing the generated attributes.
+
+### 46.4 Array disks with the file system on a partition were "blank" — and Format would have wiped them
+`disks.cfg` stores the whole disk (`/dev/disk/by-id/ata-…`); disks prepared by Unraid/TrueNAS/any partitioner have XFS on
+`sdX1`. Every check ran `blkid` on the whole disk, so start logged "has no filesystem — skipping", mounted nothing (empty
+`/mnt/user`, Docker stopped), and **Main offered Format, whose `mkfs.xfs -f <whole disk>` would have destroyed the
+partitions and the data.** Fix: `helix-array-lib.sh` `fs_device`/`fs_type` (whole disk, else its only partition with a
+file system) used by array start (parity/data/cache), `helix-array-status`; `array.py` `_blkid_type` same rule +
+`_has_partitions`; `helix-disk-format` skips any disk with a partition table, partitions or a signature (`disk_in_use`);
+the state machine lists such disks as "Disk did not mount" with no Format button. Test: `array/test/test-partitioned-disks.sh`
+(loop devices, ext4: partition found, whole-disk fs kept, blank disk formats, data on the partitioned disk survives).
+Trap: `sgdisk -q` silently wrote nothing on this machine; drop `-q`.
+
+### 46.5 Docker (and VM state) went to the first data disk, not the one holding the data
+`helix-array-start` put `data-root` on the cache or else `DATA_MNTS[0]`. On this box the 32 containers lived on disk2,
+so Docker came up empty on disk1 ("containers are gone"). `system_disk <docker|libvirt>` in the lib picks the mounted disk
+whose `system/<sub>` already has data (for docker: a non-empty `containers/` only; Docker creates an empty
+`image/overlay2` skeleton the first time it starts on a disk, which fooled the first version), else cache, else first
+data disk. Used by array start (Docker) and `helix-vm-start` (libvirt). Verified on the box: containers back after Stop/Start.
+
+### 46.6 Boot splash never exits → systemd blocked
+On that box `plymouthd` was still running 40+ minutes after boot with the console redirected to it; PID 1 sat in
+`n_tty_write` (`redirected_tty_write`), so every `systemctl` call timed out ("Transport endpoint is not connected"),
+apt postinsts hung and backend restarts silently did not happen. `plymouth quit` and SIGTERM did nothing; `kill -KILL`
+on plymouthd released the console and PID 1 went back to `epoll_wait`. **Not fixed in the repo** (§37 assumed
+`plymouth-quit.service` ends it). Symptom check on any box: `pgrep plymouthd` after boot, `cat /proc/1/wchan`.
+
+### 46.7 Still open
+- Build + boot-test an image with §46.1 (then bump VERSION; ship as 3.3.5) — ZFS is lost at every reboot until then.
+- Fix §46.6 properly (quit/kill plymouthd at the end of boot, and find why it stops reading).
+- ZFS page "Available drives" lists array disks as free (compares `disks.cfg` by-id paths with `/dev/sdX`).
+- The box's disk2 carries an old `snapraid.parity` file (shows at the top of `/mnt/user`); the user intends two data disks.
+
+## 47. ZFS safety net: helix-zfs-ensure (2026-11-15, user request: "better a backup than a feature that does not work")
+`array/sbin/helix-zfs-ensure` (installed to /usr/local/sbin; root) is the **one** ZFS install path:
+- **Image build:** `build.sh` runs it in the chroot as `--build --kver <rootfs kernel>` (replaces the inline step of §46.1).
+- **Every boot:** `helix-zfs-ensure.service` (hook 03; After=network-online, *not* Before the array, so a compile never
+  delays array start; TimeoutStartSec=45min). 1) zpool present and module loads → done (~0.4 s). 2) else install the
+  saved copy `$HELIX_CONFIG/zfs/cache/<kernel>/*.deb` (offline). 3) else add bookworm-backports, install zfsutils,
+  `linux-headers-<kernel>` + zfs-dkms, `dkms install -k <kernel>`, pack the .ko files as `helix-zfs-modules`, purge
+  dkms/headers/compiler, save a copy (`apt-get download` of the installed zfs-linux packages + the module deb, ~3.7 MB;
+  other kernels' copies are deleted). Then, if the array is started, `zfs_import_recorded` (now in helix-array-lib.sh,
+  shared with array start) + `helix-shares-apply`, so pools and their shares come back without a restart.
+- **ZFS page:** when unavailable shows the install state, "Install ZFS now" (`POST /api/zfs/install`, `--force` if ZFS
+  already works) and "Show log" (`GET /api/zfs/install?log=true`, `/var/log/helix-zfs.log`); polls every 5 s while
+  installing. Status file `$STATE_DIR/zfs_install.json`.
+- Fails with a clear message when Debian no longer has headers for the running kernel (old image): update Helix then.
+- **Tested on 192.168.50.142:** normal case (ready, pool untouched), full path via the API (copy saved, dkms/headers
+  purged, module in `extra/zfs`), saved .debs reinstall cleanly; zfs-import-scan/cache stay disabled. **Not tested:** a
+  real boot without ZFS (restore-from-copy at boot, and the boot service itself, which only exists in a built image),
+  and the `--build` mode inside an image build.
+- Trap: `apt-get install --download-only` skips already-installed packages, so it cannot build the saved copy.
+
+## 48. Dashboard: one tile per ZFS pool (2026-11-15)
+`pollZfsTiles()` (every 15 s, skipped while the tab is hidden) adds a `.stat-tile.zfs-tile` (`data-tile-id="zfs-<pool>"`)
+to `#stats-row` for each imported pool, after the Array tile, and removes it when the pool is exported; draggable like the
+others (a saved order is applied, an unknown pool tile stays next to Array); click opens `#zfs` (not in Customize mode).
+Shows health (ONLINE green; DEGRADED or resilvering orange; anything else red, also the accent corner), **usable** space
+from `zfs list -Hp -d 0 -o name,used,avail` (`zpool list` counts raidz parity: 40 TB raw vs 28.9 TB usable on the 4 × 10 TB
+raidz1), a usage bar (≥90 red, ≥70 orange), a second bar + "Resilvering 8.7% · 21:30:12 left" while a scrub/resilver runs,
+else "Last scrub|resilver <date> · N errors" / "Never scrubbed", and the `errors:` line when it is not "No known data
+errors". API: `/api/zfs/pools` adds `size_bytes/alloc_bytes/free_bytes`, `scan` (`_parse_scan`) and `errors`.
+Checked by rendering `_zfsTileHtml` in Node with the box's live data and invented degraded/error cases; not clicked in a browser.
+
+## 49. /mnt/user vanished on every backend restart (2026-11-15)
+Symptom: app install failed "cannot create the folder /mnt/user/appdata/<app> … Permission denied"; `/mnt/user` was an
+empty `root:root 755` folder, no mergerfs process. Cause: array start runs from the backend (`sudo` from
+helix-backend.service), so the mergerfs FUSE daemon lived in **helix-backend.service's cgroup**; `KillMode=control-group`
+killed it at every backend restart (OTA, crash, `vmsh.py --push-dev`). Containers started before that keep a dead bind
+mount until they are restarted. Fix: `start_user_share` in helix-array-lib.sh (used by helix-array-start and
+helix-disk-format) runs mergerfs under `systemd-run --scope --collect --unit=helix-user-share-<ts>`; it checks
+`mountpoint` afterwards and logs an error if the share did not mount. The ZFS page's install job runs in its own scope for
+the same reason. Verified with a throwaway service: the scoped child survives `systemctl stop`, a plain child does not.
+**Rule:** any long-lived process started from the backend (daemons, FUSE, long jobs) must get its own unit or scope.
+Follow-up: Main showed "Started" with nothing wrong while /mnt/user was down, so the user retried the install instead of
+restarting the array. `/api/array/operation` now adds a red "User share is not mounted" row (started + a data disk mounted
++ `/mnt/user` not a mount point), and `POST /api/apps/install` answers 409 "The user share /mnt/user is not mounted … Stop
+and start the array" when an app folder is under /mnt/user (`_require_user_share`).
+
+## 50. Jellyfin Plex templates could never install (2026-11-15)
+All six `builtin-templates/jellyfin-plex-*.json` (commits 2f7a509/ac7159e) wrote compose-style `$VAR` placeholders, but
+Helix substitutes `{{VAR}}`, and gave healthcheck durations as numbers. docker-compose rejected the file ("ports contains
+an invalid type … healthcheck.timeout … should be a string"), which the UI showed as a port problem. Fixed both ways:
+the templates now use `{{VAR}}` and `"30s"`, and `routers/apps.py` tolerates them anyway: `_substitute_vars` also
+replaces `${KEY}`/`$KEY` for *declared* keys (longest first, `$$` left alone), `_fix_healthchecks` turns numbers into
+`"<n>s"`, and `_dedupe_volumes` keeps one mapping per container path, the user's extra folder winning (the user mapped
+PlexMedia on `/media`, the template also has `$MEDIA_PATH:/media:ro`). Verified on the box: the generated file passes
+`docker-compose config -q` with the user's saved extras.
+**Still blocking the install:** the image `ghcr.io/yo-repo87/jellyfin-plex-enhancement:integrated-latest` is not pullable
+anonymously (ghcr.io will not issue an anonymous token: private or never published; the repo
+`yo-repo87/Jellyfin_Plex_Enhancement` is not visible to the public API either), unlike `jellyfin-enhanced:latest`, which is.
+Checked again with an authenticated owner token (2026-11-15): the registry answers `NAME_UNKNOWN` for
+`yo-repo87/jellyfin-plex-enhancement` (never pushed, not merely private), and the account has no repository with that
+project's source (none of its 50 repos; nothing on this machine either). The six templates point at an image that was
+never built, so there is nothing to make public. They need a real image (source + a build workflow like
+`Jellyfin_Enhanced`'s) or must be removed or pointed at `jellyfin-enhanced`.
+Rule: before adding a catalog entry, check `curl "https://ghcr.io/token?service=ghcr.io&scope=repository:<owner>/<pkg>:pull"`
+returns a token and `/v2/<owner>/<pkg>/tags/list` lists the tag. (Docker 20.10's `docker manifest inspect` wrongly says
+"no such manifest" for multi-arch OCI images; do not use it as the check.)
+
+## 51. Claude Code on a Helix box (2026-11-15, user request)
+Installed on 192.168.50.142 for the `helix` user (the web terminal runs `bash --login` as `helix`) with Anthropic's
+native installer, but onto the array so it survives the RAM root: `~/.local/share/claude` -> `/mnt/user/appdata/claude-code/share`
+(binary + versions, auto-updates land there too) and `CLAUDE_CONFIG_DIR=/mnt/user/appdata/claude-code/config` (login and
+settings). `/etc/profile.d/helix-claude.sh` (repo: `array/profile.d/helix-claude.sh`, installed by hook 03) recreates the
+links and PATH at every login and does nothing when that folder is absent. Until an image with it ships, after a reboot run
+`sudo install -m 644 /mnt/user/appdata/claude-code/helix-claude.sh /etc/profile.d/` once (a copy is kept there), then open a
+new terminal. Needs the array started (`/mnt/user`).
+
+## 52. Code for §46–§51 recovered from the running server (2026-11-17)
+§46–§51 came from `latefix.md` (merged 2026-11-17, then deleted). Their code was never committed or pushed: `main` =
+`helix-os/main` = `b1ab1a2`, and the clone at `/home/helix/HelixOS/helix-os` is clean at the same commit. **This
+checkout lives on 192.168.50.142 itself** (hostname `Tower`; `/mnt/user/docker-projects/HelixOS/UnraidProject` is on the
+array). The only copy of the newer code was what was running in that box's RAM root (`/opt/helix`, `/usr/local/sbin`),
+which a reboot would have erased.
+
+**Copied back into the repo (uncommitted).** Every file passed `py_compile`, `bash -n` or `json.tool`, and `webui/backend` + `webui/frontend` now
+match `/opt/helix` exactly:
+
+| Repo file | What the running copy adds (checked against §46–§51) |
+|---|---|
+| `webui/backend/routers/zfs.py` | §46.2/§47/§48: `_check_pool_name`, `_zfs_state`, `_load_pools`/`_remember_pool` (pools.json), `_import` (`-N -R /mnt`), `_parse_import_scan`, `_parse_scan`, `_pool_bytes`, install endpoints, `share_pool`/`_share_targets`/`_pool_shares` |
+| `webui/backend/routers/apps.py` | §49/§50: `_require_user_share`, `_fix_healthchecks`, `_dedupe_volumes`, `$VAR`/`${VAR}` substitution |
+| `webui/backend/routers/array.py` | §46.4: `_has_partitions`, partition-aware `_blkid_type`, `user_share_down` |
+| `webui/backend/services/array_state.py` | §46.4/§49: "Disk did not mount" (no Format for disks with a file system or partitions), "User share is not mounted" row |
+| `webui/backend/routers/shares.py` | §46.2: honours `path=` (ZFS shares) for size and the Connect panel's NFS lines (Connect panel detail not mentioned in §46) |
+| `webui/frontend/index.html` | §46.3 `_modalFns`, §47 ZFS install panel, §46.2 share dialog, §48 `pollZfsTiles`/`_zfsTileHtml` |
+| `webui/backend/data/builtin-templates/jellyfin-plex-*.json` (6) | §50: `{{VAR}}` placeholders and `"30s"` durations |
+| `array/sbin/helix-array-lib.sh` | `fs_device`, `fs_type`, `disk_in_use`, `system_disk`, `zfs_import_recorded`, `start_user_share` |
+| `array/sbin/helix-array-start`, `-status`, `-vm-start`, `-disk-format` | use those helpers; recorded pools only; Docker/libvirt on the disk that already holds them |
+| `array/sbin/helix-array-stop` | dropped the global `zfs umount -a` (`zpool export` unmounts only its own pool). Not mentioned in §46 |
+| `shares/helix-samba-apply`, `helix-nfs-apply` | `path=` under `/mnt`, only while it is a real mount |
+| `array/sbin/helix-zfs-ensure` (new) | §47 |
+| `array/profile.d/helix-claude.sh` (new) | §51 |
+
+**Still missing: these files lived only in the lost working tree, so they must be rewritten from the §46–§51 notes:**
+- `build/build.sh`: the step that runs `helix-zfs-ensure --build --kver <rootfs kernel>` in the chroot (§46.1/§47).
+- `build/hooks/03-helix-install.sh`: install `helix-zfs-ensure` and create `helix-zfs-ensure.service`
+  (After=network-online, not Before the array, TimeoutStartSec=45min). It must also install `array/profile.d/helix-claude.sh` to
+  `/etc/profile.d/`. That unit is not on the box either: the box was hot-pushed, never imaged.
+- `array/test/test-partitioned-disks.sh` (§46.4).
+- Until those exist, an image build ships none of §46.1/§47/§51 even though the scripts are in the repo.
+
+Uncommitted state of this checkout otherwise: ~160 files with only a mode change (644→755, `core.fileMode=true`), plus
+`packages-base.list` +`gcc`, `packages-full.list` (zfsutils/nut commented out, `docker-compose-plugin`→`docker-compose`,
+`php8.2-json` dropped) and `launch.sh` cut from 52 to 2 lines. There are also many untracked files (migration scripts,
+`iso-staging/`, `output/`, `.cache/`, `.local/`, `.npm/`). Commit by path, never `git add -A`.
+
+## 53. NVIDIA GPUs for Plex on 192.168.50.142 (2026-11-15 → 11-17): first real run of the NVIDIA add-in
+Done in Claude Code sessions started from `/home/helix` (transcripts under
+`/mnt/user/appdata/claude-code/config/projects/-home-helix/`), not from this project, so §46–§51 never mention it.
+That session's own notes are in `/home/helix/plex_transcode.md` (RAM root: copy it before a reboot if it matters).
+Hardware: 2 × GeForce RTX 3050 (GA106, PCI 10:00.0 and 21:00.0), Debian driver 535.261.03, container toolkit 1.20.2.
+This is the first time §40's NVIDIA add-in ran on real hardware. **All three §40 risks happened, and so did four
+gaps §40 didn't foresee.**
+
+### 53.1 What broke and how it was fixed (timeline)
+| When | Symptom | Cause | Fix (manual unless noted) |
+|---|---|---|---|
+| 11-15 23:18 | Add-in install stopped at the `dpkg -i` step; 14 packages left unconfigured (`nvidia-driver`, `nvidia-smi`, `nvidia-kernel-dkms`…), `dkms status` empty | Not captured. `cmd_install` died in STEP 4, so **STEP 5 (post actions) and `save_state` never ran: no `addins.json`, no `entry.json`** | Re-ran `dpkg --force-confold -i archives/*.deb`; DKMS built for 6.1.0-50 |
+| 11-15 23:22 | `modprobe nvidia` → "No NVIDIA devices probed" | nouveau had already bound both GPUs (§40 risk 2) | `modprobe -r nouveau; modprobe nvidia`. `nvidia-blacklists-nouveau.conf` is installed but is in the RAM root, so it is too late at every boot |
+| 11-15 23:40 | Plex had no GPU | Docker had no `nvidia` runtime (the `docker-nvidia-runtime` post action never ran, see 23:18); Plex compose had no `runtime: nvidia` | `nvidia-ctk runtime configure --runtime=docker` + Docker restart; compose: `runtime: nvidia`, `NVIDIA_VISIBLE_DEVICES=all`, `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` |
+| 11-15 23:48 | `nvidia-smi` OK in the container, still no GPU in Plex | **The add-in's package list lacks the NVENC/NVDEC/CUDA user libraries** (`nvidia-driver` with `--no-install-recommends` does not pull them) | `apt-get install libcuda1 libnvidia-encode1 libnvcuvid1` (535.261.03) |
+| 11-15 23:49 | — | Helix only has compose v1 | Docker Compose v5.7.1 plugin downloaded to `/usr/local/lib/docker/cli-plugins/` (RAM root, not apt-managed) |
+| 11-16 00:04 | Plex transcoder: `Cannot load libcuda.so.1` | Debian puts the libs in `/usr/lib/x86_64-linux-gnu/nvidia/current/`; Plex's musl transcoder only searches standard paths | linuxserver init hook `10-nvidia-links.sh` symlinks libcuda/libnvcuvid/libnvidia-encode/libnvidia-ml into the standard path at every container start. NVDEC+NVENC verified on both GPUs; both GPUs listed in Plex |
+| 11-16 00:17, 00:22 | Plex offline / GPUs gone | **Install/Configure in the Helix UI regenerates the compose file from `extras.json`+`vars.json`**: GPU lines, init mount and the `/media` mapping were dropped. `runtime:` cannot be expressed in `extras.json` at all | `extras.json` now carries the NVIDIA env vars and both mounts (PlexMedia→`/media`, `/boot/config/plex-gpu/init`→`/custom-cont-init.d:ro`); the init script moved to `/boot/config/plex-gpu/init/` (the UI wipes the app folder) |
+| 11-16 00:48 | — | Checkmk said "can't start until the array starts" while the array was up: it was started at boot before the disks were mounted and never retried, and its container held a stale disk1 path from an older Docker data-root | Recreated only the Checkmk container on its existing volume. **Not fixed in code** (see 53.4) |
+| 11-16 00:48 | — | Reboot persistence | 7 extra .debs copied into the add-in archive (58 total; dry-run clean) |
+| 11-16 20:19 | — | Add-in reinstalled from the UI: `cmd_install` **deletes the archive's .debs, then `--download-only` downloads nothing because everything is installed** (the §47 trap), and fails "no packages in the cache" | **Not fixed. The archive is now empty** (`/mnt/disk1/system/addins/nvidia/archives`) |
+| 11-16 20:51–21:04 | Guard repaired Plex 3 times (libcuda not loadable), reached its 3/hour limit, last fix OK | Probably the same UI/Docker churn | Automatic |
+| 11-17 04:00 | — | User request | `/tv` mount (`/mnt/user/smoke-share/media`, empty) removed from the live compose; the folder was deleted |
+
+### 53.2 `helix-gpu-guard` (site-specific watchdog, not in the repo)
+Source of truth is the flash, `/boot/config/plex-gpu/`: `helix-gpu-guard.py`, `install-gpu-guard.sh`,
+`docker-compose.golden.yml` (known-good Plex compose), `init/10-nvidia-links.sh`, and `docker-compose.replaced.<ts>.bak` copies of
+files it replaced. `/boot/config/go` runs the installer at every boot (via `helix-startup.service`; backup `go.bak-gpu-guard`),
+which installs `/usr/local/sbin/helix-gpu-guard`, the monitoring local check `/usr/local/lib/helix/monitor/local/gpu_guard`
+and `helix-gpu-guard.timer` (OnBootSec=3min, every 60 s, `heal`).
+- `check` → four Checkmk services on host Tower: `GPU host`, `GPU docker runtime`, `Plex GPU passthrough`, `Plex GPU auto-fix`
+  (WARN for a day after an auto-fix). Hard-coded: container `plex-helix-os`, `WANT_GPUS=2`.
+- `heal`: fewer than 2 host GPUs → unload nouveau, load nvidia. Docker without the nvidia runtime → CRITICAL only (never
+  restarts Docker). Plex wrong runtime / <2 GPUs / libcuda unreadable / empty `/media` → copy the golden compose over the app's
+  compose and `docker compose up -d --force-recreate` that one container; skips containers younger than 90 s; at most 3 fixes
+  per hour. State: `/var/local/helix/gpu_guard.json`.
+- Tested in that session by restoring the UI-generated compose: repaired unattended in ~2 min. Live check on 2026-11-17:
+  all four services OK.
+
+### 53.3 Open problems found while reconciling (2026-11-17, nothing changed on the box)
+1. **A reboot will lose the NVIDIA setup.** The add-in archive is empty and there is no `addins.json` record, so
+   `helix-addin restore` (run by `helix-array-start`) does nothing. Driver, DKMS module, `libcuda1` and friends,
+   `daemon.json` runtime and the compose v2 plugin are all in the RAM root. Then the guard's `modprobe nvidia` fails,
+   Plex (`runtime: nvidia`) cannot start, and the guard's `docker compose` call fails because the plugin is gone. Before a
+   reboot: re-fill the archive (`apt-get download` the installed nvidia packages, or copy from `/var/cache/apt/archives`)
+   **and** write the `addins.json` record (or fix `helix-addin`, item 3).
+2. **`daemon.json` is rewritten by `helix-array-start`** with only `data-root` (`printf …> /etc/docker/daemon.json`), which
+   drops the `nvidia` runtime. The add-in's restore re-adds it with `nvidia-ctk` and restarts Docker; so at every array
+   start Docker comes up without the runtime first, and Plex fails until restore finishes.
+3. **`helix-addin` fixes needed:** (a) record state/`entry.json` before or independently of post actions, so a failure in
+   STEP 4/5 does not orphan an install; (b) never delete the cached .debs before a successful new download, and build the
+   cache with `apt-get download` (or `--reinstall`) so it works when the packages are already installed; (c) add
+   `libcuda1`, `libnvidia-encode1`, `libnvcuvid1` (and `nvidia-persistenced`, `libnvidia-cfg1`,
+   `libnvidia-ptxjitcompiler1`, `libnvidia-pkcs11-openssl3`) to the NVIDIA manifest in
+   `webui/backend/data/addins/index.json`; (d) blacklist nouveau before udev binds it (initramfs/kernel command line
+   `modprobe.blacklist=nouveau` when the add-in is installed), or keep `swap-nouveau` at restore.
+4. **Apps:** the Helix app form/compose generator cannot express `runtime: nvidia` or a GPU device request, so any
+   UI save breaks GPU apps; Unraid's equivalent is `--runtime=nvidia` in Extra Parameters. Add a "NVIDIA GPU" container
+   option (next to the existing `/dev/dri` one in §40's Container options) that writes `runtime: nvidia` + the two env vars.
+5. **Golden compose is stale.** `docker-compose.golden.yml` still maps `/mnt/user/smoke-share/media:/tv`, which the
+   user removed on 11-17 (folder deleted). The next guard repair will bring the mount back and Docker will recreate the
+   folder as root. Copy the live compose over the golden one (the guard's own rule) after confirming with the user.
+6. **Checkmk at boot** (53.1, 11-16 00:48): `helix-monitor start` runs from array start but did not retry once Docker
+   was up; the "can't start until the array starts" message is wrong when the array is started.
+7. Site-specific: the Docker Compose v5.7.1 plugin is not in the image. The guard uses `docker compose` and Helix apps use
+   `docker-compose` v1 (§29.3).
+
+*Last updated: 2026-11-17.*
+
+## 54. Plan: native Nginx Proxy Manager replacing the plain nginx (started 2026-11-17)
+**Goal (from the user):** NPM's features in the Helix UI: proxy hosts, redirects, streams, access lists, and Let's Encrypt with DNS challenges (Cloudflare and other providers, wildcards, auto-renew). It runs natively, not as a container, so the web server never depends on the array or Docker.
+
+**Why native, not a container:** Docker only runs while the array is started. A containerised NPM holding 80/443 would lock you out of the UI whenever the array is stopped or the container dies. Natively, OpenResty (the proxy) and NPM's Node backend (the manager) are separate processes. If the manager is down, nginx keeps serving the existing hosts and the Helix UI.
+
+**Persistence:** data goes on **HELIXDATA (`/mnt/data/npm`, ext4)**, not the FAT `/boot`. FAT has no symlinks, which certbot's `live/` → `archive/` needs. It has no permissions, so private keys and DNS tokens would be readable by everyone. SQLite on it is unsafe on power loss. Logs stay in RAM (`/var/log`) to spare the flash. Without HELIXDATA (ISO booted as a CD), Helix keeps working with plain OpenResty and the proxy page says hosts need writable media.
+
+**Phases**
+1. **OpenResty replaces Debian nginx** (this section, done below). Helix's layout (`/etc/nginx/{nginx.conf,conf.d,sites-enabled,snippets,helix-https.d}`), the unit name `nginx.service` and the `nginx` command all stay, so `helix-gen-cert`, `proxy.py`, `ssl.py` and the build-time `nginx -t` checks work unchanged.
+2. **HELIXDATA layout + mount:** early in boot, bind `/mnt/data/npm/data` → `/data` and `/mnt/data/npm/letsencrypt` → `/etc/letsencrypt` (root 700), before nginx starts. Fallback when HELIXDATA is absent.
+3. **NPM built into the image:** pinned NPM release; the frontend is built at image build time (Node + yarn in the build, not shipped), and the backend ships with Node and its production `node_modules` (`sqlite3` native module for both architectures; arm64 under qemu is slow). Use NPM's own `nginx.conf`/templates adapted to the paths above; `npm-backend.service` (Node) bound to 127.0.0.1:81 for the API, admin UI LAN-only. Expect +200–300 MB of squashfs, so the same amount of extra RAM.
+4. **certbot + DNS plugins pre-installed** in a venv in the image (Cloudflare at least, plus the common ones). NPM normally `pip install`s a plugin on first use, which would land in the RAM root and break every renewal after a reboot. Renewal is NPM's own timer; check it survives a reboot.
+5. **Helix UI is protected:** Helix's default server (UI, `/cmk/`, `/netdata/`, WebSocket headers, upload size) is a fixed include NPM cannot edit; NPM's "default site" setting must not replace it. The UI also listens on a fallback port at all times. NPM runs `nginx -t` before every reload.
+6. **Helix integration over NPM's REST API** (`/api/tokens`, `/api/nginx/proxy-hosts`, `/api/nginx/certificates`, `/api/nginx/dns-providers` style endpoints): generated admin account + token (like Checkmk, §36), Rev. Proxy page lists and edits hosts, Cloudflare token setup once, "Expose this app" on the Docker page and in the app install form (domain → host + certificate, upstream filled from the container). Full NPM UI as an embedded tab with automatic sign-in. Replaces `routers/proxy.py` routes and `ssl.py`'s `certbot --standalone`; migrate existing `proxy_routes.json` entries into NPM once.
+7. **Optional:** managed `cloudflared` tunnel for people who cannot forward ports.
+
+**Prerequisite before any host is exposed to the internet:** the Helix REST API is unauthenticated (§29.4). Add login (at least for non-LAN requests), and refuse to create a public host whose upstream is Helix itself.
+
+### 54.1 Phase 1: OpenResty (2026-11-17)
+- `build.sh` adds OpenResty's apt repo (`openresty.org/package[/arm64]/debian bookworm openresty`, key `pubkey.gpg` saved as `/usr/share/keyrings/openresty.asc`), fatal on failure like Tailscale. `packages-base.list`: `nginx` → `openresty`.
+- Hook 03 purges Debian `nginx*` on a reused rootfs, then installs `/usr/sbin/nginx`, a wrapper that runs `/usr/local/openresty/nginx/sbin/nginx -p /var/lib/nginx/ -c /etc/nginx/nginx.conf -e /var/log/nginx/error.log`, so the process is still named `nginx` (`pgrep -x nginx`) and every caller is unchanged. It writes Helix's own `/etc/nginx/nginx.conf`, previously supplied by Debian's package (mime types from OpenResty, `user www-data`, `pid /run/nginx.pid`, temp paths under `/var/lib/nginx`). It adds its own `nginx.service`, keeping Debian's `nginx -t` ExecStartPre so `helix-gen-cert.service` ordering still matters, plus tmpfiles for `/var/log/nginx` and `/var/lib/nginx` and a logrotate entry. The package's `openresty.service` is disabled and masked so it can never grab port 80 with its default config.
+- Trap: the openresty package's postinst runs `invoke-rc.d openresty start`. That is harmless in the chroot, the same as Debian nginx's.
+- **Tested (amd64, 2026-11-17):** in a `debian:bookworm` container, OpenResty 1.31.8.1 came from the repo and the hook's web-server, site and cert sections ran unchanged. Both build-time `nginx -t` checks passed (with the cert and HTTP-only). Started as `nginx.service` does: the master runs as root and the workers as `www-data`, all named `nginx`. HTTP and HTTPS reached a stand-in backend on 8082, a 2 MB POST arrived whole (no 413), and `nginx -s reload` and `quit` worked. `openresty.service` → `/dev/null`. **Not yet tested:** a full image build and boot (systemd ordering with `helix-gen-cert.service`, tmpfiles), and arm64 (the repo has the package; nothing ran).
+- Next: Phase 2 (HELIXDATA layout and bind mounts).
+
+### 54.2 Phase 2: HELIXDATA storage (2026-11-17)
+- `proxy/helix-npm-storage` is a new repo folder `proxy/` (copied by `build.sh`, pushed by `vmsh.py --push-dev`), installed to `/usr/local/sbin`. It runs from `helix-npm-prepare.service` (first `ExecStart`; the unit was `helix-npm-storage.service` until phase 3), which runs After `helix-firstboot` and Before `nginx`; nginx `Wants` it through a drop-in. It never fails the boot.
+- With HELIXDATA mounted read-write as ext4/xfs/btrfs at `/mnt/data`, it creates `/mnt/data/npm/{data,letsencrypt}` (`npm` root 700, `data` root:www-data 2750 because nginx workers read access lists and ACME files) and bind-mounts them on `/data` and `/etc/letsencrypt`. The binds are all or nothing: if the second fails, the first is undone. Anything already written to those RAM folders is copied across without overwriting. `/data/logs` is a symlink to `/var/log/npm` (RAM, recreated each boot), so per-host logs never touch the flash. Anything else (no HELIXDATA, FAT, tmpfs, read-only) writes `mode=ram` with the reason to `/run/helix/npm-storage` and mounts nothing. `helix-npm-storage status` prints that file. Phase 3 will start NPM only on `mode=persistent`.
+- Because `/etc/letsencrypt` is now persistent, Debian's certbot (`ssl.py`) benefits too.
+- **Tested:** `proxy/test/test-npm-storage.sh`, 15 checks in a privileged `debian:bookworm` container with an ext4 loop image as HELIXDATA. Covered: no partition, tmpfs, read-only → ram; persistent mounts; merge; modes; logs in RAM; idempotent rerun; data back after a simulated reboot. **Not tested:** the systemd ordering in a booted image.
+
+### 54.3 Phase 3: NPM built into the image (2026-11-17)
+**Files** (all in `proxy/`, installed by hook 03):
+- `npm.env`: pins. NPM 2.17.0 (tarball sha256), Node 26.13.1 (checked against nodejs.org SHASUMS256), yarn 1.22.22, certbot 5.10.0, the pre-installed DNS plugins, `NPM_BACKEND_PORT=3781`, `NPM_ADMIN_PORT=81`. Node, certbot and OpenResty match NPM's own base image (`nginxproxymanager/nginx-full:certbot-node`).
+- `install-npm.sh` (in the chroot, everything fatal) builds the following:
+  - Node into `/opt/npm/node`, with npm, corepack and headers removed afterwards.
+  - The admin UI into `/opt/npm/frontend`, using upstream's `yarn install && yarn locale-compile && yarn build`. Without `locale-compile` the build fails.
+  - The backend and its production modules into `/opt/npm/backend`. `sqlite3` is compiled from source because its prebuilt binary needs glibc 2.38 and bookworm has 2.36.
+  - certbot and the DNS plugins into the venv `/opt/certbot`.
+  - NPM's nginx includes into `/etc/nginx/conf.d/include`, plus `mime.types` and `/etc/letsencrypt.ini`.
+  - `make`/`g++` are installed temporarily and purged again. `libatomic1` (needed by Node) is marked manual and is in `packages-base.list`, because purging g++ removed it once and Node then would not start. The script finally checks that Node and the native modules still load without the build tools.
+- **Three upstream patches**, each refusing to apply if upstream's text changed:
+  1. The API binds `127.0.0.1:$NPM_BACKEND_PORT`. Upstream binds 3000 on every interface, which would put it on the LAN and clash with containers that publish 3000.
+  2. NPM's "Default Site" template drops `default`, so it can never take the default server from the Helix UI.
+  3. The admin block (`production.conf`) proxies to that port and includes `/etc/nginx/helix-lan-only.conf` (private ranges, Tailscale `100.64/10`, ULA and link-local IPv6; a LAN client on a global IPv6 address is refused).
+- `nginx.conf` is NPM's, adapted:
+  - Helix's `sites-enabled` site is the default server.
+  - The master runs as root and the workers as `www-data`, with `pid /run/nginx.pid` and daemon mode set by the unit.
+  - Every `/data` include is optional.
+  - NPM's http-level log format uses `$server`, which only `set` declares, so `snippets/helix-proxy.conf` sets `$server`/`$port`. Without that, nginx rejects the config while no NPM host exists.
+- `helix-npm-setup` (second `ExecStart` of `helix-npm-prepare.service`):
+  - Always: creates the `/data/...` folders nginx includes and the cache folders, and writes `resolvers.conf`.
+  - Only with `mode=persistent`, and not when `/data/.helix-npm-disabled` exists:
+    - writes `production.conf` (root 600) with a fresh peer secret;
+    - generates the first-run admin once, as `/data/helix-admin.json` (root 600, `admin@helix.local` + random password), and passes it as `INITIAL_ADMIN_*`;
+    - writes `/run/npm/env` and creates `/run/npm/enabled`.
+- `helix-npm.service` (`ConditionPathExists=/run/npm/enabled`, `Restart=always`) runs the backend as root. NPM writes nginx config and reloads nginx, and its admin can add custom nginx config (Lua in the root master), so it is root-equivalent anyway.
+- The phase-1 inline `nginx.conf` heredoc in hook 03 was replaced by `proxy/nginx.conf`. Logrotate also covers `/var/log/npm`.
+
+**DNS plugins:** 16 are pre-installed: cloudflare, route53, digitalocean, ovh, duckdns, porkbun, namecheap, gandi, linode, hetzner, godaddy, ionos, desec, dnsimple, rfc2136, azure.
+- powerdns conflicts with the others in one venv; it installs on its own.
+- google adds 125 MB for one provider.
+- Both are left to NPM's install-on-first-use, which lands in the RAM root and is lost at reboot until phase 4.
+- Measured sizes: certbot 55 MB, cloudflare +119 MB (Cloudflare's SDK), route53 +31 MB, ovh +13 MB, the rest 0–6 MB.
+- `/opt/npm` is 265 MB and `/opt/certbot` 162 MB uncompressed (282 MB with google). Expect the squashfs, and RAM, to grow by a fraction of that.
+
+**Tested:** `proxy/test/test-npm.sh` (needs Docker; about 6 minutes on amd64) passes 19 of 19. It runs hook 03's web-server, site and certificate sections as written in a privileged `debian:bookworm` container, which builds NPM. It uses an ext4 loop image as HELIXDATA and starts nginx and the backend as their units do. It checks:
+- the build-time `nginx -t`, build tools removed, the Cloudflare plugin present;
+- storage persistent, NPM enabled, the admin file root 600;
+- the API on loopback and not on the LAN address, the admin UI and its API on :81;
+- the Helix UI still the default on :80 and :443;
+- sign-in with the generated admin, and a proxy host created through the API with its config landing on HELIXDATA;
+- `app.test` routed while the bare address still reaches the Helix UI, and per-host logs kept in RAM;
+- NPM "Default Site = 404" cannot take over the UI;
+- with the backend killed, nginx still serves the host.
+
+**Not tested:** a real image build and boot (systemd ordering: firstboot → prepare → gen-cert/nginx → helix-npm), arm64 (its `sqlite3` compile under qemu will be slow), a real Let's Encrypt or DNS-challenge certificate.
+
+**Traps found:**
+- `build.sh` only skips whole-line comments in package lists. An inline `pkg # note` passes `#` and the words to apt.
+- `docker run` needs `-i` to read a script from stdin; without it the test silently does nothing.

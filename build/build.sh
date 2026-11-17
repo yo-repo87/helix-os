@@ -131,6 +131,17 @@ curl -fsSL --retry 3 "$TS_BASE/bookworm.noarmor.gpg" -o "$ROOTFS_DIR/usr/share/k
   && curl -fsSL --retry 3 "$TS_BASE/bookworm.tailscale-keyring.list" -o "$ROOTFS_DIR/etc/apt/sources.list.d/tailscale.list" \
   || { echo "ERROR: could not fetch the Tailscale apt repository" >&2; exit 1; }
 
+# OpenResty (nginx + LuaJIT, what Nginx Proxy Manager is built for) replaces Debian's nginx (CLAUDE.md §54).
+# Its repo uses a separate path for arm64. Fatal on failure: an image without a web server has no UI.
+case "$ARCH" in
+    amd64) OR_REPO=https://openresty.org/package/debian ;;
+    arm64) OR_REPO=https://openresty.org/package/arm64/debian ;;
+    *) echo "ERROR: no OpenResty repository for $ARCH" >&2; exit 1 ;;
+esac
+curl -fsSL --retry 3 https://openresty.org/package/pubkey.gpg -o "$ROOTFS_DIR/usr/share/keyrings/openresty.asc" \
+  || { echo "ERROR: could not fetch the OpenResty signing key" >&2; exit 1; }
+echo "deb [signed-by=/usr/share/keyrings/openresty.asc] $OR_REPO bookworm openresty" > "$ROOTFS_DIR/etc/apt/sources.list.d/openresty.list"
+
 chroot "$ROOTFS_DIR" /bin/bash -c "
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -168,7 +179,7 @@ fi
 # Copy helper script trees the hooks install into the image (network bring-up,
 # array/share/gpu helpers). Without these the services that reference
 # /usr/local/sbin/helix-* fail at boot (e.g. no network config is applied).
-for helper in network array shares gpu checkmk addins; do
+for helper in network array shares gpu checkmk addins proxy; do
     if [ -d "$SCRIPT_DIR/../$helper" ]; then
         echo "  Copying $helper/ into chroot..."
         rm -rf "$ROOTFS_DIR/build/$helper"

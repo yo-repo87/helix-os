@@ -17,6 +17,7 @@ mount $L /mnt/data
 mkdir -p /etc/letsencrypt; echo pre > /etc/letsencrypt/pre.txt     # written to RAM before the service ran
 sh $P >/dev/null
 ok "ext4 -> persistent" "st persistent"
+ok "state file readable by the backend (644)" "[ \"\$(stat -c %a /run/helix/npm-storage)\" = 644 ]"
 ok "/data is a mount" "mountpoint -q /data"
 ok "/etc/letsencrypt is a mount" "mountpoint -q /etc/letsencrypt"
 ok "earlier RAM content merged" "[ \"\$(cat /etc/letsencrypt/pre.txt)\" = pre ]"

@@ -29,7 +29,7 @@ log() { echo "[helix-npm-storage] $*"; }
 write_state() {   # mode reason
     mkdir -p "$(dirname "$STATE_FILE")"
     printf 'mode=%s\nreason=%s\ndata=%s\nletsencrypt=%s\n' "$1" "$2" "$DATA_DIR" "$LE_DIR" > "$STATE_FILE.tmp" \
-        && mv "$STATE_FILE.tmp" "$STATE_FILE"
+        && chmod 644 "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"   # the helix backend reads it
     log "$1: $2"
 }
 

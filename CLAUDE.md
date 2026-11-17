@@ -2503,3 +2503,15 @@ diff /tmp/amd64.actual <(grep -A0 'amd64.*sha256' helix-release.json)
 3. Compare to `helix-release.json` → MUST match exactly
 4. If mismatch found, regenerate manifest and re-upload immediately
 
+
+## 56. Add-ins: "Register existing install" (adopt), transcoding libs, apt-source conflict (2026-11-17)
+On 192.168.50.142 the GPU tab kept offering **Install (~400 MB)** for NVIDIA although the driver + container toolkit were already installed by hand (§53). `addins.json` had no record, so `/api/addins/?page=gpu` reported `installed:false`. Re-running the upstream container-toolkit instructions then added a second apt source for `nvidia.github.io/libnvidia-container` with a different `signed-by` key than the add-in's, and every `apt-get update` failed with `Conflicting values set for option Signed-By`.
+
+**Fixes:**
+1. **apt unblocked:** removed the duplicate `/etc/apt/sources.list.d/nvidia-container-toolkit.list` + its keyring; the add-in's own `helix-nvidia-*` sources stay. Rule: an add-in adds one source file per repo (`helix-<id>-<name>.list`); do not also run a vendor's manual repo snippet, or apt sees the same URL twice with two keys and refuses.
+2. **`helix-addin adopt <id>` (new):** registers an add-in whose packages are already installed, caching the installed `.deb`s and recording it so `restore` brings it back at every boot — covering both a manual install and §53's orphaned install (where `cmd_install` died after `dpkg` but before recording). `fill_cache()` keeps only the dependency-closure packages the OS image does not already ship (diffed against the image's own dpkg status, read from `/boot/boot/filesystem.squashfs`), at the exact installed version, built in `archives.new` and swapped in atomically. `cmd_install` now records **before** the post-install actions.
+3. **Manifest v2:** NVIDIA also installs `libcuda1`, `libnvcuvid1`, `libnvidia-encode1` (CUDA/NVDEC/NVENC for Plex/Jellyfin transcoding — `nvidia-driver` omits them under `--no-install-recommends`, §53) and `nvidia-persistenced`. The catalog is fetched live from `raw.githubusercontent.com/.../main/...`, so this must be on `main` to take effect (cached up to an hour under `STATE_DIR/addins`).
+4. **UI:** `list_addins` returns `can_adopt:true` when an add-in's packages are all installed but unrecorded; the GPU card then shows **Register existing install** (`POST /api/addins/{id}/adopt`).
+
+**Verified on the box:** adopt cached 119 packages (267 MB) incl. the four transcoding libs, recorded version 2; `dpkg --simulate -i archives/*.deb` resolves with no dependency breaks (the boot restore path); the tab shows **Installed**. Deployed live into `/opt/helix` + `/usr/local/sbin` (RAM until an image ships).
+**Trap:** editing `index.json` via `json.load`/`json.dump` reformats the whole file; edit the text in place.

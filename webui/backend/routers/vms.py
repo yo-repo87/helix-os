@@ -194,7 +194,7 @@ def _create_disks(spec: dict, storage: str) -> list[str]:
     """Create vDisk images that do not exist yet. Returns the files created (so a failed create can clean up)."""
     made = []
     n = 0
-    for d in spec["disks"]:
+    for d in spec.get("disks", []):            # a CD-only / live-boot VM has no disks
         n += 1
         if d.get("type") == "block":
             continue

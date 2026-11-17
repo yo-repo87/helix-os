@@ -80,7 +80,11 @@ def compute(i: dict) -> dict:
     # ── started ──
     ctr = int(i.get("containers_running") or 0)
     formatting = bool(i.get("formatting"))
-    unmountable = list(i.get("unmountable") or [])
+    # A disk that did not mount but already has a file system or partitions holds (or held)
+    # data: it is reported, never offered for Format. Only blank disks can be formatted.
+    not_mounted = list(i.get("unmountable") or [])
+    has_data = [d for d in not_mounted if d.get("fstype") or d.get("has_partitions")]
+    unmountable = [d for d in not_mounted if d not in has_data]
     format_error = (i.get("format_error") or "").strip()
     if formatting or busy_parity or busy_mover:
         if formatting:
@@ -94,8 +98,15 @@ def compute(i: dict) -> dict:
             f"Disabled — {why}. Wait for it to finish{extra}; stopping now could corrupt data.", level="busy" if formatting else "ok")
     else:
         note = f" {ctr} running container{'s' if ctr != 1 else ''} will be stopped." if ctr else ""
-        row("array", "Started", "Stop", "stop", True,
-            "Stop will stop Docker and file sharing, unmount all disks and take the array offline." + note, level="ok")
+        if i.get("slot_mismatch"):
+            row("array", "Started", "Stop", "stop", True,
+                "Stop will stop Docker and file sharing, unmount all disks and take the array offline." + note,
+                warn="disks.cfg no longer matches the mounted disks (see below). Starting the array again would "
+                     "mount disks under different names.",
+                confirm="Yes, stop anyway", level="warn")
+        else:
+            row("array", "Started", "Stop", "stop", True,
+                "Stop will stop Docker and file sharing, unmount all disks and take the array offline." + note, level="ok")
 
     if formatting:
         row("format", "Started, formatting…", "Format", "format", False,
@@ -114,6 +125,30 @@ def compute(i: dict) -> dict:
             "Format" if unmountable else None, "format" if unmountable else None, True,
             explain, confirm="Yes, I want to do this" if unmountable else None,
             level="warn" if unmountable else "error", detail=detail, confirm_warn=bool(unmountable))
+
+    if i.get("user_share_down"):
+        row("user_share", "User share is not mounted", None, None, False,
+            "The data disks are mounted but /mnt/user is not, so shares, apps and the file browser see an "
+            "empty folder (nothing is lost; the files are on the disks). Stop and start the array to mount it again.",
+            level="error")
+
+    if i.get("slot_mismatch"):
+        detail = [f"{m['name']}: disks.cfg names {m['configured']}, but {m['mounted']} is mounted there"
+                  for m in i["slot_mismatch"]]
+        row("slot_mismatch", "Disk assignments do not match the mounted disks", None, None, False,
+            "disks.cfg was changed while the array was running. If the array is stopped and started like this, "
+            "these disks will be mounted under different names and paths such as /mnt/disk1 will point at other "
+            "disks. Put each disk back in its slot before stopping the array; earlier versions of disks.cfg are "
+            "in disks.cfg.history next to it.",
+            level="error", detail=detail)
+
+    if has_data:
+        detail = [f"{d.get('name', '')} · {d.get('device_real') or d.get('device', '')}"
+                  + (f" · {d['fstype']}" if d.get("fstype") else " · has partitions") for d in has_data]
+        row("not_mounted", "Disk did not mount" if len(has_data) == 1 else "Disks did not mount", None, None, False,
+            "These disks already have a file system or partitions, so Helix will not format them. "
+            "Stop and start the array to try mounting them again; /var/log/helix-array.log says why it failed.",
+            level="error", detail=detail)
 
     if busy_parity:
         el = i.get("parity_elapsed")

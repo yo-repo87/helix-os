@@ -317,6 +317,16 @@ main {
 .array-state-badge.started { background: var(--ok-dim); color: var(--ok); }
 .array-state-badge.stopped { background: var(--err-dim); color: var(--err); }
 .array-state-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* ZFS pool tiles on the dashboard (one per imported pool) */
+.zfs-tile { cursor: pointer; }
+.customize-mode .zfs-tile { cursor: default; }
+.zfs-tile .zfs-name { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 500; line-height: 1.1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zfs-health { font-size: 10px; font-weight: 600; letter-spacing: .04em; padding: 2px 7px; border-radius: 3px; }
+.zfs-health.ok   { background: var(--ok-dim);   color: var(--ok); }
+.zfs-health.warn { background: var(--warn-dim); color: var(--warn); }
+.zfs-health.err  { background: var(--err-dim);  color: var(--err); }
+.zfs-tile .stat-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Drive tiles ───────────────────────────────────────────────── */
 .drives-grid {
@@ -2831,12 +2841,26 @@ async function saveInlineAssign() {
       if (msg) { msg.style.color = 'var(--warn)'; msg.textContent = d.error || 'Could not save.'; }
       return;
     }
-    if (msg) { msg.style.color = 'var(--ok)'; msg.textContent = `Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache.`; }
+    if (msg) { msg.style.color = 'var(--ok)'; msg.textContent = `Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache.` + assignSummary(d); }
     _freeAt = 0;
     setTimeout(refresh, 400);
   } catch (e) {
     if (msg) { msg.style.color = 'var(--err)'; msg.textContent = e.message || String(e); }
   }
+}
+
+// What a save did to the slots (CLAUDE.md §55): existing disks keep theirs, so only new disks and
+// disks kept while not connected are worth naming.
+function assignSummary(d) {
+  if (!d || !d.slots) return '';
+  const short = dev => String(dev).split('/').pop();
+  const added = (d.added || []).map(dev => {
+    const s = d.slots.find(x => x.device === dev);
+    return `${short(dev)} → ${s ? s.slot : '?'}`;
+  });
+  const kept = (d.kept_missing || []).map(x => x.slot);
+  return (added.length ? ` New: ${added.join(', ')}.` : '') +
+         (kept.length ? ` Kept while not connected: ${kept.join(', ')}.` : '');
 }
 
 function shareWhere() {
@@ -4178,7 +4202,7 @@ async function apiKeyCreate() {
     openModal('API Key Created', `
       <p style="font-size:12px;margin-bottom:8px">Your new API key — save it now, it will not be shown again:</p>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;font-family:monospace;font-size:12px;word-break:break-all;user-select:all">${d.token}</div>
-    `, [{label:'Close', action:'close', onclick: () => loadApiKeys()}]);
+    `, [{label:'Close', onclick: () => { closeModal(); loadApiKeys(); }}]);
   } else {
     showToast('Failed to create API key: ' + (d.detail || d.error), 'warn');
   }
@@ -5177,7 +5201,7 @@ async function aopAct(action) {
     } else if (action === 'stop') {
       const row = (await apiFetch('/api/array/operation')).rows[0];
       if (!confirm(row.explain + '\n\nStop the array?')) return;
-      await fetchJSON('/api/array/stop', {method: 'POST'});
+      await fetchJSON('/api/array/stop?confirm=' + _aopConfirmed, {method: 'POST'});
     } else if (action === 'parity_sync') { startParityStream(false); return; }
     else if (action === 'parity_scrub') { startParityStream(true); return; }
     else if (action === 'parity_cancel') { stopParity(); }
@@ -5267,7 +5291,7 @@ async function applyDiskAssign() {
       return;
     }
     if (res) { res.style.color = 'var(--ok)'; res.innerHTML =
-      `✓ Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache. Click <strong>Start Array</strong> to bring it online.`; }
+      `✓ Saved: ${parity.length} parity, ${data.length} data, ${cache.length} cache.${_esc(assignSummary(d))} Click <strong>Start Array</strong> to bring it online.`; }
     setTimeout(refresh, 800);
   } catch (e) {
     if (res) { res.style.color = 'var(--err)'; res.textContent = `Error: ${e}`; }
@@ -5275,11 +5299,21 @@ async function applyDiskAssign() {
 }
 
 // openModal(title, bodyHtml, [{label, primary, danger, onclick}])
+// A button's onclick may be a string of JS (put into the attribute as-is) or a function.
+// Functions used to be pasted into the attribute as their source text, which never ran:
+// every dialog passing `onclick: async () => …` or `onclick: closeModal` had dead buttons.
+window._modalFns = [];
 function openModal(title, bodyHtml, buttons = []) {
+  window._modalFns = [];
   const actionsHtml = buttons.map(b => {
     const cls   = 'settings-btn' + (b.primary ? ' primary' : '');
     const style = b.danger ? ' style="color:var(--err);border-color:var(--err)"' : '';
-    return `<button class="${cls}"${style} onclick="${b.onclick}">${b.label}</button>`;
+    let handler = b.onclick || '';
+    if (typeof handler === 'function') {
+      window._modalFns.push(handler);
+      handler = `window._modalFns[${window._modalFns.length - 1}]()`;   // no event: closeModal() closes
+    }
+    return `<button class="${cls}"${style} onclick="${String(handler).replace(/"/g, '&quot;')}">${b.label}</button>`;
   }).join('');
   showModal(title, bodyHtml, actionsHtml);
 }
@@ -6179,6 +6213,84 @@ function _gpuSubLine(g) {
   if (g.temp_c != null) parts.push(`${g.temp_c}°C`);
   if (g.power_w != null) parts.push(`${g.power_w}W`);
   return parts.join(' · ') || '';
+}
+
+// ── ZFS pool tiles: one dashboard tile per imported pool ─────────────────────
+// Health: ONLINE green; DEGRADED / resilvering orange; FAULTED, UNAVAIL, SUSPENDED red.
+// Usage colours follow the array tile (>=90 red, >=70 orange).
+function _zfsTileHtml(p) {
+  const pct = p.size_bytes ? Math.round(p.alloc_bytes / p.size_bytes * 100) : (p.cap_pct ?? 0);
+  const sc = p.scan || {};
+  const bad = !['ONLINE', 'DEGRADED'].includes(p.health);
+  const health = bad ? 'err' : (p.health === 'DEGRADED' || (sc.active && sc.op === 'resilver')) ? 'warn' : 'ok';
+  const use = pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok';
+  const used = p.size_bytes ? `${fmtBytesBin(p.alloc_bytes)} used of ${fmtBytesBin(p.size_bytes)} (${pct}%)`
+                            : `${p.alloc} used of ${p.size} (${pct}%)`;
+  let activity;
+  if (sc.active) {
+    const what = sc.op === 'resilver' ? 'Resilvering' : 'Scrubbing';
+    activity = `${what}${sc.pct != null ? ' ' + sc.pct.toFixed(1) + '%' : '…'}${sc.eta ? ' · ' + sc.eta + ' left' : ''}`;
+  } else if (sc.op === 'scrub' || sc.op === 'resilver') {
+    const when = (sc.text.match(/ on (.+)$/) || [])[1];
+    const errs = (sc.text.match(/with (\d+) errors?/) || [])[1];
+    activity = `Last ${sc.op}${when ? ' ' + when.replace(/\s+\d\d:\d\d:\d\d/, '') : ''}${errs != null ? ` · ${errs} error${errs === '1' ? '' : 's'}` : ''}`;
+  } else {
+    activity = sc.text === 'none requested' ? 'Never scrubbed' : (sc.text || '');
+  }
+  const errLine = p.errors && p.errors !== 'No known data errors' ? p.errors : '';
+  return `
+    <div class="tile-drag-handle" title="Drag to reorder">⠿</div>
+    <div class="stat-label">ZFS pool</div>
+    <div style="display:flex;align-items:center;gap:8px;min-width:0">
+      <span class="zfs-name" title="${_esc(p.name)}">${_esc(p.name)}</span>
+      <span class="zfs-health ${health}">${_esc(p.health)}</span>
+    </div>
+    <div class="stat-sub" title="${_esc(used)}">${_esc(used)}</div>
+    <div class="stat-bar"><div class="stat-bar-fill ${use}" style="width:${Math.min(100, pct)}%"></div></div>
+    ${sc.active && sc.pct != null ? `<div class="stat-bar" title="${_esc(sc.text)}"><div class="stat-bar-fill warn" style="width:${Math.min(100, sc.pct)}%"></div></div>` : ''}
+    <div class="stat-sub" title="${_esc(sc.text || '')}" style="color:var(--${sc.active ? 'warn' : 'fg-muted'})">${_esc(activity)}</div>
+    ${errLine ? `<div class="stat-sub" style="color:var(--err)" title="${_esc(errLine)}">${_esc(errLine)}</div>` : ''}
+    <div class="accent-corner" style="background:var(--${health})"></div>`;
+}
+
+async function pollZfsTiles() {
+  const row = document.getElementById('stats-row');
+  if (!row || document.hidden) return;
+  let pools = [];
+  try {
+    const d = await fetchJSON('/api/zfs/pools');
+    pools = d.available ? d.pools : [];
+  } catch { return; }                      // keep what is shown on a failed poll
+  const want = new Set(pools.map(p => 'zfs-' + p.name));
+  row.querySelectorAll('.zfs-tile').forEach(t => { if (!want.has(t.dataset.tileId)) t.remove(); });   // exported pools
+  let added = false;
+  for (const p of pools) {
+    const id = 'zfs-' + p.name;
+    let tile = row.querySelector(`[data-tile-id="${CSS.escape(id)}"]`);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'stat-tile zfs-tile';
+      tile.dataset.tileId = id;
+      tile.onclick = () => { if (!_customizeActive) location.hash = '#zfs'; };
+      const after = [...row.querySelectorAll('.zfs-tile')].pop() || row.querySelector('[data-tile-id="array"]');
+      after ? after.after(tile) : row.appendChild(tile);
+      added = true;
+    }
+    tile.title = `Open the ZFS page for ${p.name}`;
+    tile.innerHTML = _zfsTileHtml(p);
+  }
+  if (added) {
+    // Apply a saved tile order; a pool tile it does not know stays next to the array tile.
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem('helix_tile_order') || '[]') || []; } catch {}
+    _restoreTileOrder();
+    const arrayTile = row.querySelector('[data-tile-id="array"]');
+    pools.forEach(p => {
+      const t = row.querySelector(`[data-tile-id="${CSS.escape('zfs-' + p.name)}"]`);
+      if (t && !saved.includes('zfs-' + p.name) && arrayTile) arrayTile.after(t);
+    });
+    if (_customizeActive) _attachDragListeners();
+  }
 }
 
 async function pollGPU() {
@@ -8259,7 +8371,11 @@ async function loadZfs() {
       fetchJSON('/api/zfs/available-drives').catch(() => null)
     ]);
 
-    if (!pools_data.available) { unavail && (unavail.hidden = false); list.innerHTML = ''; return; }
+    if (!pools_data.available) {
+      if (unavail) { unavail.hidden = false; zfsRenderInstall(unavail, pools_data.reason, pools_data.install || {}); }
+      list.innerHTML = ''; return;
+    }
+    clearTimeout(window._zfsInstallTimer);
 
     unavail && (unavail.hidden = true);
 
@@ -8291,8 +8407,12 @@ async function loadZfs() {
           <span style="font-size:11px;color:var(--fg-muted)"><span style="width:80px;display:inline-block;background:var(--border);border-radius:2px;height:6px;position:relative">
             <span style="display:block;background:var(--${p.colour});height:100%;width:${p.cap_pct}%;border-radius:2px"></span>
           </span> ${p.cap}%</span>
-          <span style="font-size:11px;color:var(--fg-muted)">${p.alloc} / ${p.size} · frag ${p.frag}</span>
+          <span style="font-size:11px;color:var(--fg-muted)">${p.alloc} / ${p.size} · frag ${p.frag}${p.mountpoint ? ' · ' + _esc(p.mountpoint) : ''}</span>
+          ${(p.shares || []).length
+            ? `<span style="font-size:11px;color:var(--fg-muted)">Shared as ${p.shares.map(_esc).join(', ')}</span>`
+            : `<span style="font-size:11px;padding:2px 7px;border-radius:3px;background:var(--warn-dim);color:var(--warn)">Not shared</span>`}
           <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+            <button class="ctr-btn" onclick="zfsShareDialog('${_esc(p.name)}', false)">Share…</button>
             <button class="ctr-btn" onclick="zfsScrub('${p.name}')">Scrub</button>
             <button class="ctr-btn" onclick="zfsExpandPool('${p.name}')">+ Drives</button>
             <button class="ctr-btn" onclick="loadZfsSnaps('${p.name}')">Snapshots</button>
@@ -8308,6 +8428,44 @@ async function loadZfs() {
   } catch(e) { list.innerHTML = `<div style="color:var(--err);padding:20px">${e.message}</div>`; }
 }
 
+// ZFS missing: helix-zfs-ensure installs it at boot (or from this button). Show where it is.
+function zfsRenderInstall(el, reason, st) {
+  const installing = st.state === 'installing' && st.running;
+  const msg = installing ? st.message
+    : st.state === 'failed' ? `The last ZFS install failed: ${st.message}`
+    : (reason || 'ZFS is not available on this system.');
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px;max-width:720px">
+      <div style="color:var(--${installing ? 'fg' : st.state === 'failed' ? 'err' : 'fg-muted'})">${installing ? '⏳ ' : ''}${_esc(msg)}</div>
+      ${installing ? '' : `<div style="font-size:12px;color:var(--fg-dim)">Helix OS can download ZFS and build it for this machine's kernel (a few minutes, needs the internet). A copy is kept on the boot device, so later boots install it without the network.</div>`}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${installing ? '' : `<button class="settings-btn primary" onclick="zfsInstall()">Install ZFS now</button>`}
+        <button class="settings-btn" onclick="zfsInstallLog()">Show log</button>
+      </div>
+      <pre id="zfs-install-log" hidden style="max-height:260px;overflow:auto;font-size:11px;background:var(--bg);padding:8px;border-radius:4px;white-space:pre-wrap"></pre>
+    </div>`;
+  clearTimeout(window._zfsInstallTimer);
+  if (installing) window._zfsInstallTimer = setTimeout(() => { if (location.hash.startsWith('#zfs')) loadZfs(); }, 5000);
+}
+
+async function zfsInstall() {
+  try {
+    await fetchJSON('/api/zfs/install', {method: 'POST'});
+    showToast('Installing ZFS… this can take a few minutes.');
+    setTimeout(loadZfs, 1500);
+  } catch(e) { showToast(`Could not start the ZFS install: ${e.message}`, true); }
+}
+
+async function zfsInstallLog() {
+  const pre = document.getElementById('zfs-install-log');
+  if (!pre) return;
+  try {
+    const st = await fetchJSON('/api/zfs/install?log=true');
+    pre.textContent = (st.log || []).join('') || '(the log is empty)';
+    pre.hidden = false; pre.scrollTop = pre.scrollHeight;
+  } catch(e) { pre.textContent = e.message; pre.hidden = false; }
+}
+
 async function showZfsDiscover() {
   const panel = document.getElementById('zfs-discover-panel');
   const list = document.getElementById('zfs-discover-list');
@@ -8316,32 +8474,95 @@ async function showZfsDiscover() {
   list.innerHTML = 'Scanning for importable pools…';
   try {
     const d = await fetchJSON('/api/zfs/discover');
+    if (!d.available) { list.textContent = d.reason || 'ZFS is not available on this system.'; return; }
     if (!d.discovered.length) {
-      list.innerHTML = '<div style="color:var(--fg-dim);font-size:11px">No importable pools found.</div>';
+      list.innerHTML = `<div style="color:var(--fg-dim);font-size:11px">No importable pools found.${d.error ? ' ' + _esc(d.error) : ''}</div>`;
       return;
     }
     list.innerHTML = d.discovered.map(p => `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px;margin-bottom:6px;background:var(--bg);border-radius:4px">
-        <div>
-          <div style="font-weight:600;font-size:12px">${p.name}</div>
-          <div style="font-size:11px;color:var(--fg-dim)">${p.state || 'Unknown state'}</div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:8px;margin-bottom:6px;background:var(--bg);border-radius:4px">
+        <div style="min-width:0">
+          <div style="font-weight:600;font-size:12px">${_esc(p.name)} <span style="font-weight:400;color:var(--${p.importable ? 'ok' : 'err'})">${_esc(p.state || 'Unknown state')}</span></div>
+          <div style="font-size:11px;color:var(--fg-dim)">${(p.devices || []).map(x => _esc(x.name)).join(', ')}</div>
+          ${p.status ? `<div style="font-size:11px;color:var(--fg-muted);margin-top:4px">${_esc(p.status)}</div>` : ''}
+          ${!p.importable && p.action ? `<div style="font-size:11px;color:var(--warn);margin-top:2px">${_esc(p.action)}</div>` : ''}
         </div>
-        <button class="settings-btn primary" onclick="zfsImportPool('${p.name}')" style="font-size:11px">Import</button>
+        ${p.importable ? `<button class="settings-btn primary" onclick="zfsImportPool('${_esc(p.name)}')" style="font-size:11px;flex-shrink:0">Import</button>` : ''}
       </div>`).join('');
   } catch(e) { list.innerHTML = `<div style="color:var(--err);font-size:11px">${e.message}</div>`; }
 }
 
-async function zfsImportPool(pool) {
+// One dialog for "Import" and for "Share…" on an imported pool: sharing is pre-selected,
+// so an imported pool is shared unless the user says otherwise.
+function zfsShareDialog(pool, importing) {
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:12px;font-size:12px">
+      ${importing ? `<div>Pool <b>${_esc(pool)}</b> is mounted under /mnt (a TrueNAS pool appears at /mnt/${_esc(pool)}) and imported again every time the array starts. Nothing on the pool is changed. Do not import a pool that another running computer is still using.</div>` : ''}
+      <div style="font-weight:600">Share it on the network</div>
+      <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="zsh-mode" value="datasets" checked>
+        <span>One share per dataset <span style="color:var(--fg-dim)">(e.g. PlexMedia, PhotoBackups; system datasets are left out)</span></span></label>
+      <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="zsh-mode" value="pool">
+        <span>The whole pool as one share named <b>${_esc(pool)}</b></span></label>
+      <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="zsh-mode" value="none">
+        <span>Don't share it ${importing ? '(import only)' : ''}</span></label>
+      <div id="zsh-opts" style="display:flex;flex-direction:column;gap:8px;padding-left:2px">
+        <label>SMB access
+          <select class="form-input" id="zsh-sec" style="margin-top:4px">
+            <option value="public">Public: anyone on the network can read and change files</option>
+            <option value="private">Private: only Helix users with a Samba password</option>
+          </select></label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="zsh-nfs"> Also export over NFS</label>
+      </div>
+      <div style="color:var(--fg-dim)">Shares stay configured when the pool is removed and return when it is imported again. Change or delete them on the Shares page.</div>
+    </div>`;
+  openModal(importing ? `Import ZFS pool ${pool}` : `Share ZFS pool ${pool}`, body, [
+    {label: importing ? 'Import' : 'Share', primary: true, onclick: async () => {
+      const mode = document.querySelector('input[name="zsh-mode"]:checked').value;
+      const opts = {mode, smb_security: document.getElementById('zsh-sec').value, nfs: document.getElementById('zsh-nfs').checked};
+      closeModal();
+      if (importing) await zfsDoImport(pool, opts);
+      else if (mode !== 'none') await zfsDoShare(pool, opts);
+    }},
+    {label: 'Cancel', onclick: closeModal}
+  ]);
+  document.querySelectorAll('input[name="zsh-mode"]').forEach(r => r.onchange = () => {
+    document.getElementById('zsh-opts').style.opacity = document.querySelector('input[name="zsh-mode"]:checked').value === 'none' ? .4 : 1;
+  });
+}
+
+function _zfsShareMsg(r) {
+  if (!r) return '';
+  if (r.error) return ` Shares were not created: ${r.error}`;
+  let m = r.created && r.created.length ? ` Shared as ${r.created.join(', ')}.` : '';
+  if (r.skipped && r.skipped.length) m += ` Not shared: ${r.skipped.map(x => `${x.name} (${x.reason})`).join('; ')}.`;
+  if (r.apply_error) m += ` Share services reported: ${r.apply_error}`;
+  return m;
+}
+
+function zfsImportPool(pool) { zfsShareDialog(pool, true); }
+
+async function zfsDoImport(pool, share) {
+  showToast(`Importing ${pool}…`);
   try {
-    await fetchJSON('/api/zfs/import', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pool})
+    const r = await fetchJSON('/api/zfs/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pool, share})
     });
-    showToast(`Pool ${pool} imported and added as a share`);
+    const sm = _zfsShareMsg(r.shares);
+    showToast(`Imported ${pool} at ${r.mountpoint}.${sm}`, !!(r.shares && (r.shares.error || (r.shares.skipped || []).length)));
     loadZfs();
-    showZfsDiscover(); // Refresh discover panel
+    showZfsDiscover();
   } catch(e) { showToast(`Import failed: ${e.message}`, true); }
+}
+
+async function zfsDoShare(pool, opts) {
+  try {
+    const r = await fetchJSON(`/api/zfs/pools/${encodeURIComponent(pool)}/share`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(opts)
+    });
+    showToast((r.created.length ? '' : `Nothing new to share on ${pool}.`) + _zfsShareMsg(r), !r.created.length);
+    loadZfs();
+  } catch(e) { showToast(`Share failed: ${e.message}`, true); }
 }
 
 async function zfsScrub(pool) {
@@ -8409,14 +8630,14 @@ function zfsConfirmDestroy(pool) {
       <div style="font-size:13px;color:var(--fg)">To confirm pool removal, type the pool name:</div>
       <div style="font-family:monospace;font-size:14px;font-weight:700;background:var(--surface);padding:8px;border-radius:4px;text-align:center">${pool}</div>
       <input class="form-input" id="zp-confirm" placeholder="Type pool name" style="font-family:monospace">
-      <div style="font-size:11px;color:var(--warn)">⚠ All data on this pool will be lost.</div>
+      <div style="font-size:11px;color:var(--fg-muted)">The pool is exported: Helix stops using it, and its data stays on the disks. Its shares go offline and come back when you import it again with Discover.</div>
     </div>`;
   openModal(`Remove Pool`, body, [
     {label:'Remove Pool', primary:true, onclick: async () => {
       const confirm_val = document.getElementById('zp-confirm').value;
       if (confirm_val !== pool) { showToast('Pool name does not match', true); return; }
       try {
-        await fetchJSON(`/api/zfs/pools/${pool}`, {method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:pool})});
+        await fetchJSON(`/api/zfs/pools/${encodeURIComponent(pool)}?confirm=${encodeURIComponent(confirm_val)}`, {method:'DELETE'});
         closeModal(); loadZfs(); showToast(`Pool ${pool} removed`);
       } catch(e) { showToast(`Error: ${e.message}`, true); }
     }},
@@ -9174,6 +9395,8 @@ pollUPS();
 setInterval(pollUPS, 60000);
 pollGPU();
 setInterval(pollGPU, 10000);
+pollZfsTiles();
+setInterval(pollZfsTiles, 15000);
 pollCheckmk();
 setInterval(pollCheckmk, 30000);
 pollMoverStatus();

@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import asyncio, glob, subprocess, os, json, re, tempfile, time
 from config import HELIX_CONFIG, ARRAY_SBIN, ARRAY_STATE, DISKS_CFG, MNT_BASE, USER_SHARE, STATE_DIR
-from services import array_state, disks_cfg
+from services import array_state, disks_cfg, disk_slots
 
 router = APIRouter(prefix="/api/array", tags=["array"])
 
@@ -228,12 +228,29 @@ def _assigned_disks() -> list[dict]:
 
 
 def _blkid_type(dev: str) -> str:
+    """File system type of a disk: on the whole disk (Helix's own Format), or on its
+    only partition that has one (a disk prepared by Unraid, TrueNAS or a partitioning
+    tool: sdb1). Same rule as fs_device in helix-array-lib.sh."""
     try:
         r = subprocess.run(["blkid", "-s", "TYPE", "-o", "value", dev],
                            capture_output=True, text=True, timeout=5)
-        return (r.stdout or "").strip()
+        if (r.stdout or "").strip():
+            return r.stdout.strip()
+        r = subprocess.run(["lsblk", "-nrpo", "NAME,TYPE,FSTYPE", dev],
+                           capture_output=True, text=True, timeout=5)
+        parts = [l.split() for l in r.stdout.splitlines()]
+        fs = [p[2] for p in parts if len(p) >= 3 and p[1] == "part" and p[2]]
+        return fs[0] if len(fs) == 1 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def _has_partitions(dev: str) -> bool:
+    try:
+        r = subprocess.run(["lsblk", "-nrpo", "NAME,TYPE", dev], capture_output=True, text=True, timeout=5)
+        return any(l.split()[1:2] == ["part"] for l in r.stdout.splitlines())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _path_mounted(path: str) -> bool:
@@ -270,7 +287,8 @@ def _unmountable() -> list[dict]:
         if _disk_mounted(d["device"], d["name"]):
             continue
         real = os.path.realpath(d["device"])
-        out.append({**d, "device_real": real, "fstype": _blkid_type(real)})
+        out.append({**d, "device_real": real, "fstype": _blkid_type(real),
+                    "has_partitions": _has_partitions(real)})
     return out
 
 
@@ -341,6 +359,11 @@ def _operation() -> dict:
         "mover_running": _mover_running(), "synced": _parity_synced(),
         "containers_running": _containers_running() if state == "started" else 0,
         "unmountable": _unmountable() if state == "started" else [],
+        # Started, a data disk is mounted, but mergerfs is gone: /mnt/user is an empty RAM folder.
+        "user_share_down": state == "started" and not os.path.ismount(USER_SHARE)
+                           and any(os.path.ismount(os.path.join(MNT_BASE, d["name"]))
+                                   for d in _assigned_disks() if d["role"] == "data"),
+        "slot_mismatch": _slot_mismatches() if state == "started" else [],
         "formatting": fmt_state == "running",
         "format_error": fmt_err if fmt_state == "error" else "",
     })
@@ -365,12 +388,14 @@ def array_start(background_tasks: BackgroundTasks, confirm: bool = False):
     return {"ok": True, "message": "Array start initiated"}
 
 @router.post("/stop")
-def array_stop(background_tasks: BackgroundTasks):
+def array_stop(background_tasks: BackgroundTasks, confirm: bool = False):
     if _array_state() == "stopped":
         return {"ok": True, "message": "Array already stopped"}
     row = _operation()["rows"][0]
     if row["button"] and not row["button"]["enabled"]:
         raise HTTPException(409, row["explain"])
+    if row.get("confirm") and not confirm:            # e.g. disks.cfg no longer matches the mounted disks
+        raise HTTPException(409, f"Confirmation required: {row['confirm']}. {row.get('warn') or ''}".strip())
     background_tasks.add_task(_run_job, "stopping", "helix-array-stop")
     return {"ok": True, "message": "Array stop initiated"}
 
@@ -512,11 +537,48 @@ class AssignReq(BaseModel):
     cache:  list[str] = []   # device paths for cache/pool drives (fast write cache)
     fmt:    str = "xfs"      # filesystem for data disks
     cache_fmt: str = "btrfs" # filesystem for cache drives (btrfs supports pools)
+    # Assigned disks that are not connected stay assigned unless listed here (CLAUDE.md §55).
+    remove_missing: list[str] = []
+
+
+DISKS_HISTORY = os.path.join(os.path.dirname(DISKS_CFG), "disks.cfg.history")
+DISKS_HISTORY_KEEP = 30
+
+
+def _backup_disks_cfg() -> str:
+    """Copy the current disks.cfg to disks.cfg.history/disks.cfg.<timestamp> before it is
+    replaced, keeping the newest DISKS_HISTORY_KEEP. Returns '' or an error string."""
+    if not os.path.exists(DISKS_CFG):
+        return ""
+    try:
+        os.makedirs(DISKS_HISTORY, exist_ok=True)
+        dst = os.path.join(DISKS_HISTORY, "disks.cfg." + time.strftime("%Y%m%d-%H%M%S"))
+        with open(DISKS_CFG) as src, open(dst, "w") as out:
+            out.write(src.read())
+        old = sorted(glob.glob(os.path.join(DISKS_HISTORY, "disks.cfg.*")))
+        for f in old[:-DISKS_HISTORY_KEEP]:
+            os.unlink(f)
+        return ""
+    except OSError as e:
+        # Same fallback as the write itself: /boot may be root-owned.
+        try:
+            dst = os.path.join(DISKS_HISTORY, "disks.cfg." + time.strftime("%Y%m%d-%H%M%S"))
+            subprocess.run(["sudo", "-n", "mkdir", "-p", DISKS_HISTORY], capture_output=True, timeout=10)
+            r = subprocess.run(["sudo", "-n", "cp", DISKS_CFG, dst], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                return ""
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return f"cannot back up {DISKS_CFG} to {DISKS_HISTORY}: {e}"
 
 
 def _write_disks_cfg(content: str) -> str:
     """Write disks.cfg; fall back to sudo since the backend is unprivileged and
-    /boot is usually root-owned. Returns '' on success or an error string."""
+    /boot is usually root-owned. Returns '' on success or an error string.
+    The previous version is kept in disks.cfg.history first; no backup, no write."""
+    err = _backup_disks_cfg()
+    if err:
+        return err
     try:
         os.makedirs(os.path.dirname(DISKS_CFG), exist_ok=True)
         with open(DISKS_CFG, "w") as f:
@@ -552,9 +614,6 @@ def _refresh_drive_cache() -> None:
 def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     """Persist a parity/data disk assignment to disks.cfg (reboot-safe on a
     writable boot medium). Does not start the array — call /start after."""
-    all_devs = req.parity + req.data + req.cache
-    if len(set(all_devs)) != len(all_devs):
-        raise HTTPException(400, "A device was assigned to more than one slot.")
     saved = disks_cfg.formats_by_device(_cfg_text())
     resolved = {}
     for dev, fmt in saved.items():
@@ -568,13 +627,26 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
     req.parity = [_stable_path(d) for d in req.parity]
     req.data   = [_stable_path(d) for d in req.data]
     req.cache  = [_stable_path(d) for d in req.cache]
+    # Slots never follow the order of the request (CLAUDE.md §55): an assigned disk keeps its slot,
+    # new disks are numbered after the highest slot kept, missing disks stay unless named.
+    current = [(d["name"], d["device"]) for d in _assigned_disks()]
+    try:
+        plan = disk_slots.plan(current, {"parity": req.parity, "data": req.data, "cache": req.cache},
+                               key=_disk_key, present=os.path.exists, remove_missing=req.remove_missing)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    state = _array_state()
+    if state != "stopped" and (plan["moved"] or plan["removed"]):
+        what = [f"{dev} would move from {a} to {b}" for dev, a, b in plan["moved"]] + \
+               [f"{dev} would be removed" for dev in plan["removed"]]
+        return {"ok": False, "error":
+                "Stop the array to remove a disk or change its role. While the array is running only new "
+                "disks can be added (they get the next free slot). " + "; ".join(what) + "."}
+    fmt_default = {"parity": "xfs", "data": req.fmt, "cache": req.cache_fmt}
     lines = ["# Helix OS — Disk Assignment (managed by the web UI)", ""]
-    for i, dev in enumerate(req.parity, 1):
-        lines += [f"[parity{i}]", f"device={dev}", f"format={keep(dev, 'xfs')}", ""]
-    for i, dev in enumerate(req.data, 1):
-        lines += [f"[disk{i}]", f"device={dev}", f"format={keep(dev, req.fmt)}", ""]
-    for i, dev in enumerate(req.cache, 1):
-        lines += [f"[cache{i}]", f"device={dev}", f"format={keep(dev, req.cache_fmt)}", ""]
+    for slot, dev in plan["slots"]:
+        lines += [f"[{slot}]", f"device={dev}", f"format={keep(dev, fmt_default[disk_slots.role_of(slot)])}", ""]
+    all_devs = [dev for _, dev in plan["slots"]]
     err = _write_disks_cfg("\n".join(lines) + "\n")
     if err:
         # Return 200 with ok=false (not a 500): BaseHTTPMiddleware can turn a
@@ -586,7 +658,50 @@ def assign_disks(req: AssignReq, background_tasks: BackgroundTasks):
         from routers import checkmk
         background_tasks.add_task(checkmk.reset_for_deleted_array)
     return {"ok": True, "parity": req.parity, "data": req.data,
-            "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt}
+            "cache": req.cache, "fmt": req.fmt, "cache_fmt": req.cache_fmt,
+            "slots": [{"slot": a, "device": b} for a, b in plan["slots"]],
+            "added": plan["added"], "removed": plan["removed"],
+            "moved": [{"device": d, "from": a, "to": b} for d, a, b in plan["moved"]],
+            "kept_missing": [{"slot": a, "device": b} for a, b in plan["kept_missing"]]}
+
+
+def _disk_key(dev: str) -> str:
+    """Identity of a physical disk: its resolved device node (by-id links and /dev/sdX agree)."""
+    return os.path.realpath(dev) if dev and os.path.exists(dev) else dev
+
+
+def _whole_disk(src: str) -> str:
+    """/dev/sdg1 -> /dev/sdg, /dev/nvme0n1p2 -> /dev/nvme0n1; anything else unchanged."""
+    src = src.split("[", 1)[0]
+    try:
+        r = subprocess.run(["lsblk", "-no", "PKNAME", src], capture_output=True, text=True, timeout=5)
+        parent = r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else ""
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        parent = ""
+    return f"/dev/{parent}" if parent else os.path.realpath(src)
+
+
+def _slot_mismatches() -> list[dict]:
+    """Assigned slots whose mount point holds a DIFFERENT physical disk than disks.cfg names.
+    That happens when disks.cfg changes while the array is running; stopping and starting the
+    array would then mount the disks under other names."""
+    out = []
+    for d in _assigned_disks():
+        mnt = os.path.join(MNT_BASE, d["name"])
+        if not os.path.ismount(mnt):
+            continue
+        try:
+            r = subprocess.run(["findmnt", "-n", "-o", "SOURCE,FSTYPE", mnt], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        parts = r.stdout.split()
+        if r.returncode != 0 or len(parts) < 2 or not parts[0].startswith("/dev/"):
+            continue                                   # zfs, fuse, tmpfs: not a single block device
+        mounted = _whole_disk(parts[0])
+        configured = _disk_key(d["device"])
+        if mounted != configured and os.path.realpath(parts[0].split("[", 1)[0]) != configured:
+            out.append({"name": d["name"], "configured": configured, "mounted": mounted, "device": d["device"]})
+    return out
 
 
 def _disk_or_404(name: str) -> dict | JSONResponse:
@@ -608,7 +723,8 @@ def _disk_view(d: dict) -> dict:
     chosen = d["format"] or ("btrfs" if d["role"] == "cache" else "xfs")
     names = [x["name"] for x in _assigned_disks()]
     idx = names.index(d["name"])
-    editable = state == "stopped" and d["present"] and not mounted and not detected
+    editable = state == "stopped" and d["present"] and not mounted and not detected \
+        and not _has_partitions(real)
     if not d["present"]:
         erase_enabled, erase_reason = False, "The disk is not present."
         note = "This disk is assigned, but the device is not connected."

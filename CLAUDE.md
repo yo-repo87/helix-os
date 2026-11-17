@@ -2846,3 +2846,24 @@ and `helix-gpu-guard.timer` (OnBootSec=3min, every 60 s, `heal`).
 **Traps found:**
 - `build.sh` only skips whole-line comments in package lists. An inline `pkg # note` passes `#` and the words to apt.
 - `docker run` needs `-i` to read a script from stdin; without it the test silently does nothing.
+
+## 55. Array slots shifted when a disk was added (2026-11-17)
+**Incident:** a 1 TB SSD (`ata-P3-1TB_9C50313006002`, `/dev/sda`) was added as a data disk from the UI while the array was running on 192.168.50.142. `disks.cfg` came out as disk1 = the new SSD, disk2 = the old disk1 (`…CXYY4`, sdg), disk3 = the old disk2 (`…BJ9JN`, sdh). The mounts still had the old layout, so nothing broke at once. `/api/array/status` already reported disk1 as "/dev/sda, mounted, 13T", because a mount at `/mnt/disk1` counted as disk1 being mounted. At the next stop/start every `/mnt/diskN` path would have pointed at another disk (the NVIDIA add-in cache `/mnt/disk1/system/addins`, app and VM paths, and a running build on `/mnt/disk1`). `/mnt/user` and Docker would have survived (mergerfs takes every disk; Docker's disk is found by content).
+**Cause:** `POST /api/array/assign` numbered slots by the position of each disk in the request (`enumerate(req.data, 1)`). Both the Main role dropdowns and the Assign Disks dialog send connected disks in device-name order, so `sda` became disk1. The same code would also have silently dropped an assigned disk that happened to be disconnected, because the UI only lists connected disks.
+**Fixed on the box:** `disks.cfg` put back by hand (disk1 `…CXYY4`, disk2 `…BJ9JN`, disk3 the SSD); the bad version is saved as `/boot/config/disks.cfg.bak-20261117-slot-shift`. The SSD's `sda1` contains a nested GPT and no file system. Helix's Format refuses partitioned disks (§46.4), so it needs Erase from its disk page (array stopped) and then Format on Main.
+**Safeguards** (`services/disk_slots.py`, `routers/array.py`, `services/array_state.py`, `index.html`):
+1. **Stable slots.** A disk that keeps its role keeps its slot number. A new disk, or one changing role, gets the next number above the highest kept slot in that role. Gaps left by removed disks stay, which is harmless because mount points come from section names. The order the client sends no longer matters.
+2. **Missing disks are kept.** An assigned disk that is not connected stays in its slot unless the request names it in `remove_missing` (new `AssignReq` field).
+3. **While the array is not stopped,** assign only adds. Removing a disk or changing its role returns `ok:false`, naming each disk that would move or go ("Stop the array to remove a disk or change its role…").
+4. **Every `disks.cfg` write first copies the old file** to `disks.cfg.history/disks.cfg.<YYYYmmdd-HHMMSS>` (newest 30 kept, with a sudo fallback). If the backup fails, nothing is written.
+5. **Mismatch detection.** `_slot_mismatches()` compares the physical disk mounted at each `/mnt/<slot>` (via `findmnt` + `lsblk PKNAME`) with the disk `disks.cfg` names. Main then shows an error row, "Disk assignments do not match the mounted disks", with one line per slot. The Stop row gets a warning and needs "Yes, stop anyway". `POST /api/array/stop` now takes `confirm` and answers 409 without it.
+6. The UI save message names each new disk's slot ("New: ata-P3-1TB… → disk3") and any disks kept while not connected.
+**Tested:** `webui/tests/test_disk_slots.py` (13 offline cases, including this incident). An API run against a throwaway backend on port 8094 used a temporary `HELIX_CONFIG` and stub array scripts, with this box's real disk IDs and real `/mnt` mounts (read-only) — 12 checks:
+- adding sda while started → disk3, with a backup written;
+- removal and role change refused while started;
+- no mismatch row with a correct file;
+- the incident's file → mismatch row naming both shifted disks, Stop needing confirmation, and a stop without confirm → 409 (the stub was never run);
+- a missing disk kept when stopped, and removed only when named.
+
+Deployed to the running backend on 192.168.50.142 (files copied into `/opt/helix`, `helix-backend` restarted, `/mnt/user` stayed mounted because mergerfs runs in its own scope, §49). That copy is RAM until an image with it ships.
+**Rule:** a slot name is an address (`/mnt/diskN`). Never derive it from list order; derive it from what is already assigned.

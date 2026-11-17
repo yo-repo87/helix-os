@@ -91,6 +91,7 @@ install -m 0644 /build/proxy/helix-lan-only.conf /etc/nginx/helix-lan-only.conf
 mkdir -p /usr/local/lib/helix
 install -m 0644 /build/proxy/npm.env /usr/local/lib/helix/npm.env
 install -m 0755 /build/proxy/helix-npm-setup /usr/local/sbin/helix-npm-setup
+install -m 0755 /build/proxy/helix-npm-certbot-plugins /usr/local/sbin/helix-npm-certbot-plugins
 install -m 0755 /build/proxy/helix-npm-storage /usr/local/sbin/helix-npm-storage
 # The folders nginx.conf includes (/data/..., caches); with no storage state NPM stays off.
 mkdir -p /data
@@ -570,6 +571,9 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/helix-npm-storage
 ExecStart=/usr/local/sbin/helix-npm-setup
+# Reinstall, from the HELIXDATA wheel cache, any certbot DNS plugin a cert needs that is not in
+# the image (CLAUDE.md §54.4). Non-fatal; only acts when persistent + NPM enabled.
+ExecStart=-/usr/local/sbin/helix-npm-certbot-plugins
 
 [Install]
 WantedBy=multi-user.target

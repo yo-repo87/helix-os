@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""helix-npm-certbot-plugins: keep the certbot DNS plugins a cert needs installed across reboots.
+
+CLAUDE.md §54.4. The root filesystem is RAM, so the certbot venv (/opt/certbot) reverts to the
+image's set at every boot: the 16 plugins baked into the image (proxy/npm.env CERTBOT_DNS_PLUGINS)
+are always there, but a plugin NPM pip-installed at runtime (e.g. powerdns, google) is gone. NPM
+only installs a plugin when a certificate is *requested*, not when it is *renewed*, so a renewal
+after a reboot would fail "unknown authenticator".
+
+This runs at boot (helix-npm-prepare, after the venv and HELIXDATA are ready) and before any
+renewal. For every certbot renewal config under /etc/letsencrypt/renewal/*.conf (persistent, on
+HELIXDATA) it reads `authenticator = dns-<name>`, maps it to a pip package via the image's
+dns-plugins.json, and if that package is not importable in the venv, installs it from the
+HELIXDATA wheel cache (/data/certbot-wheels). Missing wheels are downloaded once (if online) and
+cached, so later boots are offline. Pre-installed plugins are skipped.
+
+Idempotent, never fatal: a plugin it cannot install is logged and skipped (that one cert will
+fail to renew until the box is online, which is no worse than today).
+
+Env (all optional, for testing): CERTBOT_DIR=/opt/certbot, NPM_DIR=/opt/npm,
+LE_DIR=/etc/letsencrypt, WHEELS=/data/certbot-wheels.
+"""
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+
+CERTBOT = os.environ.get("CERTBOT_DIR", "/opt/certbot")
+NPM = os.environ.get("NPM_DIR", "/opt/npm")
+LE = os.environ.get("LE_DIR", "/etc/letsencrypt")
+WHEELS = os.environ.get("WHEELS", "/data/certbot-wheels")
+WHEELHOUSE = os.environ.get("WHEELHOUSE", os.path.join(NPM, "certbot-wheelhouse"))
+PIP = os.path.join(CERTBOT, "bin", "pip")
+PYBIN = os.path.join(CERTBOT, "bin", "python")
+
+
+def log(m):
+    print(f"[certbot-plugins] {m}", flush=True)
+
+
+def load_map():
+    try:
+        return json.load(open(os.path.join(NPM, "dns-plugins.json")))
+    except (OSError, ValueError):
+        return {}
+
+
+def preinstalled():
+    try:
+        return {l.strip() for l in open(os.path.join(NPM, "certbot-preinstalled.txt")) if l.strip()}
+    except OSError:
+        return set()
+
+
+def certbot_version():
+    try:
+        out = subprocess.run([os.path.join(CERTBOT, "bin", "certbot"), "--version"],
+                             text=True, capture_output=True).stdout
+        m = re.search(r"(\d+\.\d+\.\d+)", out)
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def needed_authenticators():
+    """dns-<name> authenticators referenced by persistent renewal configs."""
+    names = set()
+    for conf in glob.glob(os.path.join(LE, "renewal", "*.conf")):
+        try:
+            for line in open(conf):
+                m = re.match(r"\s*authenticator\s*=\s*(dns-[a-z0-9-]+)\s*$", line)
+                if m:
+                    names.add(m.group(1))
+        except OSError:
+            continue
+    return names
+
+
+def have_module(pkg):
+    """Is the plugin importable in the venv? certbot-dns-cloudflare -> certbot_dns_cloudflare."""
+    mod = pkg.replace("-", "_")
+    return subprocess.run([PYBIN, "-c", f"import {mod}"], capture_output=True).returncode == 0
+
+
+def pip_specs(entry, cver):
+    out = [entry["package_name"] + entry["version"].replace("{{certbot-version}}", cver)]
+    for d in (entry.get("dependencies") or "").split():
+        if d:
+            out.append(d.replace("{{certbot-version}}", cver))
+    return out
+
+
+def ensure(pkg_specs):
+    """Install specs offline, preferring the image wheelhouse, then the HELIXDATA wheel cache;
+    only if both miss, download wheels into the cache (needs network) and install from there.
+    Everything is --no-index/offline except the one download, so no compiler is ever needed at
+    runtime (the image wheelhouse was built where the compiler existed)."""
+    os.makedirs(WHEELS, exist_ok=True)
+    links = [l for l in (WHEELHOUSE, WHEELS) if os.path.isdir(l)]
+    find = []
+    for l in links:
+        find += ["--find-links", l]
+    # 1) offline from the shipped wheelhouse + the HELIXDATA cache
+    r = subprocess.run([PIP, "install", "--no-index", *find, *pkg_specs], capture_output=True, text=True)
+    if r.returncode == 0:
+        return True, "offline (wheelhouse/cache)"
+    # 2) download binary wheels into the HELIXDATA cache (needs network), then install offline
+    d = subprocess.run([PIP, "download", "--only-binary=:all:", "-d", WHEELS, *pkg_specs],
+                       capture_output=True, text=True)
+    if d.returncode != 0:
+        # fall back to any-format download (sdist) only if that is the single option
+        d = subprocess.run([PIP, "download", "-d", WHEELS, *pkg_specs], capture_output=True, text=True)
+        if d.returncode != 0:
+            return False, (d.stderr.strip().splitlines() or ["download failed"])[-1]
+    r = subprocess.run([PIP, "install", "--no-index", "--find-links", WHEELS, *pkg_specs],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return True, "downloaded + cached"
+    return False, (r.stderr.strip().splitlines() or ["install failed"])[-1]
+
+
+def main():
+    if not os.path.exists(PIP):
+        log("certbot venv not present; nothing to do")
+        return 0
+    if not os.path.exists("/run/npm/enabled") and "NPM_FORCE" not in os.environ:
+        log("NPM is off (no persistent storage); nothing to do")
+        return 0
+    want = needed_authenticators()
+    if not want:
+        log("no DNS certificates; nothing to do")
+        return 0
+    plugins = load_map()
+    pre = preinstalled()
+    cver = certbot_version()
+    # authenticator name (dns-cloudflare) -> plugin key (cloudflare)
+    by_auth = {e.get("full_plugin_name"): k for k, e in plugins.items()}
+    installed = failed = skipped = 0
+    for auth in sorted(want):
+        key = by_auth.get(auth)
+        if not key:
+            log(f"{auth}: unknown plugin, skipping")
+            continue
+        if key in pre or have_module(plugins[key]["package_name"]):
+            skipped += 1
+            continue
+        specs = pip_specs(plugins[key], cver)
+        ok, how = ensure(specs)
+        if ok:
+            log(f"{auth}: installed ({how})")
+            installed += 1
+        else:
+            log(f"{auth}: NOT installed ({how}); that certificate will not renew until the box is online")
+            failed += 1
+    log(f"done: {installed} installed, {skipped} already present, {failed} failed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

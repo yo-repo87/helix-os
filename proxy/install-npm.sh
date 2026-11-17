@@ -130,6 +130,12 @@ cp "$S/docker/rootfs/etc/nginx/conf.d/include/"*.conf /etc/nginx/conf.d/include/
 cp "$S/docker/rootfs/etc/nginx/mime.types" /etc/nginx/mime.types
 cp "$S/docker/rootfs/etc/letsencrypt.ini" /etc/letsencrypt.ini
 cp "$S/docker/rootfs/etc/nginx/conf.d/production.conf.template" "$PREFIX/production.conf.template"
+# The plugin -> certbot-authenticator/package map (CLAUDE.md §54.4): the boot step reads it to
+# re-install, from the HELIXDATA wheel cache, any DNS plugin a certificate needs that is not
+# baked into the image. Copied from NPM's own source so it never drifts from the frontend.
+cp "$S/backend/certbot/dns-plugins.json" "$PREFIX/dns-plugins.json"
+# Record which plugins ARE pre-installed in the image venv (so the boot step skips them).
+printf '%s\n' $CERTBOT_DNS_PLUGINS > "$PREFIX/certbot-preinstalled.txt"
 
 # ── certbot + DNS plugins (versions from NPM's dns-plugins.json) ─────────────
 log "certbot $CERTBOT_VERSION + DNS plugins"
@@ -155,6 +161,22 @@ PY
     || { echo "install-npm: certbot / plugin install failed" >&2; exit 1; }
 /opt/certbot/bin/certbot --version >/dev/null
 find /opt/certbot -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+# ── Wheelhouse for plugins kept out of the venv (CLAUDE.md §54.4) ─────────────
+# Build wheels now, while build-essential is installed, for the DNS plugins not pre-installed
+# (powerdns has no PyPI wheel; google is large). helix-npm-certbot-plugins installs from here
+# offline at the first boot a cert needs one. Non-fatal: a plugin that will not build is skipped.
+WHEELHOUSE="$PREFIX/certbot-wheelhouse"
+mkdir -p "$WHEELHOUSE"
+for key in $CERTBOT_DNS_WHEELHOUSE; do
+    specs=$(WH_KEY="$key" CERTBOT_VERSION="$CERTBOT_VERSION" python3 "$SRC/wheelhouse-specs.py" "$S/backend/certbot/dns-plugins.json") \
+        || { log "wheelhouse: unknown plugin $key, skipping"; continue; }
+    # shellcheck disable=SC2086
+    /opt/certbot/bin/pip wheel --wheel-dir "$WHEELHOUSE" "certbot==$CERTBOT_VERSION" $specs >/dev/null 2>&1 \
+        && log "wheelhouse: built $key" || log "wheelhouse: could not build $key (will need network at runtime)"
+done
+# certbot itself is in every wheel set; drop it so the wheelhouse only carries the extra plugins.
+rm -f "$WHEELHOUSE"/certbot-*.whl 2>/dev/null || true
 
 # ── Trim the runtime ─────────────────────────────────────────────────────────
 rm -rf "$PREFIX/node/lib/node_modules" "$PREFIX/node/include" "$PREFIX/node/share" \

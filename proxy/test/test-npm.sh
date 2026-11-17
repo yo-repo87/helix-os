@@ -30,7 +30,7 @@ pass=0; fail=0
 ok() { if eval "$2"; then pass=$((pass+1)); echo "PASS $1"; else fail=$((fail+1)); echo "FAIL $1"; fi; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
-apt-get install -y -qq --no-install-recommends ca-certificates curl openssl iproute2 procps python3 python3-venv xz-utils e2fsprogs >/dev/null
+apt-get install -y -qq --no-install-recommends ca-certificates curl openssl iproute2 procps python3 python3-venv e2fsprogs >/dev/null
 curl -fsSL https://openresty.org/package/pubkey.gpg -o /usr/share/keyrings/openresty.asc
 case "$(dpkg --print-architecture)" in arm64) R=https://openresty.org/package/arm64/debian ;; *) R=https://openresty.org/package/debian ;; esac
 echo "deb [signed-by=/usr/share/keyrings/openresty.asc] $R bookworm openresty" > /etc/apt/sources.list.d/openresty.list

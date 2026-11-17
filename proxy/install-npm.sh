@@ -41,14 +41,15 @@ if [ -n "$BUILD_DEPS" ]; then
 fi
 
 # ── Node.js (official build, checked against nodejs.org's SHASUMS256) ────────
-NODE_TGZ="node-v$NODE_VERSION-linux-$NODE_ARCH.tar.xz"
+# .tar.gz, not .tar.xz: the image has no xz.
+NODE_TGZ="node-v$NODE_VERSION-linux-$NODE_ARCH.tar.gz"
 log "Node.js $NODE_VERSION ($NODE_ARCH)"
 curl -fsSL --retry 3 "https://nodejs.org/dist/v$NODE_VERSION/$NODE_TGZ" -o "$WORK/$NODE_TGZ"
 curl -fsSL --retry 3 "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" -o "$WORK/SHASUMS256.txt"
 ( cd "$WORK" && grep " $NODE_TGZ\$" SHASUMS256.txt | sha256sum -c --quiet - ) \
     || { echo "install-npm: Node.js checksum mismatch" >&2; exit 1; }
 rm -rf "$PREFIX"; mkdir -p "$PREFIX/node"
-tar -xJf "$WORK/$NODE_TGZ" -C "$PREFIX/node" --strip-components=1
+tar -xzf "$WORK/$NODE_TGZ" -C "$PREFIX/node" --strip-components=1
 export PATH="$PREFIX/node/bin:$WORK/yarn/bin:$PATH"
 # Node needs libatomic1 at runtime. g++ pulls it in too, so mark it manual or purging the
 # build tools at the end would take it away.

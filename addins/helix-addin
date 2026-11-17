@@ -6,6 +6,9 @@ add-in is downloaded once, its .deb files are kept on the array (<cache|disk1>/s
 and `restore` re-installs them from that folder at every array start, with no network needed.
 
   helix-addin install <id>    manifest JSON on stdin
+  helix-addin adopt   <id>    manifest JSON on stdin: the packages are already installed (by hand or by an
+                              install that stopped early); cache exactly what is installed and record it,
+                              without reinstalling anything (CLAUDE.md §56)
   helix-addin remove  <id>
   helix-addin restore         (called by helix-array-start; runs in the background)
   helix-addin status          JSON: what is installed, where its cache is
@@ -138,35 +141,139 @@ def install_debs(cache):
     run(["dpkg", "--force-confold", "-i", *debs], env=env)
 
 
+IMAGE_SQUASHFS = "/boot/boot/filesystem.squashfs"
+
+
+def installed_versions() -> dict:
+    out = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${Package}\t${Version}\n"],
+                         text=True, capture_output=True).stdout
+    return {p: v for st, p, v in (l.split("\t") for l in out.splitlines() if l.count("\t") == 2) if st.startswith("ii")}
+
+
+def image_versions() -> dict | None:
+    """Packages and versions the running OS image itself ships (its own dpkg status, read from the
+    squashfs on the boot device). None if that cannot be read."""
+    try:
+        r = subprocess.run(["unsquashfs", "-cat", IMAGE_SQUASHFS, "var/lib/dpkg/status"],
+                           text=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0 or "Package:" not in r.stdout:
+        return None
+    out, pkg, ver, ok = {}, None, None, False
+    for line in r.stdout.splitlines() + [""]:
+        if not line:
+            if pkg and ok:
+                out[pkg] = ver
+            pkg, ver, ok = None, None, False
+        elif line.startswith("Package: "):
+            pkg = line[9:].strip()
+        elif line.startswith("Version: "):
+            ver = line[9:].strip()
+        elif line.startswith("Status: "):
+            ok = line.endswith("install ok installed")
+    return out
+
+
+def closure(pkgs: list) -> set:
+    """Every package the add-in's packages depend on (Depends/PreDepends), recursively."""
+    r = subprocess.run(["apt-cache", "depends", "--recurse", "--no-recommends", "--no-suggests", "--no-conflicts",
+                        "--no-breaks", "--no-replaces", "--no-enhances", *pkgs], text=True, capture_output=True)
+    names = set(pkgs)
+    for line in r.stdout.splitlines():
+        if line and not line.startswith(" "):
+            names.add(line.strip())
+        elif "Depends:" in line:
+            names.add(line.split(":", 1)[1].strip().strip("<>"))
+    return {n for n in names if PKG_RE.match(n)}
+
+
+def fill_cache(e: dict, cache: str) -> int:
+    """Put the .deb of every package this add-in added to the OS (or upgraded), at the version that is
+    installed now, into <cache>/archives. Built in archives.new and swapped in only when complete, so a
+    failure never leaves the add-in without its previous cache. Returns the number of packages."""
+    pkgs = [subst(p) for p in e["apt"]["packages"]]
+    now = installed_versions()
+    missing = [p for p in pkgs if p not in now]
+    if missing:
+        raise SystemExit("not installed: " + " ".join(missing))
+    image = image_versions()
+    if image is None:
+        log("  (cannot read the OS image's package list; caching every dependency, which is larger)")
+        image = {}
+    need = sorted(n for n in closure(pkgs) if n in now and image.get(n) != now[n])
+    new, cur, old = (os.path.join(cache, d) for d in ("archives.new", "archives", "archives.old"))
+    subprocess.run(["rm", "-rf", new, old])
+    os.makedirs(new)
+    log(f"  caching {len(need)} packages")
+    # apt-get download writes into the current directory; one call, exact versions.
+    r = run(["apt-get", "download", *[f"{n}={now[n]}" for n in need]], check=False, cwd=new)
+    got = {re.sub(r"_.*", "", os.path.basename(f)) for f in glob.glob(os.path.join(new, "*.deb"))}
+    lost = [n for n in need if n not in got]
+    if r.returncode != 0 or lost:
+        # A version no longer offered by the mirror (e.g. after a point release): take it from apt's own cache.
+        for n in list(lost):
+            for f in glob.glob(f"/var/cache/apt/archives/{n}_*.deb"):
+                if subprocess.run(["dpkg-deb", "-f", f, "Version"], text=True, capture_output=True).stdout.strip() == now[n]:
+                    subprocess.run(["cp", f, new]); lost.remove(n); break
+    if lost:
+        subprocess.run(["rm", "-rf", new])
+        raise SystemExit("could not get these packages at the installed version: " + " ".join(lost))
+    if os.path.isdir(cur):
+        os.rename(cur, old)
+    os.rename(new, cur)
+    subprocess.run(["rm", "-rf", old])
+    return len(need)
+
+
+def record(e: dict, cache: str, count: int):
+    size = sum(os.path.getsize(f) for f in glob.glob(os.path.join(cache, "archives", "*.deb")))
+    e = dict(e, kver=os.uname().release)
+    json.dump(e, open(os.path.join(cache, "entry.json"), "w"), indent=1)
+    st = load_state()
+    st[e["id"]] = {"version": e["version"], "kver": e["kver"], "installed": int(time.time()), "cache": cache,
+                   "bytes": size, "packages": count}
+    save_state(st)
+
+
 def cmd_install(aid):
     e = validate(json.load(sys.stdin))
     if e["id"] != aid:
         raise SystemExit("id mismatch")
     root = storage_root()
     cache = os.path.join(root, e["id"])
-    os.makedirs(os.path.join(cache, "archives", "partial"), exist_ok=True)
+    os.makedirs(cache, exist_ok=True)
     log("STEP 1/5 Adding package sources")
     write_sources(e)
     log("STEP 2/5 Reading package lists")
     run(["apt-get", "update"], check=False)
-    log("STEP 3/5 Downloading packages to the array")
+    log("STEP 3/5 Installing")
     pk = [subst(p) for p in e["apt"]["packages"]]
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
-    for old in glob.glob(os.path.join(cache, "archives", "*.deb")):
-        os.remove(old)
-    run(["apt-get", "install", "-y", "--download-only", "--no-install-recommends",
-         "-o", f"Dir::Cache::archives={cache}/archives", *pk], env=env)
-    log("STEP 4/5 Installing")
-    install_debs(cache)
+    run(["apt-get", "install", "-y", "--no-install-recommends", "-o", "Dpkg::Options::=--force-confold", *pk], env=env)
+    log("STEP 4/5 Keeping a copy on the array")
+    # Record before the post-install actions: if one of those fails, the add-in is still installed
+    # and must come back at the next boot (an install that stopped here left no record, CLAUDE.md §53).
+    record(e, cache, fill_cache(e, cache))
     log("STEP 5/5 Finishing")
     post_actions(e)
-    size = sum(os.path.getsize(f) for f in glob.glob(os.path.join(cache, "archives", "*.deb")))
-    e["kver"] = os.uname().release
-    json.dump(e, open(os.path.join(cache, "entry.json"), "w"), indent=1)
-    st = load_state()
-    st[e["id"]] = {"version": e["version"], "kver": e["kver"], "installed": int(time.time()), "cache": cache, "bytes": size}
-    save_state(st)
     log("DONE" + (" - reboot to finish" if e["reboot"] else ""))
+
+
+def cmd_adopt(aid):
+    e = validate(json.load(sys.stdin))
+    if e["id"] != aid:
+        raise SystemExit("id mismatch")
+    cache = os.path.join(storage_root(), e["id"])
+    os.makedirs(cache, exist_ok=True)
+    log("STEP 1/3 Package sources")
+    write_sources(e)
+    run(["apt-get", "update"], check=False)
+    log("STEP 2/3 Keeping a copy of the installed packages on the array")
+    n = fill_cache(e, cache)
+    log("STEP 3/3 Recording")
+    record(e, cache, n)
+    log(f"DONE - {n} packages kept; they are re-installed at every array start")
 
 
 def cmd_restore():
@@ -212,6 +319,8 @@ def main():
         raise SystemExit("must run as root")
     if a[:1] == ["install"] and len(a) == 2:
         cmd_install(a[1])
+    elif a[:1] == ["adopt"] and len(a) == 2:
+        cmd_adopt(a[1])
     elif a[:1] == ["remove"] and len(a) == 2:
         cmd_remove(a[1])
     elif a == ["restore"]:

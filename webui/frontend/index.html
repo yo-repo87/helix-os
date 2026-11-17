@@ -6418,6 +6418,7 @@ async function loadAddins(page, elId) {
     if (a.job === 'running') state = '<span style="color:var(--accent)">Working…</span>';
     else if (a.installed && a.needs_reinstall) { state = '<span style="color:var(--warn)">Installed for an older kernel: reinstall it</span>'; btn = `<button class="settings-btn" onclick="addinInstall('${a.id}','${elId}')">Reinstall</button>`; }
     else if (a.installed) { state = '<span style="color:var(--ok,#4f8a10)">Installed</span>' + (a.reboot ? ' (reboot if the driver is not active yet)' : ''); btn = `<button class="settings-btn" onclick="addinRemove('${a.id}','${elId}')">Remove</button>`; }
+    else if (a.can_adopt) { state = '<span style="color:var(--warn)">Already installed on this system but not managed by Helix</span>'; btn = `<button class="settings-btn" onclick="addinAdopt('${a.id}','${elId}')">Register existing install</button>`; }
     else btn = `<button class="settings-btn" onclick="addinInstall('${a.id}','${elId}')">Install (~${a.size_mb} MB)</button>`;
     return `<div style="background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:12px 16px;margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b>${_esc(a.title)}</b><span style="font-size:12px">${state||''}</span><span style="margin-left:auto">${btn}</span></div>
@@ -6427,6 +6428,10 @@ async function loadAddins(page, elId) {
   list.filter(a => a.job === 'running').forEach(a => addinWatch(a.id, page, elId));
 }
 async function addinInstall(id, elId) { await _addinGo(id, 'install', elId); }
+async function addinAdopt(id, elId) {
+  if (!await askConfirm('Register this install?', 'Helix keeps a copy of the already-installed packages on the array so they come back after a reboot. Nothing is reinstalled now.')) return;
+  await _addinGo(id, 'adopt', elId);
+}
 async function addinRemove(id, elId) {
   if (!await askConfirm('Remove this add-in?', 'Its packages and the copy kept on the array are deleted.')) return;
   await _addinGo(id, 'remove', elId);

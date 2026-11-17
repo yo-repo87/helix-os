@@ -72,6 +72,20 @@ def _arch() -> str:
     return {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
 
 
+def _pkgs_present(entry: dict) -> bool:
+    """True if every package the add-in declares is already installed (by hand, or by an install
+    that stopped before recording). Lets the page offer "Register existing install" (adopt)."""
+    pkgs = (entry.get("apt") or {}).get("packages") or []
+    if not pkgs:
+        return False
+    arch = subprocess.run(["dpkg", "--print-architecture"], text=True, capture_output=True).stdout.strip()
+    kver = os.uname().release
+    names = [p.replace("$(KVER)", kver).replace("$(ARCH)", arch).replace("$(CODENAME)", "bookworm") for p in pkgs]
+    r = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\n", *names], capture_output=True, text=True)
+    lines = r.stdout.split()
+    return r.returncode == 0 and len(lines) == len(names) and all(x.startswith("ii") for x in lines)
+
+
 def _installed() -> dict:
     try:
         return json.load(open(os.path.join(HELIX_CONFIG, "addins.json")))
@@ -108,6 +122,8 @@ def list_addins(page: str = ""):
             "size_mb": a.get("size_mb"), "hardware_found": found,
             "installed": bool(rec), "installed_bytes": (rec or {}).get("bytes"),
             "needs_reinstall": bool(rec) and rec.get("kver") != os.uname().release,
+            # already on the system but not recorded: offer adopt instead of a fresh install
+            "can_adopt": (not rec) and found and _pkgs_present(a),
             "reboot": bool(a.get("reboot")),
             "job": job.get("state", "idle"),
         })
@@ -133,9 +149,9 @@ def _start(aid: str, verb: str):
     if _jobs.get(aid, {}).get("state") == "running":
         raise HTTPException(409, "Already running")
     req = entry.get("requires") or {}
-    if verb == "install" and req.get("arch") and _arch() not in req["arch"]:
+    if verb in ("install", "adopt") and req.get("arch") and _arch() not in req["arch"]:
         raise HTTPException(400, "Not available for this CPU architecture")
-    if verb == "install" and (req.get("pci_vendor") or req.get("pci_class_prefix")) and not _pci_matches(req):
+    if verb in ("install", "adopt") and (req.get("pci_vendor") or req.get("pci_class_prefix")) and not _pci_matches(req):
         raise HTTPException(400, "The hardware this add-in is for was not found")
     _jobs[aid] = {"state": "running", "started": time.time()}
     threading.Thread(target=_run_job, args=(aid, verb, entry), daemon=True).start()
@@ -145,6 +161,13 @@ def _start(aid: str, verb: str):
 @router.post("/{aid}/install")
 def install(aid: str):
     return _start(aid, "install")
+
+
+@router.post("/{aid}/adopt")
+def adopt(aid: str):
+    """Register an add-in whose packages are already installed (manual install, or an install that
+    stopped before it recorded), caching the installed .debs so it is restored at every boot."""
+    return _start(aid, "adopt")
 
 
 @router.post("/{aid}/remove")

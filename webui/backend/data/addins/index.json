@@ -5,7 +5,7 @@
       "id": "nvidia",
       "title": "NVIDIA GPU support",
       "page": "gpu",
-      "version": "1",
+      "version": "2",
       "description": "Installs the NVIDIA driver (nvidia-smi, monitoring, overclocking) and the NVIDIA Container Toolkit so Docker apps can use the GPU. Downloaded from Debian and NVIDIA once, kept on your array, and re-installed automatically at every boot.",
       "size_mb": 400,
       "requires": { "arch": ["amd64"], "pci_vendor": "10de", "pci_class_prefix": "03" },
@@ -16,7 +16,9 @@
             "key_url": "https://nvidia.github.io/libnvidia-container/gpgkey",
             "line": "deb [signed-by=KEYRING] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /" }
         ],
-        "packages": ["linux-headers-$(KVER)", "dkms", "build-essential", "nvidia-driver", "nvidia-smi", "nvidia-container-toolkit"]
+        "packages": ["linux-headers-$(KVER)", "dkms", "build-essential", "nvidia-driver", "nvidia-smi", "nvidia-container-toolkit",
+                     "libcuda1", "libnvcuvid1", "libnvidia-encode1", "nvidia-persistenced"],
+        "packages_note": "libcuda1, libnvcuvid1, libnvidia-encode1: CUDA, NVDEC and NVENC for transcoding (Plex, Jellyfin); nvidia-driver does not pull them in with --no-install-recommends (CLAUDE.md §53)"
       },
       "post": ["depmod", "swap-nouveau", "docker-nvidia-runtime"],
       "reboot": true

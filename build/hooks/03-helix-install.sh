@@ -310,6 +310,21 @@ server {
     ssl_session_cache   shared:HelixSSL:1m;
     include snippets/helix-proxy.conf;
 }
+
+# Lockout safety net (CLAUDE.md §54.5): a fixed Helix-owned HTTPS port that ALWAYS reaches the
+# Helix web UI straight at 127.0.0.1:8082, whatever Host is asked and whatever proxy hosts NPM
+# has. It lives in helix-https.d/ (NPM only writes /data/nginx), so it survives every NPM reload.
+# Use https://<ip>:8443/ if a proxy host ever shadows the hostname you reach Helix on.
+server {
+    listen 8443 ssl;
+    listen [::]:8443 ssl;
+    server_name _;
+    ssl_certificate     $ETC_DIR/helix.crt;
+    ssl_certificate_key $ETC_DIR/helix.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:HelixSSL:1m;
+    include snippets/helix-proxy.conf;
+}
 HTTPSCONF
 else
     rm -f "$HTTPS_DIR/https.conf" 2>/dev/null || true

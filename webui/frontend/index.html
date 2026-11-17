@@ -2081,17 +2081,21 @@ main { padding-bottom: 44px; }
     <div id="zfs-pools-list"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
   </div>
 
-  <!-- ── Reverse Proxy (hidden until #proxy) ── -->
+  <!-- ── Reverse Proxy (hidden until #proxy) — drives Nginx Proxy Manager (§54.6) ── -->
   <div id="proxy-section" hidden>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <span class="section-title" style="margin:0">Reverse Proxy</span>
-      <div style="display:flex;gap:8px">
-        <button class="settings-btn" onclick="proxyApply()" style="font-size:11px">▶ Apply &amp; Reload nginx</button>
-        <button class="settings-btn primary" onclick="proxyNewRoute()" style="font-size:11px">+ New Route</button>
-      </div>
+      <div style="display:flex;gap:8px" id="proxy-actions"></div>
+    </div>
+    <div class="apps-tabs" style="margin-bottom:12px">
+      <button class="apps-tab active" id="proxytab-hosts" onclick="proxyTab('hosts')">Proxy hosts</button>
+      <button class="apps-tab" id="proxytab-certs" onclick="proxyTab('certs')">Certificates</button>
+      <button class="apps-tab" id="proxytab-admin" onclick="proxyTab('admin')">NPM admin</button>
     </div>
     <div id="proxy-status-bar" style="font-size:11px;color:var(--fg-muted);margin-bottom:10px"></div>
-    <div id="proxy-routes-list"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
+    <div id="proxy-pane-hosts"><div style="text-align:center;color:var(--fg-dim);padding:30px">Loading…</div></div>
+    <div id="proxy-pane-certs" hidden></div>
+    <div id="proxy-pane-admin" hidden></div>
   </div>
 
   <!-- ── Network (hidden until #network) ── -->
@@ -8820,109 +8824,193 @@ function updateRaidHelp2() {
   document.getElementById('zpe-raid-help').textContent = help_map[raid] || '';
 }
 
-// ── Reverse Proxy ─────────────────────────────────────────────────────────────
-async function loadProxy() {
-  const list = document.getElementById('proxy-routes-list');
-  const bar  = document.getElementById('proxy-status-bar');
-  if (!list) return;
-  try {
-    const [routes, status] = await Promise.all([
-      fetchJSON('/api/proxy/routes'),
-      fetchJSON('/api/proxy/status').catch(() => null),
-    ]);
-    if (bar && status) {
-      bar.textContent = `nginx ${status.running ? '● running' : '○ stopped'} · config ${status.config_ok ? 'OK' : 'ERROR'}`;
-      bar.style.color = status.config_ok ? 'var(--ok)' : 'var(--err)';
-    }
-    if (!routes.length) { list.innerHTML = '<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">No routes. Click + New Route to add one.</div>'; return; }
-    list.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden">
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-dim);border-bottom:1px solid var(--border)">
-          <th style="padding:8px 14px;text-align:left">Domain</th>
-          <th style="padding:8px 10px">Upstream</th>
-          <th style="padding:8px 10px">SSL</th>
-          <th style="padding:8px 10px">WS</th>
-          <th style="padding:8px 10px">Status</th>
-          <th style="padding:8px 10px"></th>
-        </tr></thead><tbody>` +
-      routes.map(r => `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 14px;font-weight:600;font-size:13px">${r.domain}</td>
-        <td style="padding:8px 10px;font-size:12px;font-family:monospace;color:var(--fg-muted)">${r.upstream}</td>
-        <td style="padding:8px 10px;text-align:center">${r.ssl?'✓':''}</td>
-        <td style="padding:8px 10px;text-align:center">${r.websocket?'✓':''}</td>
-        <td style="padding:8px 10px"><span style="font-size:11px;padding:2px 6px;border-radius:3px;background:${r.enabled?'var(--ok-dim)':'var(--surface-hi)'};color:${r.enabled?'var(--ok)':'var(--fg-dim)'}">${r.enabled?'enabled':'disabled'}</span></td>
-        <td style="padding:8px 10px;text-align:right;white-space:nowrap">
-          <button class="ctr-btn" onclick="proxyEdit('${r.id}')">Edit</button>
-          <button class="ctr-btn" onclick="proxyDelete('${r.id}')" style="color:var(--err)">Delete</button>
-        </td>
-      </tr>`).join('') + '</tbody></table></div>';
-  } catch(e) { list.innerHTML = `<div style="color:var(--err);padding:20px">${e.message}</div>`; }
-}
-
-async function proxyApply() {
-  try {
-    const d = await fetchJSON('/api/proxy/apply', {method:'POST'});
-    showToast(d.ok ? 'nginx reloaded OK' : `Error: ${d.message}`, !d.ok);
-    loadProxy();
-  } catch(e) { showToast(`Error: ${e.message}`, true); }
-}
-
-function _proxyForm(r) {
-  return `
-    <div style="display:flex;flex-direction:column;gap:10px">
-      <div class="form-field"><label class="form-label">Domain</label><input class="form-input" id="pr-domain" value="${r.domain||''}" placeholder="service.local"></div>
-      <div class="form-field"><label class="form-label">Upstream (host:port)</label><input class="form-input" id="pr-upstream" value="${r.upstream||''}" placeholder="localhost:8096"></div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="pr-ssl" ${r.ssl?'checked':''}> SSL</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="pr-ws" ${r.websocket?'checked':''}> WebSocket</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="pr-en" ${r.enabled!==false?'checked':''}> Enabled</label>
-      </div>
-      <div class="form-field"><label class="form-label">Extra proxy_set_header lines</label><textarea class="form-input" id="pr-headers" rows="2" style="font-family:monospace;font-size:11px">${r.custom_headers||''}</textarea></div>
-    </div>`;
-}
-
-function _proxyPayload() {
-  return {
-    domain: document.getElementById('pr-domain').value,
-    upstream: document.getElementById('pr-upstream').value,
-    ssl: document.getElementById('pr-ssl').checked,
-    websocket: document.getElementById('pr-ws').checked,
-    enabled: document.getElementById('pr-en').checked,
-    custom_headers: document.getElementById('pr-headers').value,
-  };
-}
-
-function proxyNewRoute() {
-  openModal('New Proxy Route', _proxyForm({}), [
-    {label:'Add', primary:true, onclick: async () => {
-      try {
-        await fetchJSON('/api/proxy/routes', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_proxyPayload())});
-        closeModal(); loadProxy();
-      } catch(e) { showToast(`Error: ${e.message}`, true); }
-    }},
-    {label:'Cancel', onclick: closeModal}
-  ]);
-}
-
-async function proxyEdit(id) {
-  const routes = await fetchJSON('/api/proxy/routes');
-  const r = routes.find(x => x.id === id);
-  if (!r) return;
-  openModal('Edit Proxy Route', _proxyForm(r), [
-    {label:'Save', primary:true, onclick: async () => {
-      try {
-        await fetchJSON(`/api/proxy/routes/${id}`, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(_proxyPayload())});
-        closeModal(); loadProxy();
-      } catch(e) { showToast(`Error: ${e.message}`, true); }
-    }},
-    {label:'Cancel', onclick: closeModal}
-  ]);
-}
-
-async function proxyDelete(id) {
-  if (!confirm('Delete this route?')) return;
-  await fetchJSON(`/api/proxy/routes/${id}`, {method:'DELETE'});
+// ── Reverse Proxy — drives Nginx Proxy Manager (§54.6) ───────────────────────
+let _proxyTab = 'hosts';
+function proxyTab(t) {
+  _proxyTab = t;
+  for (const x of ['hosts','certs','admin']) {
+    document.getElementById('proxytab-'+x).classList.toggle('active', x===t);
+    document.getElementById('proxy-pane-'+x).hidden = (x!==t);
+  }
   loadProxy();
+}
+async function loadProxy() {
+  const bar = document.getElementById('proxy-status-bar');
+  const acts = document.getElementById('proxy-actions');
+  if (!bar) return;
+  let st;
+  try { st = await fetchJSON('/api/proxy/status'); }
+  catch (e) { bar.textContent = errText(e); bar.style.color='var(--err)'; return; }
+  if (!st.available) {
+    bar.textContent = st.reason || 'The reverse proxy is not available yet.';
+    bar.style.color = 'var(--warn)';
+    acts.innerHTML = '';
+    for (const x of ['hosts','certs','admin']) document.getElementById('proxy-pane-'+x).innerHTML =
+      `<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">${_esc(st.reason||'Unavailable.')}</div>`;
+    return;
+  }
+  bar.textContent = `Nginx Proxy Manager · ${st.hosts} proxy host${st.hosts===1?'':'s'}`;
+  bar.style.color = 'var(--ok)';
+  acts.innerHTML = _proxyTab==='hosts'
+    ? '<button class="settings-btn" onclick="proxyExposePick()" style="font-size:11px">Expose a container</button><button class="settings-btn primary" onclick="proxyNewHost()" style="font-size:11px">+ New host</button>'
+    : _proxyTab==='certs'
+    ? '<button class="settings-btn primary" onclick="proxyNewCert()" style="font-size:11px">+ Request certificate</button>' : '';
+  if (_proxyTab==='hosts') return proxyLoadHosts();
+  if (_proxyTab==='certs') return proxyLoadCerts();
+  if (_proxyTab==='admin') return proxyLoadAdmin();
+}
+
+async function proxyLoadHosts() {
+  const pane = document.getElementById('proxy-pane-hosts');
+  let hosts; try { hosts = await fetchJSON('/api/proxy/hosts'); }
+  catch (e) { pane.innerHTML = `<div style="color:var(--err);padding:20px">${_esc(errText(e))}</div>`; return; }
+  if (!hosts.length) { pane.innerHTML = '<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">No proxy hosts. Click + New host.</div>'; return; }
+  pane.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:auto"><table style="width:100%;border-collapse:collapse">
+    <thead><tr style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-dim);border-bottom:1px solid var(--border)">
+      <th style="padding:8px 14px;text-align:left">Domain</th><th style="padding:8px 10px;text-align:left">Forwards to</th>
+      <th style="padding:8px 10px">SSL</th><th style="padding:8px 10px">Status</th><th style="padding:8px 10px"></th></tr></thead><tbody>` +
+    hosts.map(h => `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 14px;font-weight:600;font-size:13px">${h.domain_names.map(_esc).join('<br>')}</td>
+      <td style="padding:8px 10px;font-size:12px;font-family:monospace;color:var(--fg-muted)">${_esc(h.forward_scheme)}://${_esc(h.forward_host)}:${h.forward_port}</td>
+      <td style="padding:8px 10px;text-align:center">${h.certificate_id?'🔒'+(h.ssl_forced?' forced':''):'—'}</td>
+      <td style="padding:8px 10px;text-align:center"><span style="font-size:11px;padding:2px 6px;border-radius:3px;background:${h.enabled?'var(--ok-dim)':'var(--surface-hi)'};color:${h.enabled?'var(--ok)':'var(--fg-dim)'}">${h.enabled?'enabled':'disabled'}</span></td>
+      <td style="padding:8px 10px;text-align:right;white-space:nowrap">
+        <button class="ctr-btn" onclick="proxyEditHost(${h.id})">Edit</button>
+        <button class="ctr-btn" onclick="proxyToggleHost(${h.id},${h.enabled?0:1})">${h.enabled?'Disable':'Enable'}</button>
+        <button class="ctr-btn" style="color:var(--err)" onclick="proxyDelHost(${h.id})">Delete</button>
+      </td></tr>`).join('') + '</tbody></table></div>';
+}
+
+function _proxyHostForm(h, certs) {
+  h = h || {};
+  const certOpts = ['<option value="0">None (HTTP only)</option>','<option value="-1">Request a new Let’s Encrypt certificate</option>']
+    .concat((certs||[]).map(c => `<option value="${c.id}" ${h.certificate_id===c.id?'selected':''}>${_esc((c.domain_names||[]).join(', '))} (${_esc(c.provider||'')})</option>`)).join('');
+  return `<div style="display:flex;flex-direction:column;gap:10px">
+    <div class="form-field"><label class="form-label">Domain name(s)</label><input class="form-input" id="ph-domain" value="${_esc((h.domain_names||[]).join(' '))}" placeholder="jellyfin.example.com"></div>
+    <div style="display:flex;gap:8px">
+      <div class="form-field" style="flex:1"><label class="form-label">Forward scheme</label><select class="form-input" id="ph-scheme"><option value="http" ${h.forward_scheme!=='https'?'selected':''}>http</option><option value="https" ${h.forward_scheme==='https'?'selected':''}>https</option></select></div>
+      <div class="form-field" style="flex:2"><label class="form-label">Forward host</label><input class="form-input" id="ph-host" value="${_esc(h.forward_host||'')}" placeholder="192.168.1.10"></div>
+      <div class="form-field" style="flex:1"><label class="form-label">Port</label><input class="form-input" id="ph-port" type="number" value="${h.forward_port||''}" placeholder="8096"></div>
+    </div>
+    <div class="form-field"><label class="form-label">SSL certificate</label><select class="form-input" id="ph-cert">${certOpts}</select></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="ph-ws" ${h.websocket!==false?'checked':''}> WebSockets</label>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="ph-force" ${h.ssl_forced?'checked':''}> Force SSL</label>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="ph-block" ${h.block_exploits!==false?'checked':''}> Block common exploits</label>
+    </div>
+    <div id="ph-msg" style="font-size:12px;color:var(--err)"></div></div>`;
+}
+function _proxyHostPayload() {
+  return { domain: document.getElementById('ph-domain').value,
+    forward_scheme: document.getElementById('ph-scheme').value,
+    forward_host: document.getElementById('ph-host').value,
+    forward_port: parseInt(document.getElementById('ph-port').value||'0',10),
+    certificate_id: parseInt(document.getElementById('ph-cert').value||'0',10),
+    ssl_forced: document.getElementById('ph-force').checked,
+    websocket: document.getElementById('ph-ws').checked,
+    block_exploits: document.getElementById('ph-block').checked };
+}
+async function proxyNewHost(prefill) {
+  let certs=[]; try { certs = await fetchJSON('/api/proxy/certificates'); } catch(_){}
+  openModal('New proxy host', _proxyHostForm(prefill||{}, certs), [
+    {label:'Create', primary:true, onclick: async () => {
+      const m=document.getElementById('ph-msg'); m.textContent='Working…'; m.style.color='var(--fg-muted)';
+      try { await fetchJSON('/api/proxy/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_proxyHostPayload())});
+        closeModal(); loadProxy(); } catch(e){ m.textContent=errText(e); m.style.color='var(--err)'; }
+    }}, {label:'Cancel', onclick: closeModal}]);
+}
+async function proxyEditHost(id) {
+  const [hosts,certs] = await Promise.all([fetchJSON('/api/proxy/hosts'),fetchJSON('/api/proxy/certificates').catch(()=>[])]);
+  const h = hosts.find(x=>x.id===id); if (!h) return;
+  openModal('Edit proxy host', _proxyHostForm(h, certs), [
+    {label:'Save', primary:true, onclick: async () => {
+      const m=document.getElementById('ph-msg'); m.textContent='Working…'; m.style.color='var(--fg-muted)';
+      try { await fetchJSON(`/api/proxy/hosts/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(_proxyHostPayload())});
+        closeModal(); loadProxy(); } catch(e){ m.textContent=errText(e); m.style.color='var(--err)'; }
+    }}, {label:'Cancel', onclick: closeModal}]);
+}
+async function proxyToggleHost(id, enable) {
+  try { await fetchJSON(`/api/proxy/hosts/${id}/${enable?'enable':'disable'}`,{method:'POST'}); loadProxy(); }
+  catch(e){ showToast(errText(e), true); }
+}
+async function proxyDelHost(id) {
+  if (!confirm('Delete this proxy host?')) return;
+  try { await fetchJSON(`/api/proxy/hosts/${id}`,{method:'DELETE'}); loadProxy(); } catch(e){ showToast(errText(e), true); }
+}
+async function proxyExposePick() {
+  let cs=[]; try { cs = await fetchJSON('/api/proxy/containers'); } catch(e){ return showToast(errText(e),true); }
+  if (!cs.length) return showToast('No running containers found.', true);
+  const opts = cs.map((c,i)=>`<option value="${i}">${_esc(c.name)} — ${_esc(c.host||'127.0.0.1')}:${c.port||'?'}</option>`).join('');
+  openModal('Expose a container', `<div style="display:flex;flex-direction:column;gap:10px">
+    <div class="form-field"><label class="form-label">Container</label><select class="form-input" id="px-ctr">${opts}</select></div>
+    <div class="form-field"><label class="form-label">Domain name</label><input class="form-input" id="px-dom" placeholder="app.example.com"></div>
+    <label style="display:flex;align-items:center;gap:5px;font-size:12px"><input type="checkbox" id="px-ssl"> Request a Let’s Encrypt certificate</label>
+    <div id="px-msg" style="font-size:12px;color:var(--err)"></div></div>`, [
+    {label:'Expose', primary:true, onclick: async () => {
+      const c = cs[parseInt(document.getElementById('px-ctr').value,10)];
+      const m=document.getElementById('px-msg'); m.textContent='Working…'; m.style.color='var(--fg-muted)';
+      try { await fetchJSON('/api/proxy/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        domain: document.getElementById('px-dom').value, forward_host: c.host||'127.0.0.1', forward_port: c.port,
+        certificate_id: document.getElementById('px-ssl').checked?-1:0 })});
+        closeModal(); proxyTab('hosts'); } catch(e){ m.textContent=errText(e); m.style.color='var(--err)'; }
+    }}, {label:'Cancel', onclick: closeModal}]);
+}
+
+async function proxyLoadCerts() {
+  const pane = document.getElementById('proxy-pane-certs');
+  let certs; try { certs = await fetchJSON('/api/proxy/certificates'); }
+  catch(e){ pane.innerHTML = `<div style="color:var(--err);padding:20px">${_esc(errText(e))}</div>`; return; }
+  if (!certs.length) { pane.innerHTML = '<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">No certificates. Click + Request certificate.</div>'; return; }
+  pane.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:auto"><table style="width:100%;border-collapse:collapse">
+    <thead><tr style="font-size:10px;font-weight:600;text-transform:uppercase;color:var(--fg-dim);border-bottom:1px solid var(--border)">
+      <th style="padding:8px 14px;text-align:left">Domains</th><th style="padding:8px 10px">Provider</th><th style="padding:8px 10px">Expires</th><th></th></tr></thead><tbody>` +
+    certs.map(c=>`<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 14px;font-size:13px">${(c.domain_names||[]).map(_esc).join(', ')}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:12px">${_esc(c.provider||'')}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:12px">${c.expires?_esc(String(c.expires).slice(0,10)):'—'}</td>
+      <td style="padding:8px 10px;text-align:right"><button class="ctr-btn" style="color:var(--err)" onclick="proxyDelCert(${c.id})">Delete</button></td></tr>`).join('')+'</tbody></table></div>';
+}
+async function proxyNewCert() {
+  let dns=[]; try { dns = await fetchJSON('/api/proxy/dns-providers'); } catch(_){}
+  const dnsOpts = dns.map(d=>`<option value="${d.id}" data-tpl="${_esc(d.credentials_template||'')}">${_esc(d.name)}</option>`).join('');
+  openModal('Request a Let’s Encrypt certificate', `<div style="display:flex;flex-direction:column;gap:10px">
+    <div class="form-field"><label class="form-label">Domain name(s)</label><input class="form-input" id="pc-dom" placeholder="app.example.com"></div>
+    <div class="form-field"><label class="form-label">Email (optional)</label><input class="form-input" id="pc-email" placeholder="you@example.com"></div>
+    <div class="form-field"><label class="form-label">Challenge</label><select class="form-input" id="pc-method" onchange="document.getElementById('pc-dnswrap').hidden=this.value!=='dns'">
+      <option value="http">HTTP (port 80 must be reachable from the internet)</option>
+      <option value="dns">DNS (needed for wildcards / no public port 80)</option></select></div>
+    <div id="pc-dnswrap" hidden style="display:flex;flex-direction:column;gap:8px">
+      <div class="form-field"><label class="form-label">DNS provider</label><select class="form-input" id="pc-dns" onchange="const o=this.selectedOptions[0];document.getElementById('pc-cred').value=o?o.dataset.tpl||'':''">${dnsOpts}</select></div>
+      <div class="form-field"><label class="form-label">Credentials</label><textarea class="form-input" id="pc-cred" rows="3" style="font-family:monospace;font-size:11px" placeholder="dns_cloudflare_api_token=..."></textarea></div>
+    </div>
+    <div id="pc-msg" style="font-size:12px;color:var(--err)"></div></div>`, [
+    {label:'Request', primary:true, onclick: async () => {
+      const m=document.getElementById('pc-msg'); m.textContent='Requesting… this can take a minute.'; m.style.color='var(--fg-muted)';
+      try { await fetchJSON('/api/proxy/certificates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        domain: document.getElementById('pc-dom').value, email: document.getElementById('pc-email').value,
+        method: document.getElementById('pc-method').value, dns_provider: (document.getElementById('pc-dns')||{}).value||'',
+        dns_credentials: (document.getElementById('pc-cred')||{}).value||'' })});
+        closeModal(); proxyTab('certs'); } catch(e){ m.textContent=errText(e); m.style.color='var(--err)'; }
+    }}, {label:'Cancel', onclick: closeModal}]);
+}
+async function proxyDelCert(id) {
+  if (!confirm('Delete this certificate?')) return;
+  try { await fetchJSON(`/api/proxy/certificates/${id}`,{method:'DELETE'}); loadProxy(); } catch(e){ showToast(errText(e),true); }
+}
+
+async function proxyLoadAdmin() {
+  const pane = document.getElementById('proxy-pane-admin');
+  let c; try { c = await fetchJSON('/api/proxy/login'); } catch(e){ pane.innerHTML = `<div style="color:var(--err);padding:20px">${_esc(errText(e))}</div>`; return; }
+  const url = `${location.protocol}//${location.hostname}:${c.port}/`;
+  pane.innerHTML = `<div class="vf-foot" style="margin:0 0 8px"><span class="vm-dim" style="font-size:12px">Nginx Proxy Manager's full control panel (LAN only). Sign in with the Helix-generated admin below; it is stored on the boot media.</span><span style="flex:1"></span><button class="ctr-btn" onclick="proxyShowLogin()">Show login</button><a class="ctr-btn" style="text-decoration:none" href="${url}" target="_blank" rel="noopener">Open in its own tab ↗</a></div>
+    <iframe src="${url}" style="width:100%;height:calc(100vh - 230px);min-height:500px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>`;
+  proxyLoadAdmin._c = c;
+}
+async function proxyShowLogin() {
+  let c = proxyLoadAdmin._c; if (!c) { try { c = await fetchJSON('/api/proxy/login'); } catch(e){ return showToast(errText(e),true); } }
+  showModal('Nginx Proxy Manager login', `<p style="font-size:12.5px">Sign in to the embedded panel with these. The password was generated by Helix and is stored on the boot media.</p>
+    <div class="form-label">Email</div><div class="mono" style="user-select:all">${_esc(c.user)}</div>
+    <div class="form-label" style="margin-top:8px">Password</div><div class="mono" style="user-select:all">${_esc(c.password)}</div>`,
+    '<button class="settings-btn primary" onclick="closeModal()">Close</button>');
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────

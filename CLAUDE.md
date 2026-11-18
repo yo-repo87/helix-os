@@ -2900,3 +2900,37 @@ On 192.168.50.142 the GPU tab kept offering **Install (~400 MB)** for NVIDIA alt
 
 **Verified on the box:** adopt cached 119 packages (267 MB) to `/mnt/disk1/system/addins/nvidia` incl. the four transcoding libs, recorded version 2 in `/boot/config/addins.json`; `dpkg --simulate -i archives/*.deb` resolves the whole set with no dependency breaks (the boot `restore` path); the tab now shows **Installed**. Deployed live into `/opt/helix` + `/usr/local/sbin` (RAM until an image ships). `cmd_adopt` dry-run first into a scratch `HELIX_ADDIN_ROOT`, as root, before touching the array.
 **Trap:** editing `index.json` by round-tripping through `json.load`/`json.dump` reformats the whole file (2-space → different) and makes a huge diff; edit the text in place instead.
+
+### 54.7 Phase 7 (design, not built): Cloudflare Tunnel, off by default behind a type-to-confirm gate
+User's design, accepted with refinements. A tunnel is outbound-only, so it bypasses the firewall/NAT and puts whatever it routes on the public internet — the threat model changes completely, hence the gating.
+
+**Managed `cloudflared`** (native service or a protected container like Checkmk, §36): token/credentials on **HELIXDATA root 0600** (never FAT `/boot`, never RAM); prefer a dashboard-managed (remotely-revocable) tunnel; token is a password field, kept out of logs/URLs/the audit log. Pin the version, update it with the OS image (or as an add-in), never auto-pull.
+
+**Two gates, because the risk is in what you *route*, not in enabling the daemon:**
+- **Master toggle (default OFF).** Enabling shows the advisement (below) and an acknowledgement box whose OK/Continue stays greyed-out and non-functional until the user types a word that *restates the risk* — `EXPOSE TO INTERNET` rather than a generic "confirmed" (Unraid types the actual thing, §30.13 #14; a meaningful word turns muscle-memory into reading). Enabling the daemon alone with no routes exposes nothing.
+- **Per-hostname (the real teeth).** Each exposed hostname is where something actually reaches the internet, so each one: **defaults to Cloudflare Access-protected** and **refuses to point at Helix's own management plane** (reuse phase-5 `_reject_self`, extended to management ports: UI 80/443/8443, backend 8082, NPM admin 81, SSH). One hostname → one `localhost:port`, never a wildcard (generate the ingress from Helix; don't let it be hand-edited to a catch-all). Trying to expose the UI/API with no Access demands a second, pointed confirmation. A tunnel-down state fails **closed** (service stops being reachable; no fallback to an open port). One-click "disconnect tunnel" like PIA.
+
+**The advisement (shown at the toggle; keep it short or it won't be read):** services routed here are on the public internet via Cloudflare; put Cloudflare Access in front of everything; keep the management plane (Helix UI/API, NPM admin, SSH) off the tunnel and use **Tailscale** for remote admin instead; the tunnel token is root-equivalent for routing.
+
+**Hard gate on auth:** the tunnel cannot be enabled, and no hostname can be exposed, until §54.8 "Require login" is on with at least one credential configured. The type-to-confirm prompt checks this and refuses otherwise. Rationale: a tunnel turns the unauthenticated-API gap (§29.4) from LAN-only into internet-facing, so auth is a precondition, not a nicety.
+
+### 54.8 Authentication (design, not built): enforce login, 2FA, and passkeys/security keys — closes §29.4
+Today `login.py` sets a `helix_login` session cookie on login but **nothing enforces it** on API/UI routes, and `auth.py` has TOTP but it is not wired into the login flow — so the API is effectively open (§29.4). This is the prerequisite for §54.7 and for any internet exposure. All factors are **optional and per-user, managed under the Users tab** (a per-user *Security* panel), as the user asked.
+
+**Enforcement.** A single auth dependency/middleware checks the `helix_login` session on every API and UI route, gated by a global **"Require login"** setting (in Users or Settings → Management Access):
+- **Default OFF** on a fresh LAN install (zero-friction, backward-compatible — do not break existing boxes).
+- **Forced ON** whenever the Cloudflare Tunnel (§54.7) is enabled, or a "require login for non-LAN / via-proxy requests" mode is chosen (detect by source IP / `X-Forwarded-For` from the trusted proxy). Loopback and the MCP bearer path keep their current behaviour; `apikeys.py` bearer tokens remain for programmatic access.
+- The session cookie is already `httponly; samesite=lax`; add `Secure` when served over HTTPS, a CSRF token for state-changing requests (Unraid does this, §30.3), and session list/revoke under Security.
+
+**Factors (each optional, stackable):**
+1. **Password** — exists (`login.py`, hashed in `HELIX_CONFIG/users.json`, §29.2).
+2. **TOTP 2FA** — exists (`auth.py`); wire `totp/verify` into the login flow so an enabled user is challenged after the password. Already under Users → Two-Factor.
+3. **Passkeys + security keys (WebAuthn/FIDO2, new).** One implementation covers both — a passkey (platform authenticator: Touch ID, Windows Hello, phone) and a roaming security key (YubiKey) are the same ceremony with a different `authenticatorAttachment`; allow both. Add `webauthn` (py_webauthn) to `requirements.txt`. Register/authenticate endpoints in `auth.py` (`webauthn/register/{begin,finish}`, `webauthn/auth/{begin,finish}`); store each credential's id + public key + sign counter + label + created-at in `users.json` (RAM-root → `helix-restore-state`, §29.3). A user can hold several (a phone passkey + a hardware key as backup). Passwordless login is allowed once a passkey is registered (the key *is* the factor); a password-holder can add a key as the second factor instead of TOTP.
+
+**The WebAuthn constraint, handled honestly (important on a LAN-by-IP appliance):** WebAuthn needs a **secure context (HTTPS)** and the **RP ID must be a registrable domain or `localhost` — a bare IP is not a valid RP ID**. So passkeys cannot be registered against `https://192.168.x.x`. They work only when Helix is reached by a hostname: mDNS `helix.local` (Safari and some others), a **Tailscale MagicDNS** name, a real domain via **NPM** with a trusted cert, or a **Cloudflare tunnel** hostname. The RP ID is a configurable setting (the domain you use to reach Helix). Consequences to surface in the UI:
+- On bare-IP access the Security tab shows passkeys **unavailable** with the reason ("reach Helix by a hostname over HTTPS to use passkeys") and leaves password + TOTP working — the project's "explain why a feature can't work now" pattern (§30.13 #9).
+- Credentials are bound to the RP ID, so **changing the access domain invalidates existing passkeys** — warn before changing it, and keep password/TOTP as the fallback.
+
+**Recovery (mandatory on an appliance).** When any second factor or a passkey is enabled, issue **one-time recovery codes** (shown once, stored hashed in `users.json`) so a lost/broken key never locks the user out of a headless box. A console-level reset (physical access) remains the last resort, consistent with Helix having no console password today.
+
+**Order to build:** (1) enforce the existing session + "Require login" setting + CSRF, (2) wire TOTP into login, (3) WebAuthn + recovery codes under Users → Security, (4) only then let §54.7 gate on it. Steps 1–2 alone already close the §29.4 hole for LAN use; 3 makes it pleasant; 4 makes internet exposure safe.

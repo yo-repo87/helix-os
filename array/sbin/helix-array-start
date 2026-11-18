@@ -18,16 +18,12 @@ helix_log "Starting array..."
 load_disk_config
 ensure_dirs
 
-# ── Auto-import ZFS pools ─────────────────────────────────────────────────────
-# If there are importable ZFS pools (e.g., from TrueNAS drives), import them automatically.
-if command -v zpool &>/dev/null; then
-    helix_log "Checking for importable ZFS pools..."
-    zpool import -a 2>/dev/null || true
-    # Mount any filesystems that are not yet mounted
-    if command -v zfs &>/dev/null; then
-        zfs mount -a 2>/dev/null || true
-    fi
-fi
+# ── Import ZFS pools ──────────────────────────────────────────────────────────
+# Only the pools imported or created from the ZFS page (HELIX_CONFIG/zfs/pools.json), never
+# every pool found on the disks: a foreign pool is imported when the user asks for it.
+# -f is needed every boot: the root is in RAM, so the hostid differs from the one the pool
+# was last imported under.
+zfs_import_recorded
 
 # ── Mount parity drives ───────────────────────────────────────────────────────
 # SnapRAID keeps its parity FILE on a mounted file system (/mnt/parityN), so a parity disk needs
@@ -39,10 +35,10 @@ for dev in "${PARITY_DEVS[@]}"; do
         helix_log "WARN: Parity device $dev not found — continuing without it."
         idx=$((idx+1)); continue
     fi
-    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+    fsdev=$(fs_device "$dev"); fstype=$(fs_type "$dev")
     if [ -n "$fstype" ]; then
-        mountpoint -q "$mnt" || mount -t "$fstype" "$dev" "$mnt"
-        helix_log "Mounted parity$idx: $dev → $mnt ($fstype)"
+        mountpoint -q "$mnt" || mount -t "$fstype" "$fsdev" "$mnt"
+        helix_log "Mounted parity$idx: $fsdev → $mnt ($fstype)"
     else
         # Not "raw": there is nothing sensible to point SnapRAID at. Leave it unmounted; Main offers Format,
         # and Parity Sync stays disabled until the disk has a file system.
@@ -66,10 +62,10 @@ for i in "${!DATA_DISKS[@]}"; do
     if mountpoint -q "$mnt"; then
         helix_log "$name already mounted at $mnt"
     else
-        fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+        fsdev=$(fs_device "$dev"); fstype=$(fs_type "$dev")
         [ -n "$fstype" ] || { helix_log "WARN: $name ($dev) has no filesystem — skipping. Format it first."; continue; }
-        mount -t "$fstype" -o defaults,noatime "$dev" "$mnt"
-        helix_log "Mounted $name: $dev → $mnt ($fstype)"
+        mount -t "$fstype" -o defaults,noatime "$fsdev" "$mnt"
+        helix_log "Mounted $name: $fsdev → $mnt ($fstype)"
     fi
     MOUNTED_MNTS+=("$mnt")
 done
@@ -88,12 +84,11 @@ elif mountpoint -q "$USER_SHARE"; then
     helix_log "mergerfs already mounted at $USER_SHARE"
 else
     BRANCHES=$(IFS=:; echo "${MOUNTED_MNTS[*]}")
-    mergerfs \
-        -o defaults,allow_other,use_ino,cache.files=partial \
-        -o dropcacheonclose=true,category.create=mfs \
-        -o minfreespace=4G,fsname=helix-user \
-        "$BRANCHES" "$USER_SHARE"
-    helix_log "mergerfs started: $BRANCHES → $USER_SHARE"
+    if start_user_share "$BRANCHES"; then
+        helix_log "mergerfs started: $BRANCHES → $USER_SHARE"
+    else
+        helix_err "mergerfs did not mount $USER_SHARE (branches $BRANCHES)"
+    fi
 fi
 
 # ── Mount cache drives ────────────────────────────────────────────────────────
@@ -110,10 +105,10 @@ for i in "${!CACHE_DISKS[@]}"; do
     if mountpoint -q "$mnt"; then
         helix_log "cache $name already mounted at $mnt"
     else
-        fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)
+        fsdev=$(fs_device "$dev"); fstype=$(fs_type "$dev")
         [ -n "$fstype" ] || { helix_log "WARN: cache $name ($dev) has no filesystem — skipping. Format it first."; continue; }
-        mount -t "$fstype" -o defaults,noatime "$dev" "$mnt"
-        helix_log "Mounted cache $name: $dev → $mnt ($fstype)"
+        mount -t "$fstype" -o defaults,noatime "$fsdev" "$mnt"
+        helix_log "Mounted cache $name: $fsdev → $mnt ($fstype)"
     fi
 done
 
@@ -132,16 +127,14 @@ fi
 
 set +e   # container/share services must never be able to fail the array start
 # ── Docker (data-root on persistent storage) ──────────────────────────────────
-# Never in the RAM root. Prefer a cache drive, else the first data disk. These are
-# real filesystems (overlay2 does not work on the mergerfs FUSE user share).
+# Never in the RAM root. The disk that already holds Docker's data wins (otherwise reordering
+# or reassigning disks starts Docker empty and every container seems gone); for a new setup a
+# cache drive, else the first data disk. These are real filesystems (overlay2 does not work on
+# the mergerfs FUSE user share).
 if command -v dockerd >/dev/null 2>&1; then
     droot=""
-    for m in "${CACHE_MNTS[@]}"; do
-        if mountpoint -q "$m"; then droot="$m/system/docker"; break; fi
-    done
-    if [ -z "$droot" ] && [ ${#MOUNTED_MNTS[@]} -gt 0 ]; then
-        droot="${MOUNTED_MNTS[0]}/system/docker"
-    fi
+    dbase=$(system_disk docker)
+    [ -n "$dbase" ] && droot="$dbase/system/docker"
     if [ -z "$droot" ]; then
         helix_log "WARN: Docker left stopped — no formatted disk for its data."
     else

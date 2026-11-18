@@ -68,9 +68,7 @@ if command -v zpool &>/dev/null; then
     helix_log "Exporting ZFS pools..."
     zpool list -H -o name 2>/dev/null | while read -r pool; do
         if [ -n "$pool" ]; then
-            # First try to unmount all filesystems in the pool
-            zfs umount -a 2>/dev/null || true
-            # Then export the pool
+            # export unmounts the pool's own file systems (a bare `zfs umount -a` would hit every pool)
             if zpool export -f "$pool" 2>/dev/null; then
                 helix_log "Exported ZFS pool: $pool"
             else

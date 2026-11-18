@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth, vmconsole, addins
-from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp
+from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp, passkeys, tunnel
 import threading
 from services import monitor_alerts
 from services.drive_health import poll_loop
@@ -39,6 +39,27 @@ def _helix_version() -> str:
 app = FastAPI(title="Helix OS", version=_helix_version(), docs_url="/api/docs", lifespan=lifespan)
 
 app.add_middleware(AuditMiddleware)
+from services import authz
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+@app.middleware("http")
+async def _require_login(request: _Request, call_next):
+    # Closes §29.4: a real client (reached us through nginx -> has X-Forwarded-For) needs a
+    # valid helix_login session once login is enforced. Loopback backend calls are exempt.
+    if not authz.allowed(request):
+        denied = _JSONResponse({"detail": "Authentication required"}, status_code=401)
+        authz.stamp_csrf(request, denied)
+        return denied
+    problem = authz.csrf_problem(request)
+    if problem:
+        return _JSONResponse({"detail": problem}, status_code=403)
+    response = await call_next(request)
+    authz.stamp_csrf(request, response)
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -78,6 +99,8 @@ app.include_router(updates.router)
 app.include_router(vfio.router)
 app.include_router(ssl.router)
 app.include_router(auth.router)
+app.include_router(passkeys.router)
+app.include_router(tunnel.router)
 app.include_router(backup.router)
 app.include_router(zfs.router)
 app.include_router(vnstat.router)

@@ -2901,7 +2901,7 @@ On 192.168.50.142 the GPU tab kept offering **Install (~400 MB)** for NVIDIA alt
 **Verified on the box:** adopt cached 119 packages (267 MB) to `/mnt/disk1/system/addins/nvidia` incl. the four transcoding libs, recorded version 2 in `/boot/config/addins.json`; `dpkg --simulate -i archives/*.deb` resolves the whole set with no dependency breaks (the boot `restore` path); the tab now shows **Installed**. Deployed live into `/opt/helix` + `/usr/local/sbin` (RAM until an image ships). `cmd_adopt` dry-run first into a scratch `HELIX_ADDIN_ROOT`, as root, before touching the array.
 **Trap:** editing `index.json` by round-tripping through `json.load`/`json.dump` reformats the whole file (2-space → different) and makes a huge diff; edit the text in place instead.
 
-### 54.7 Phase 7 (design, not built): Cloudflare Tunnel, off by default behind a type-to-confirm gate
+### 54.7 Phase 7 (built in §57): Cloudflare Tunnel, off by default behind a type-to-confirm gate
 User's design, accepted with refinements. A tunnel is outbound-only, so it bypasses the firewall/NAT and puts whatever it routes on the public internet — the threat model changes completely, hence the gating.
 
 **Managed `cloudflared`** (native service or a protected container like Checkmk, §36): token/credentials on **HELIXDATA root 0600** (never FAT `/boot`, never RAM); prefer a dashboard-managed (remotely-revocable) tunnel; token is a password field, kept out of logs/URLs/the audit log. Pin the version, update it with the OS image (or as an add-in), never auto-pull.
@@ -2914,7 +2914,7 @@ User's design, accepted with refinements. A tunnel is outbound-only, so it bypas
 
 **Hard gate on auth:** the tunnel cannot be enabled, and no hostname can be exposed, until §54.8 "Require login" is on with at least one credential configured. The type-to-confirm prompt checks this and refuses otherwise. Rationale: a tunnel turns the unauthenticated-API gap (§29.4) from LAN-only into internet-facing, so auth is a precondition, not a nicety.
 
-### 54.8 Authentication (design, not built): enforce login, 2FA, and passkeys/security keys — closes §29.4
+### 54.8 Authentication (built in §57): enforce login, 2FA, and passkeys/security keys — closes §29.4
 Today `login.py` sets a `helix_login` session cookie on login but **nothing enforces it** on API/UI routes, and `auth.py` has TOTP but it is not wired into the login flow — so the API is effectively open (§29.4). This is the prerequisite for §54.7 and for any internet exposure. All factors are **optional and per-user, managed under the Users tab** (a per-user *Security* panel), as the user asked.
 
 **Enforcement.** A single auth dependency/middleware checks the `helix_login` session on every API and UI route, gated by a global **"Require login"** setting (in Users or Settings → Management Access):
@@ -2934,3 +2934,233 @@ Today `login.py` sets a `helix_login` session cookie on login but **nothing enfo
 **Recovery (mandatory on an appliance).** When any second factor or a passkey is enabled, issue **one-time recovery codes** (shown once, stored hashed in `users.json`) so a lost/broken key never locks the user out of a headless box. A console-level reset (physical access) remains the last resort, consistent with Helix having no console password today.
 
 **Order to build:** (1) enforce the existing session + "Require login" setting + CSRF, (2) wire TOTP into login, (3) WebAuthn + recovery codes under Users → Security, (4) only then let §54.7 gate on it. Steps 1–2 alone already close the §29.4 hole for LAN use; 3 makes it pleasant; 4 makes internet exposure safe.
+
+**The paragraphs above are the design brief. The code is §57, and where they disagree §57 wins.** In particular: passkeys and recovery hashes are stored on `login_users.json`, not the Samba `users.json` the brief names. Do not "correct" that.
+
+## 57. Login enforcement, passkeys, and Cloudflare Tunnel (2026-11-18)
+
+Pickup notes for the next session. Written after the feature was finished in the repo and checked with unit tests plus a throwaway API server. Read this before touching auth, the login page, or the tunnel.
+
+### 57.1 Where it stands (do not assume it is live)
+
+- `build/config/VERSION` is **3.3.5**. That stamp is this release (login enforcement, passkeys, the Cloudflare tunnel, the ZFS/array fixes recovered in §52, and the Jellyfin template fixes). Hook 03 installs `helix-zfs-ensure` and `helix-zfs-ensure.service` (After=network-online, TimeoutStartSec=45min, not ordered before the array) plus `helix-cloudflared` and `/etc/profile.d/helix-claude.sh`. The image does not compile ZFS at build time; the boot service restores the saved copy under `HELIX_CONFIG/zfs/cache/<kernel>` or compiles it. On this box that cache exists for `6.1.0-50-amd64`.
+- The work is **uncommitted** in the working tree. Commit by path. Never `git add -A` (unreadable folders and build scratch abort it, §38).
+- **Not deployed.** The process on port 8082 is `/opt/helix/venv/bin/python3 … uvicorn main:app`. Its `main.py` is the 15 Nov copy and `index.html` is the 17 Nov copy. This checkout is newer. Copying the files and restarting `helix-backend` is a shared-system change; it was deliberately not done.
+- **Nothing was written under `/mnt/data/cloudflared`.** `cloudflared` was not downloaded. Do not start a real tunnel, and do not download the binary, unless the user asks.
+- **A deploy will lock this box's UI.** On 2026-11-18 `HELIX_CONFIG` is `/boot/config` (`/mnt/data/config` does not exist). `/boot/config/login_users.json` already contains the UI account `helix_admin`. `auth.json` is absent, the `require_login` flag is absent, and TOTP is off. Enforcement turns on as soon as `login_users.json` is non-empty (§57.3), so the new backend will demand that password on the first browser request. Tell the user before restarting. The password hash is in that file; do not print it.
+- Restarting `helix-backend` does not unmount `/mnt/user` only because mergerfs runs in its own systemd scope (`helix-user-share-*`, §49). Keep that. Do not start long-lived helpers inside the backend cgroup.
+- This machine has no Chromium or Firefox. The passkey ceremony was **not** clicked in a browser. `node --check` on both inline scripts in `index.html` passed. A throwaway uvicorn on `127.0.0.1:8094` exercised the HTTP behaviour below, then was killed. Port 8096 is Emby. Do not `pkill -f` (it can kill the shell, §33.3); stop a test server with `fuser -k <port>/tcp`.
+
+### 57.2 Files
+
+| File | Role |
+|---|---|
+| `webui/backend/services/authz.py` | New. Is login required, is this request exempt, CSRF cookie. |
+| `webui/backend/services/passkeys.py` | New. WebAuthn register/authenticate, RP ID, recovery codes. |
+| `webui/backend/services/tunnel.py` | New. Hostname rules, ingress, Cloudflare API client, token files. |
+| `webui/backend/routers/passkeys.py` | New. `/api/auth/webauthn/…` |
+| `webui/backend/routers/tunnel.py` | New. `/api/tunnel/…` |
+| `webui/backend/routers/login.py` | Session cookie `Secure` on HTTPS, TOTP + recovery inside `do_login`, require-login setting, session list/revoke. |
+| `webui/backend/routers/auth.py` | `POST /api/auth/totp/enable` now also returns `recovery_codes` once. |
+| `webui/backend/main.py` | Includes the two routers. HTTP middleware: 401, then 403, then `stamp_csrf`. |
+| `webui/backend/requirements.txt` | `webauthn>=2.2`. The live venv already has **3.0.1**. Use `/opt/helix/venv/bin/python`, not system `python3` (no fastapi). |
+| `webui/frontend/index.html` | Login gate, Users security card, VPN tunnel card, `fetch` wrapper, `bootAuth`. |
+| `webui/tests/test_passkeys.py` | 41 checks. |
+| `webui/tests/test_tunnel.py` | 35 checks. |
+| `network/helix-cloudflared` | New, mode **0755**. Pin, checksum, start, stop. |
+| `build/hooks/03-helix-install.sh` | The helper install loop now includes `/build/network/helix-cloudflared` (`install -m 0755`). A hot-pushed backend does **not** install this script. A tunnel enable on the live box before the next image needs the script copied to `/usr/local/sbin` as well. |
+
+`routers/tunnel.py` looks up the helper as `HELIX_CLOUDFLARED_HELPER`, else `$ARRAY_SBIN/helix-cloudflared` (default `/usr/local/sbin`), else `network/helix-cloudflared` three levels above `routers/`. That last path matches this repo and does **not** match `/opt/helix/backend`.
+
+### 57.3 Two user stores and two session cookies (do not merge them)
+
+| Store | File | What it is |
+|---|---|---|
+| UI login accounts | `HELIX_CONFIG/login_users.json` | Dict keyed by username: `hash`, `salt`, `role`, and now optional `webauthn_user_id`, `credentials`, `recovery_hashes`. Written by `routers/login.py` and `services/passkeys.py`. |
+| Samba / system users | `HELIX_CONFIG/users.json` | Written by `routers/users.py`. `_persist` drops keys it does not know. **A passkey stored here is deleted on the next user save.** §54.8 names this file; that sentence is wrong. |
+| UI sessions | `STATE_DIR/login_sessions.json` | Cookie `helix_login`. This is the cookie `authz.valid_session` checks. 7 days. RAM: gone at reboot, which is fine. |
+| Old TOTP sessions | `STATE_DIR/sessions.json` | Cookie `helix_session`, from `routers/auth.py`. The gate does **not** look at it. Do not point the middleware at it. |
+
+`login_enforced()` is true when any of these is true:
+
+1. `HELIX_CONFIG/require_login` exists (empty file is enough; the tunnel enable creates it).
+2. `login_users.json` parses as non-empty JSON. One account is enough. This box already has `helix_admin`, so reason would be `accounts`.
+3. `auth.json` has `totp_enabled` true. Reason `totp`.
+
+Otherwise it is false. A fresh LAN install with no UI account, no TOTP, and no flag stays open. There is no separate "only challenge non-LAN addresses" mode; nginx's `X-Forwarded-For` is how a browser is told apart from a loopback tool (§57.4).
+
+`POST /api/login/settings` with `{require: true}` creates the flag. `{require: false}` deletes the flag and returns **409** `"Turn the Cloudflare tunnel off before opening the UI."` while `state.json` says `enabled`. Deleting the flag does not delete accounts, so a box that already has `helix_admin` stays enforced anyway. The checkbox on the Login accounts card is disabled while the tunnel reports enabled.
+
+### 57.4 What the middleware allows
+
+`main.py` `_require_login` runs on every HTTP request:
+
+1. `authz.allowed` is false → **401** `{"detail":"Authentication required"}`, and the response still sets `helix_csrf` if the browser does not have one.
+2. Else `authz.csrf_problem` returns a string → **403** with that string.
+3. Else the route runs, then `stamp_csrf`.
+
+`allowed` is true when enforcement is off. When it is on, a request is still allowed if:
+
+- the path is open (below), or
+- there is **no** `X-Forwarded-For` and the client is `127.0.0.1`, `::1`, or `localhost`, or
+- the `helix_login` cookie or `Authorization: Bearer` matches a non-expired row in `login_sessions.json`.
+
+nginx `location /` in hook 03 already sends `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`. A browser through nginx is challenged. `curl` to `127.0.0.1:8082` with no `X-Forwarded-For` is not. **A test of the gate must send `X-Forwarded-For`.** Direct uvicorn from a non-loopback address is also challenged. `/mcp` stays open and keeps its own bearer check. No nginx change was required for this feature.
+
+Open paths, and only these (do not reopen `/api/login` or `/api/auth` as a prefix; creating an account and turning on TOTP must require a session once enforcement is on):
+
+- Always: `/`, anything under `/static` or `/novnc`, `/mcp`.
+- GET: `/api/health`, `/api/login/status`, `/api/auth/status`, `/api/auth/webauthn/status`, `/manifest.json`, `/favicon.ico`.
+- POST exactly: `/api/login`, `/api/login/logout`, `/api/auth/totp/verify`, `/api/auth/webauthn/auth/begin`, `/api/auth/webauthn/auth/finish`.
+
+CSRF is double-submit, not a server-side token store. Cookie `helix_csrf` is **not** httponly (the page has to read it), `SameSite=lax`, `Secure` when `X-Forwarded-Proto` or the URL scheme is https, path `/`, 7 days. `stamp_csrf` does not rotate a cookie that is already present. `csrf_problem` only fires when enforcement is on, the method is unsafe, the path is not in the open POST set, **and** a valid session exists. The header `X-CSRF-Token` must `hmac.compare_digest` the cookie; the lengths are compared first. A missing session is a 401, not a 403. WebSocket and EventSource are not covered by this middleware; they rely on `SameSite=lax`.
+
+`do_login` (`POST /api/login`):
+
+- If accounts exist, the password must match `pbkdf2`. If none exist, the password step is skipped and the session is username `admin` (old behaviour, only reachable when enforcement is already on for another reason, usually TOTP).
+- If `auth.json` `totp_enabled`: empty code → 401 `totp_required`; a 6-digit code is checked with `auth._totp`; otherwise `passkeys.consume_recovery`. A bad code is 401 `Invalid TOTP code`. A corrupt base32 secret raises inside `_totp` and becomes a 500; the test secret must be real base32 (`JBSWY3DPEHPK3PXP`). `"AAAA"` crashes with `binascii.Error`.
+- Passwordless login is only `POST /api/auth/webauthn/auth/finish`. That route creates the `helix_login` session itself.
+- The JSON body still includes the session token (pre-existing). The cookie is set as well. Do not log it.
+
+### 57.5 Passkeys and recovery codes
+
+Library is `webauthn` (py_webauthn). Imports are **inside** the functions, so tests monkeypatch `webauthn.verify_registration_response` and `webauthn.verify_authentication_response` on the module, not on `passkeys`.
+
+RP ID defaults to `helixos.arc-it.uk`, name `Helix OS`, overridable in `HELIX_CONFIG/webauthn.json` (`rp_id`, `rp_name`). `PUT /api/auth/webauthn/rp` with `{rp_id, confirm}`. `set_rp_id` raises `PermissionError` (HTTP 409) when any credential exists and `confirm` is not true, because existing keys are bound to the old domain and stop working. Allowed RP IDs: `localhost`, or a dotted name that is not an IP and does not end in `.local`.
+
+`availability(host, https)` is what the UI shows. Reasons, verbatim enough to search for:
+
+- bare IP: `Reach Helix by a hostname over HTTPS…`
+- `.local`: `Passkeys are not used on a .local address…` (password + TOTP stay; do not try to make `.local` an RP ID)
+- host is not the RP ID and not a subdomain of it: `This address does not match the passkey domain {rp_id}. Open https://{rp_id}/…`
+- not https: `Passkeys need HTTPS.`
+
+Origin check (`_origin_matches`): https, and host equals the RP ID or is a subdomain. `localhost` / `127.0.0.1` are allowed only when the RP ID is `localhost`, and then http is allowed too. `require_user_verification` is false so a security key without a PIN still works; a passkey that requires UV still performs it.
+
+Challenges live in `STATE_DIR/webauthn_challenges.json` for 5 minutes, kinds `reg` and `auth`. The stored key is the **challenge string inside the options JSON** (`payload["challenge"]` from `options_to_json`), not a second encoding of the random bytes. Finish reads that same string back out of `clientDataJSON`. A mismatch or an http origin raises `ValueError` `"different address"` and the challenge is already consumed.
+
+Credential record on the login user, all byte fields base64url:
+
+```
+webauthn_user_id
+credentials: [{id, public_key, sign_count, label, created, transports}]
+recovery_hashes: [sha256 hex]
+```
+
+The request body is either the credential dict or `{credential: dict}`. Register and the credential list call `routers.login._get_session`; they 401 `"Sign in before adding a passkey."` with no UI session. Auth begin/finish are the open POSTs. Finish returns `{ok, username, role, token}` and sets the cookie.
+
+Recovery: 8 codes, `secrets.token_hex(8)` grouped `xxxx-xxxx-xxxx-xxxx`. Stored as sha256 of the lowercased code with spaces removed. Plain codes are returned **once**.
+
+- First successful passkey registration calls `_stamp_recovery` only when that user has no `recovery_hashes` yet.
+- `POST /api/auth/totp/enable` calls `issue_global_recovery()` and returns `recovery_codes`. Those hashes live in `auth.json` under `recovery_hashes`, next to `totp_secret`.
+- `POST /api/auth/webauthn/recovery` regenerates the **signed-in user's** codes.
+- `consume_recovery` tries the user's hashes, then the global list. `_drop` returns a boolean `hit`. Do not treat the leftover list as the boolean: an empty list is falsy, so the last code would look like a failure.
+
+A recovery code is typed into the same field as the 6-digit TOTP code on the login gate.
+
+### 57.6 UI (index.html)
+
+One page, two inline scripts plus `/static/vms.js` and `vmform.js`. The auth script is the short one **immediately before** `<script src="/static/vms.js">`. It patches `window.fetch` so every same-origin request uses `credentials: 'same-origin'` and every non-GET/HEAD sends `X-CSRF-Token` from the `helix_csrf` cookie. On 401 it calls `window._onAuthRequired`, which calls `bootAuth` if that function exists, otherwise it just unhides `#login-gate`. This has to run before `vms.js` because a lot of code calls `fetch` directly. `apiFetch(path)` is GET-only and **ignores a second argument**; POST/PUT/DELETE go through `fetchJSON`.
+
+`#login-gate` sits **outside** `.shell` and outside `<main>`, so `updateSections` cannot hide it. z-index **240**. Modal overlay is **300**, so the recovery-code dialog still appears above the gate. Header is 100. The gate uses the `hidden` attribute. Global CSS is `[hidden] { display: none !important; }`. Clearing a class's `display` does not reveal an element that still has `hidden`. The tunnel's disable button and the "NO ACCESS" row use the same attribute.
+
+`bootAuth` runs on `DOMContentLoaded`. It GETs `/api/login/status` (open). It shows the gate only when `enforced && !user`. The passkey button stays hidden when `passkeys.available` is false and the reason is shown. `_booting` stops a 401 during that status call from re-entering. `SECTION_LOADERS` for `#users` also calls `loadSecurity()`, and `#vpn` calls `loadTunnel()`. `loadLoginUsers` calls `loadLoginSettings()` even when the account list is empty.
+
+Users page, after the TOTP card is **closed**: `#sec-card` "Security keys and passkeys". It must not be nested inside the TOTP card. Nesting it once left `#users-section` unclosed and hid the File Manager whenever Users was hidden. The users chunk is 29 opening divs and 29 closing divs; keep it that way.
+
+VPN page, between Tailscale and Wake-on-LAN: `#tun-card`. Account id, API token (password field; blank means keep the saved token), hostname, port, Access checkbox (default on), the `NO ACCESS` row (hidden until Access is unchecked), and the enable box. Enable stays disabled until the box equals `EXPOSE TO INTERNET`, the blocker list is empty, and the tunnel is not already on. Disable stays hidden until it is on.
+
+`showRecoveryCodes` uses `openModal`. `totpEnableConfirm` calls it with `d.recovery_codes` before the old hide/reload. `fetchJSON` throws `Error('HTTP '+status+': '+body)`; `_httpDetail` pulls FastAPI's `detail` out of that string.
+
+Known UI smells, left as they are:
+
+- `loadSecurity`: a failed credentials fetch sets the text "Sign in before adding a key." An empty array is truthy in the next check, and the branch keeps that text only because it contains the words "Sign in".
+- `secRevoke` / `tunRemove` put `_esc()` output inside a single-quoted handler. Hostnames are regex-limited and session ids are hex, so a quote cannot get in today.
+- A 401 from any `fetch` calls `bootAuth`. Status itself is open, so that call should not 401. Loaders that run before the first `bootAuth` can also raise the gate, which is acceptable.
+- The enable checkbox cannot by itself turn enforcement off on this box, because `helix_admin` already exists. The API still deletes the flag; enforcement stays on via the account.
+
+### 57.7 Cloudflare Tunnel
+
+Remotely managed (`config_src: "cloudflare"`), name `helix`. The connector token can be revoked in the Cloudflare dashboard, and ingress is generated here so a hand-edited local yaml cannot become a catch-all. One hostname → `http://127.0.0.1:{port}`, then `{service: "http_status:404"}`.
+
+**Where secrets live.** `tunnel_dir()` returns `$HELIX_TUNNEL_DIR` if set (tests), else `/mnt/data/cloudflared` only when `DATA_MNT` (`/mnt/data`, env `HELIX_DATA`) **is a mount**. Otherwise `available: false` and the page says to boot from writable media. Do not fall back to FAT `/boot`: no permissions, world-readable, and the design forbids it (§54.7). On this box today `/mnt/data/config` is absent, so the tunnel page will say unavailable until HELIXDATA is actually mounted. That is intentional.
+
+Files, directory mode 0700, secrets mode 0600, written with `os.open(..., 0o600)`:
+
+- `state.json` — `account_id`, `tunnel_id`, `enabled`, `hostnames: [{hostname, port, access, access_app_id, dns_error}]`. No tokens.
+- `api.token` — the token the user pastes. Never returned. `public_status` has `token_set: true/false` only.
+- `connector.token` — fetched from the API at sync time. Never returned and never logged. The test asserts the value `connector-secret-value` is absent from the status JSON.
+- `bin/cloudflared` — created by the helper's `install`, not by the Python code.
+
+`save_settings` accepts an account id matching `[A-Za-z0-9]{8,64}` and a token of at least 20 characters. A blank token keeps the current file. Saving settings does **not** require login to already be enforced; adding a hostname does.
+
+**Hostname rules** (`check_hostname`). The error string is the HTTP 400 detail.
+
+- Regex requires a dotted public name ending in a letter TLD of 2+ characters. A `*` or a bare IP fails with "Enter one hostname…".
+- `localhost`, `*.local`, `*.localhost` refused.
+- The RP ID and the request `Host` are both refused: "Helix's own address stays off the tunnel. Use Tailscale to reach the UI." **Tests must send Host `helixos.arc-it.uk`.** If the test request's Host is the public name being added, the check treats that name as the UI and returns 400. That false failure happened once.
+- Ports in `MGMT_PORTS = {22, 80, 81, 443, 8082, 8443, 3781, 5050, 6556}` refused with "Port N is part of Helix's management plane…". 3781 is the NPM backend, 81 is NPM admin, 8443 is the Helix fallback, 5050/6556 are Checkmk.
+- `access: false` requires `confirm` exactly `NO ACCESS`.
+
+**Adding a hostname** returns 409 `"Turn on Require login and add a password, authenticator, or passkey before exposing a hostname."` unless `login_enforced()` and `_has_credential()`. A credential is a login user with a `hash` or a `credentials` list, or global `totp_enabled`. This holds even while the tunnel is still off, so hostnames cannot queue up before auth exists. While enabled, add also calls Access (if access is on), DNS, then `put_ingress`. It does not restart `cloudflared`; the remote config is what the connector reads. Duplicate hostname is 409.
+
+**Enable** collects every gap from `enable_blockers` and returns them as one 409. The gaps are: confirm is not exactly `EXPOSE TO INTERNET`, login not enforced, no credential, no tunnel directory, no API token, no account id. On success it creates the `require_login` flag **first**, sets `enabled` true, then `sync`. If `sync` raises, it sets `enabled` false and returns **502**. The flag stays, so login stays on. That is the fail-closed path: a half-started tunnel does not remain "enabled" with no connector, and the UI does not go back to anonymous.
+
+**Disable** sets `enabled` false and stops the daemon. It does not delete the Cloudflare tunnel, the DNS record, or the saved hostnames.
+
+**sync order**, which the test locks in: `ensure_tunnel` → save connector token → for each hostname `ensure_access` (when access is on) then `ensure_dns` → **then** `put_ingress` → then `start(directory)`. If the Access call fails, ingress is not PUT and `start` is not called. DNS failure is different: `ensure_dns` returns a string (`"No Cloudflare zone matched this hostname…"`) stored on the row as `dns_error`. It does not abort sync. The user can add the CNAME themselves (`{tunnel_id}.cfargotunnel.com`, proxied).
+
+Cloudflare client: `fetch(method, url, token, body) -> (status, dict)`. Default is urllib with a 25s timeout. `success` false or an HTTP error becomes `RuntimeError` of `errors[0].message`. Tests pass a fake fetch and never touch the network. Tunnel create uses `config_src: cloudflare`. Access app is `type: self_hosted`, policy name `"Require sign-in"`, decision `allow`, include `[{"everyone": {}}]`.
+
+**Access gap to remember:** that include is Cloudflare's "Everyone" selector. It creates an Access application so the hostname is not a raw untracked publish, but it does **not** force an identity-provider login. Helix does not know which IdP the account uses, so it cannot write a tighter include. Management ports and Helix's own hostname are still refused in our code, which is what keeps the UI/API/SSH/NPM admin off the tunnel. A published app port (Emby on 8096, and so on) is reachable by anyone who can open that hostname until someone replaces the Access policy in the Cloudflare dashboard. Do not describe this policy as "IdP required" in the UI or in a later note.
+
+**Helper** `network/helix-cloudflared`. Args: `install|start|stop|status`, optional directory as `$2` (else `HELIX_TUNNEL_DIR`, else `/mnt/data/cloudflared`). Pin **2026.11.0**, `--no-autoupdate`. sha256:
+
+- linux-amd64 `51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd`
+- linux-arm64 `abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f`
+
+`install` downloads only when the existing binary fails `sha256sum -c`, then `install -m 0755`. `start` refuses without `connector.token`. It uses `systemd-run --unit=helix-cloudflared --collect` when systemd is up, so a backend restart does not kill the connector (§49). Otherwise `nohup` to `/var/log/helix-cloudflared.log`. Pidfile `/run/helix-cloudflared.pid`. The router calls it through `services.privileged.run` (`sudo -n`), timeout 180s. `install` on enable is the download; tests stub `_push_and_start` or `sync`'s `start` and never run this script.
+
+`GET /api/tunnel/status` builds blockers with a dummy confirm equal to the enable phrase when already enabled, then strips any blocker containing `EXPOSE TO INTERNET`. Status lists real gaps, not the typed phrase. Slightly awkward; `enable_blockers` itself is what the tests call.
+
+### 57.8 How it was checked, and how to check it again
+
+```bash
+/opt/helix/venv/bin/python webui/tests/test_passkeys.py   # 41
+/opt/helix/venv/bin/python webui/tests/test_tunnel.py     # 35
+```
+
+Both scripts set `HELIX_CONFIG`, `STATE_DIR`, and `HELIX_TUNNEL_DIR` to a temp dir **before** importing `config`. Do not import `main`: the lifespan starts threads and calls `ftp.apply_saved`. Last run: both exit 0.
+
+Throwaway server, already killed, temp dir deleted:
+
+```bash
+HELIX_CONFIG=/tmp/hx-auth-ui/config STATE_DIR=/tmp/hx-auth-ui/state \
+HELIX_TUNNEL_DIR=/tmp/hx-auth-ui/tunnel \
+/opt/helix/venv/bin/python -m uvicorn main:app --app-dir webui/backend \
+  --host 127.0.0.1 --port 8094
+```
+
+What that server showed: the page contains `login-gate`, `sec-card`, `tun-card`, `EXPOSE TO INTERNET`, `bootAuth`, `X-CSRF-Token`. Fresh status is enforced false and sets the CSRF cookie. After one account, a request with `X-Forwarded-For: 10.0.0.8` to `/api/shares/` is 401, `POST /api/login` is 200, a signed-in POST with no CSRF header is 403 `"Missing security token…"`, and the same POST with the cookie echoed is 200. Host `192.168.50.142` plus `X-Forwarded-Proto: https` gets the bare-IP passkey reason. Host `helixos.arc-it.uk` gets `available: true`. Enable with confirm `yes` is 409 naming `EXPOSE TO INTERNET`. Hostname port 443 is 400. Status does not contain `connector`.
+
+`ftp.apply_saved` only applies when FTP is enabled, so an empty temp config is safe. The test account password used then was `secret` and lived only under `/tmp`, which was removed.
+
+### 57.9 If the user asks to put it on the live UI
+
+1. Say that `helix_admin` already exists, so the UI will ask for that password as soon as the new process is up.
+2. Copy only the changed backend files and `webui/frontend/index.html` into `/opt/helix/backend` and `/opt/helix/frontend`. Copy `network/helix-cloudflared` to `/usr/local/sbin/helix-cloudflared` mode 0755 if a tunnel enable should work before the next image. Do not copy the tests.
+3. Restart `helix-backend` only. Confirm `/mnt/user` is still a mergerfs mount afterwards.
+4. Do not create `/mnt/data/cloudflared`, do not download `cloudflared`, do not enable the tunnel, do not bump `VERSION`, do not commit unless asked.
+5. `webauthn` is already in the live venv. If a future venv lacks it, install it there; system python will not see it.
+
+### 57.10 Rules that will save the next session a wrong fix
+
+- Do not move passkey fields onto `users.json`.
+- Do not treat `helix_session` as the login gate.
+- Do not open all of `/api/auth` or `/api/login`.
+- Do not store the API token or the connector token on `/boot`.
+- Do not publish ports 22, 80, 81, 443, 8082, 8443, 3781, 5050, 6556, and do not publish `helixos.arc-it.uk`.
+- Do not PUT ingress if the Access call failed. Do not leave `enabled` true if start failed. Do not clear `require_login` while `enabled` is true.
+- Do not describe the Access "Everyone" policy as an identity-provider login (§57.7).
+- A slot name is still an address (§55). This work does not touch disk assignment.
+- The REST API is closed for browsers only when enforcement is on. Loopback tools stay open. That is the §29.4 close that was actually built.

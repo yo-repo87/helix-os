@@ -1360,6 +1360,36 @@ main { padding-bottom: 44px; }
       <div id="ts-devices"><!-- populated by JS --></div>
     </div>
 
+    <div class="section-title" style="margin-top:24px">Cloudflare Tunnel</div>
+    <div class="settings-card" id="tun-card">
+      <div class="settings-card-body">
+        <div id="tun-status" style="font-size:12px;margin-bottom:8px">Loading…</div>
+        <p style="font-size:12px;color:var(--fg-muted);margin:0 0 10px">Names you add here are on the public internet through Cloudflare. Leave Access on. Keep this UI, NPM admin, and SSH off the tunnel and use Tailscale for remote admin. The API token can change what the tunnel routes.</p>
+        <div id="tun-blockers" style="font-size:12px;color:var(--warn);margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <input class="form-input" id="tun-account" placeholder="Cloudflare account ID" style="font-size:11px;width:220px">
+          <input class="form-input" id="tun-token" type="password" placeholder="API token (write-only)" style="font-size:11px;width:220px" autocomplete="off">
+          <button class="settings-btn" onclick="tunSave()" style="font-size:11px">Save</button>
+        </div>
+        <div id="tun-hosts" style="margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <input class="form-input" id="tun-host" placeholder="files.example.com" style="font-size:11px;width:200px">
+          <input class="form-input" id="tun-port" placeholder="Port" inputmode="numeric" style="font-size:11px;width:80px">
+          <label style="font-size:12px;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tun-access" checked onchange="tunAccessToggle()"> Cloudflare Access</label>
+          <button class="settings-btn" onclick="tunAddHost()" style="font-size:11px">Add hostname</button>
+        </div>
+        <div id="tun-noaccess-row" hidden style="margin-bottom:8px">
+          <input class="form-input" id="tun-noaccess" placeholder="Type NO ACCESS to publish without Cloudflare Access" style="font-size:11px;width:100%;max-width:420px">
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input class="form-input" id="tun-confirm" placeholder="Type EXPOSE TO INTERNET" oninput="tunConfirmInput()" style="font-size:11px;width:240px" autocomplete="off">
+          <button class="settings-btn settings-btn-primary" id="tun-enable" onclick="tunEnable()" disabled style="font-size:11px">Turn on</button>
+          <button class="settings-btn" id="tun-disable" onclick="tunDisable()" hidden style="font-size:11px">Turn off</button>
+        </div>
+        <div id="tun-msg" style="font-size:11px;color:var(--fg-muted);margin-top:6px"></div>
+      </div>
+    </div>
+
     <!-- Wake-on-LAN -->
     <div class="section-title" style="margin-top:24px">Wake-on-LAN</div>
     <div class="settings-grid" style="margin-bottom:12px">
@@ -1718,7 +1748,12 @@ main { padding-bottom: 44px; }
         <!-- Login Accounts card -->
         <div class="settings-card-hdr">Login Accounts</div>
         <div class="settings-card-body">
-          <div style="font-size:12px;color:var(--fg-muted);margin-bottom:10px">Create accounts to require login before accessing the UI. No accounts = open access.</div>
+          <div style="font-size:12px;color:var(--fg-muted);margin-bottom:10px">A login account, an authenticator, or the switch below makes the UI ask who you are. A fresh install with none of those stays open.</div>
+          <div id="login-session-line" style="font-size:12px;margin-bottom:8px"></div>
+          <label style="font-size:12px;display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <input type="checkbox" id="login-require" onchange="loginSetRequire(this.checked)"> Require login
+          </label>
+          <div id="login-require-note" style="font-size:11px;color:var(--fg-muted);margin-bottom:10px"></div>
           <div id="login-users-list" style="margin-bottom:10px"></div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <input class="form-input" id="login-new-user" placeholder="Username" style="font-size:11px;width:120px">
@@ -1818,6 +1853,27 @@ main { padding-bottom: 44px; }
         </div>
       </div>
     </div>
+
+      <div class="settings-card" id="sec-card" style="margin-top:14px">
+        <div class="settings-card-hdr">Security keys and passkeys</div>
+        <div class="settings-card-body">
+          <div id="sec-status" style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">Loading…</div>
+          <div id="sec-list" style="margin-bottom:8px"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+            <input class="form-input" id="sec-label" placeholder="Key name" style="font-size:11px;width:140px">
+            <button class="settings-btn" id="sec-add" onclick="secAddKey()" style="font-size:11px">Add a key</button>
+            <button class="settings-btn" onclick="secNewRecovery()" style="font-size:11px">New recovery codes</button>
+            <button class="settings-btn" onclick="showLoginGate(true)" style="font-size:11px">Sign in</button>
+            <button class="settings-btn" onclick="loginSignOut()" style="font-size:11px">Sign out</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input class="form-input" id="sec-rp" placeholder="helixos.arc-it.uk" style="font-size:11px;width:200px">
+            <button class="settings-btn" onclick="secSaveRp()" style="font-size:11px">Save passkey domain</button>
+          </div>
+          <div id="sec-msg" style="font-size:11px;color:var(--fg-muted);margin-top:6px"></div>
+          <div id="sec-sessions" style="font-size:11px;margin-top:10px"></div>
+        </div>
+      </div>
   </div>
 
   <!-- File Browser (hidden until #files) -->
@@ -2201,6 +2257,47 @@ main { padding-bottom: 44px; }
 
 </div><!-- .shell -->
 
+<div id="login-gate" hidden style="position:fixed;inset:0;z-index:240;background:#141414;display:flex;align-items:center;justify-content:center">
+  <div style="width:320px;max-width:92vw;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px">
+    <div style="font-weight:700;margin-bottom:6px">Sign in to Helix</div>
+    <div style="font-size:12px;color:var(--fg-muted);margin-bottom:12px">This server requires a login.</div>
+    <input class="form-input" id="gate-user" placeholder="Username" autocomplete="username" style="width:100%;margin-bottom:8px" onkeydown="if(event.key==='Enter')gateSignIn()">
+    <input class="form-input" id="gate-pass" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;margin-bottom:8px" onkeydown="if(event.key==='Enter')gateSignIn()">
+    <div id="gate-totp-row" hidden style="margin-bottom:8px">
+      <input class="form-input" id="gate-totp" placeholder="Authenticator or recovery code" autocomplete="one-time-code" style="width:100%" onkeydown="if(event.key==='Enter')gateSignIn()">
+    </div>
+    <button class="settings-btn settings-btn-primary" onclick="gateSignIn()" style="width:100%">Sign in</button>
+    <button class="settings-btn" id="gate-passkey" onclick="gatePasskey()" hidden style="width:100%;margin-top:8px">Use a passkey or security key</button>
+    <div id="gate-passkey-reason" style="font-size:11px;color:var(--fg-muted);margin-top:8px"></div>
+    <div id="gate-msg" style="font-size:12px;color:var(--warn);margin-top:8px"></div>
+  </div>
+</div>
+<script>
+window._onAuthRequired = function () {
+  if (typeof window.bootAuth === 'function') window.bootAuth();
+  else { var g = document.getElementById('login-gate'); if (g) g.hidden = false; }
+};
+(function () {
+  var orig = window.fetch;
+  window.fetch = function (input, init) {
+    init = init ? Object.assign({}, init) : {};
+    var method = String(init.method || 'GET').toUpperCase();
+    if (!init.credentials) init.credentials = 'same-origin';
+    if (method !== 'GET' && method !== 'HEAD') {
+      var m = document.cookie.match(/(?:^|; )helix_csrf=([^;]*)/);
+      if (m) {
+        var headers = new Headers(init.headers || {});
+        if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', decodeURIComponent(m[1]));
+        init.headers = headers;
+      }
+    }
+    return orig.call(this, input, init).then(function (r) {
+      if (r.status === 401) window._onAuthRequired();
+      return r;
+    });
+  };
+})();
+</script>
 <script src="/static/vms.js"></script>
 <script src="/static/vmform.js"></script>
 <script src="/static/monitor.js"></script>
@@ -5065,10 +5162,10 @@ const SECTION_IDS = {
 };
 const SECTION_LOADERS = {
   '#config':       () => { loadSettings(); loadLoginUsers(); loadAuditLog(); },
-  '#users':        () => { loadUsers(); loadTotpStatus(); },
+  '#users':        () => { loadUsers(); loadTotpStatus(); loadSecurity(); },
   '#notif-config': loadNotifConfig,
   '#apps':         loadApps,
-  '#vpn':          () => { loadVPN(); loadWol(); loadVnstat(); },
+  '#vpn':          () => { loadVPN(); loadTunnel(); loadWol(); loadVnstat(); },
   '#monitoring':   loadMonitoring,
   '#vms':          loadVMs,
   '#vmform':       loadVmForm,
@@ -5393,6 +5490,7 @@ async function totpEnableConfirm() {
     msg.textContent = d.ok ? '2FA enabled ✓' : (d.detail || 'Invalid code');
   }
   if (d.ok) {
+    if (d.recovery_codes) showRecoveryCodes(d.recovery_codes);
     setTimeout(() => {
       document.getElementById('totp-setup-pane') && (document.getElementById('totp-setup-pane').hidden = true);
       loadTotpStatus();
@@ -9043,6 +9141,7 @@ async function clearAuditLog() {
 // ── Login Accounts ────────────────────────────────────────────────────────────
 async function loadLoginUsers() {
   const el = document.getElementById('login-users-list');
+  loadLoginSettings();
   if (!el) return;
   try {
     const users = await fetchJSON('/api/login/users');
@@ -10640,5 +10739,269 @@ function piOcLiveToggle() {
   };
   _piOcLiveEs.onerror = () => { _piOcLiveEs = null; if (btn) btn.textContent = '▶ Live'; };
 }
+
+// ── Login gate, passkeys, Cloudflare Tunnel ─────────────────────
+function _httpDetail(err) {
+  const m = String(err && err.message || err || '');
+  const i = m.indexOf('{');
+  if (i >= 0) { try { const j = JSON.parse(m.slice(i)); if (j.detail) return typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (_) {} }
+  return m;
+}
+function _b64urlToBuf(s) {
+  s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(s + '='.repeat((4 - s.length % 4) % 4));
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+function _bufToB64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function _publicKeyCred(cred, extra) {
+  const out = {
+    id: cred.id, rawId: _bufToB64url(cred.rawId), type: cred.type,
+    authenticatorAttachment: cred.authenticatorAttachment || undefined,
+    response: Object.assign({ clientDataJSON: _bufToB64url(cred.response.clientDataJSON) }, extra),
+  };
+  return out;
+}
+async function _webauthnCreate(options) {
+  const pk = Object.assign({}, options);
+  pk.challenge = _b64urlToBuf(pk.challenge);
+  pk.user = Object.assign({}, pk.user, { id: _b64urlToBuf(pk.user.id) });
+  pk.excludeCredentials = (pk.excludeCredentials || []).map(c => Object.assign({}, c, { id: _b64urlToBuf(c.id) }));
+  const cred = await navigator.credentials.create({ publicKey: pk });
+  return _publicKeyCred(cred, {
+    attestationObject: _bufToB64url(cred.response.attestationObject),
+    transports: cred.response.getTransports ? cred.response.getTransports() : [],
+  });
+}
+async function _webauthnGet(options) {
+  const pk = Object.assign({}, options);
+  pk.challenge = _b64urlToBuf(pk.challenge);
+  pk.allowCredentials = (pk.allowCredentials || []).map(c => Object.assign({}, c, { id: _b64urlToBuf(c.id) }));
+  const cred = await navigator.credentials.get({ publicKey: pk });
+  return _publicKeyCred(cred, {
+    authenticatorData: _bufToB64url(cred.response.authenticatorData),
+    signature: _bufToB64url(cred.response.signature),
+    userHandle: cred.response.userHandle ? _bufToB64url(cred.response.userHandle) : null,
+  });
+}
+function showRecoveryCodes(codes) {
+  if (!codes || !codes.length) return;
+  openModal('Recovery codes',
+    `<p style="font-size:12px">Save these codes somewhere safe. Each one works once if you lose the key or the authenticator. They will not be shown again.</p><pre style="font-size:13px;user-select:all">${codes.map(_esc).join('\n')}</pre>`,
+    [{ label: 'I saved them', primary: true, onclick: closeModal }]);
+}
+function showLoginGate(force) {
+  const g = document.getElementById('login-gate');
+  if (!g) return;
+  if (force || (window._auth && window._auth.enforced && !window._auth.user)) g.hidden = false;
+}
+let _booting = false;
+async function bootAuth() {
+  if (_booting) return;
+  _booting = true;
+  let s;
+  try { s = await fetchJSON('/api/login/status'); } catch (_) { _booting = false; return; }
+  window._auth = s;
+  const gate = document.getElementById('login-gate');
+  if (gate) gate.hidden = !(s.enforced && !s.user);
+  const pk = document.getElementById('gate-passkey');
+  const why = document.getElementById('gate-passkey-reason');
+  const info = s.passkeys || {};
+  if (pk) pk.hidden = !info.available;
+  if (why) why.textContent = info.available ? '' : (info.reason || '');
+  const who = document.getElementById('login-session-line');
+  if (who) who.innerHTML = s.user ? ('Signed in as <b>' + _esc(s.user.username) + '</b>') : (s.enforced ? 'Not signed in.' : '');
+  _booting = false;
+}
+window.bootAuth = bootAuth;
+async function gateSignIn() {
+  const msg = document.getElementById('gate-msg');
+  const username = document.getElementById('gate-user').value.trim();
+  const password = document.getElementById('gate-pass').value;
+  const totp = (document.getElementById('gate-totp').value || '').trim();
+  if (msg) msg.textContent = 'Signing in…';
+  try {
+    await fetchJSON('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, totp: totp || null }) });
+    document.getElementById('gate-totp-row').hidden = true;
+    if (msg) msg.textContent = '';
+    await bootAuth();
+  } catch (e) {
+    const detail = _httpDetail(e);
+    if (String(detail).includes('totp_required') || String(detail).includes('Invalid TOTP')) document.getElementById('gate-totp-row').hidden = false;
+    if (msg) msg.textContent = String(detail).includes('totp_required') ? 'Enter the authenticator code or a recovery code.' : detail;
+  }
+}
+async function gatePasskey() {
+  const msg = document.getElementById('gate-msg');
+  try {
+    const username = document.getElementById('gate-user').value.trim();
+    const begun = await fetchJSON('/api/auth/webauthn/auth/begin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+    const cred = await _webauthnGet(begun.options);
+    await fetchJSON('/api/auth/webauthn/auth/finish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cred) });
+    if (msg) msg.textContent = '';
+    await bootAuth();
+  } catch (e) { if (msg) msg.textContent = _httpDetail(e); }
+}
+async function loginSignOut() {
+  await fetchJSON('/api/login/logout', { method: 'POST' }).catch(() => {});
+  bootAuth();
+}
+async function loadLoginSettings() {
+  const box = document.getElementById('login-require');
+  const note = document.getElementById('login-require-note');
+  if (!box) return;
+  const s = await fetchJSON('/api/login/settings').catch(() => null);
+  if (!s) return;
+  box.checked = !!s.require;
+  box.disabled = !!s.tunnel;
+  if (note) note.textContent = s.tunnel ? 'The Cloudflare tunnel is on, so login stays required.' : (s.require ? 'Login is required.' : 'Login is not required.');
+}
+async function loginSetRequire(on) {
+  try {
+    await fetchJSON('/api/login/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ require: !!on }) });
+    bootAuth();
+  } catch (e) { showToast(_httpDetail(e), true); }
+  loadLoginSettings();
+}
+async function loadSecurity() {
+  const status = document.getElementById('sec-status');
+  const list = document.getElementById('sec-list');
+  const add = document.getElementById('sec-add');
+  if (!status) return;
+  const info = await fetchJSON('/api/auth/webauthn/status').catch(() => null);
+  if (!info) { status.textContent = 'Passkeys could not be loaded.'; return; }
+  const rp = document.getElementById('sec-rp');
+  if (rp && document.activeElement !== rp) rp.value = info.rp_id || '';
+  if (add) add.disabled = !info.available;
+  status.textContent = info.available ? 'A passkey or a security key can sign in without a password.' : (info.reason || 'Passkeys are not available from this address.');
+  let creds = [];
+  try { creds = (await fetchJSON('/api/auth/webauthn/credentials')).credentials || []; }
+  catch (e) { if (list) list.innerHTML = '<div style="font-size:12px;color:var(--fg-dim)">Sign in before adding a key.</div>'; }
+  if (list && creds) {
+    list.innerHTML = creds.length ? creds.map(c => `<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px"><span style="font-size:12px">${_esc(c.label)}</span><button class="ctr-btn" data-cred="${_esc(c.id)}" onclick="secRemoveKey(this.dataset.cred)">Remove</button></div>`).join('') : (list.innerHTML.includes('Sign in') ? list.innerHTML : '<div style="font-size:12px;color:var(--fg-dim)">No keys yet.</div>');
+  }
+  const sessions = await fetchJSON('/api/login/sessions').catch(() => []);
+  const box = document.getElementById('sec-sessions');
+  if (box) box.innerHTML = (sessions || []).map(s => `<div style="margin-bottom:4px">${_esc(s.username)} · ${_esc(s.ua || 'session').slice(0, 80)} ${s.current ? '(this browser)' : `<button class="ctr-btn" onclick="secRevoke('${_esc(s.sid)}')">Revoke</button>`}</div>`).join('');
+}
+async function secAddKey() {
+  const msg = document.getElementById('sec-msg');
+  try {
+    const label = document.getElementById('sec-label').value.trim() || 'Passkey';
+    const begun = await fetchJSON('/api/auth/webauthn/register/begin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }) });
+    const cred = await _webauthnCreate(begun.options);
+    const done = await fetchJSON('/api/auth/webauthn/register/finish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cred) });
+    if (done.recovery_codes) showRecoveryCodes(done.recovery_codes);
+    if (msg) msg.textContent = 'Key added.';
+    loadSecurity();
+  } catch (e) { if (msg) msg.textContent = _httpDetail(e); }
+}
+async function secRemoveKey(id) {
+  await fetchJSON('/api/auth/webauthn/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
+  loadSecurity();
+}
+async function secNewRecovery() {
+  try {
+    const d = await fetchJSON('/api/auth/webauthn/recovery', { method: 'POST' });
+    showRecoveryCodes(d.recovery_codes);
+  } catch (e) { const msg = document.getElementById('sec-msg'); if (msg) msg.textContent = _httpDetail(e); }
+}
+async function secSaveRp() {
+  const msg = document.getElementById('sec-msg');
+  const rp_id = document.getElementById('sec-rp').value.trim();
+  try {
+    await fetchJSON('/api/auth/webauthn/rp', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rp_id, confirm: false }) });
+    if (msg) msg.textContent = 'Passkey domain saved.';
+  } catch (e) {
+    const detail = _httpDetail(e);
+    if (!String(detail).includes('stop working') || !confirm(detail + ' Existing keys will stop working.')) {
+      if (msg) msg.textContent = detail;
+      return;
+    }
+    await fetchJSON('/api/auth/webauthn/rp', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rp_id, confirm: true }) });
+    if (msg) msg.textContent = 'Passkey domain saved. Add your keys again.';
+  }
+}
+async function secRevoke(sid) {
+  await fetchJSON('/api/login/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
+  loadSecurity();
+}
+function tunMsg(text, warn) {
+  const el = document.getElementById('tun-msg');
+  if (!el) return;
+  el.style.color = warn ? 'var(--warn)' : 'var(--fg-muted)';
+  el.textContent = text || '';
+}
+function tunAccessToggle() {
+  const row = document.getElementById('tun-noaccess-row');
+  if (row) row.hidden = document.getElementById('tun-access').checked;
+}
+function tunConfirmInput() {
+  const btn = document.getElementById('tun-enable');
+  if (!btn) return;
+  const phrase = document.getElementById('tun-confirm').value === 'EXPOSE TO INTERNET';
+  btn.disabled = !phrase || (window._tunBlockers || []).length > 0 || window._tunOn;
+}
+async function loadTunnel() {
+  const line = document.getElementById('tun-status');
+  if (!line) return;
+  const s = await fetchJSON('/api/tunnel/status').catch(e => ({ available: false, reason: _httpDetail(e), blockers: [], hostnames: [] }));
+  window._tunBlockers = s.blockers || [];
+  window._tunOn = !!s.enabled;
+  line.textContent = !s.available ? (s.reason || 'Tunnel unavailable.') : (s.enabled ? (s.running ? 'Tunnel is on.' : 'Tunnel is on. The connector is not running yet.') : 'Tunnel is off.');
+  line.style.color = s.enabled ? 'var(--ok)' : 'var(--fg-muted)';
+  const blockers = document.getElementById('tun-blockers');
+  if (blockers) blockers.textContent = (s.blockers || []).join(' ');
+  const account = document.getElementById('tun-account');
+  if (account && document.activeElement !== account && s.account_id) account.value = s.account_id;
+  const hosts = document.getElementById('tun-hosts');
+  if (hosts) hosts.innerHTML = (s.hostnames || []).map(h => `<div style="font-size:12px;margin-bottom:4px">${_esc(h.hostname)} → port ${_esc(h.port)} ${h.access ? '· Access' : '· no Access'} ${_esc(h.dns_error || '')} <button class="ctr-btn" onclick="tunRemove('${_esc(h.hostname)}')">Remove</button></div>`).join('') || '<div style="font-size:12px;color:var(--fg-dim)">No hostnames.</div>';
+  const off = document.getElementById('tun-disable');
+  if (off) off.hidden = !s.enabled;
+  tunConfirmInput();
+}
+async function tunSave() {
+  try {
+    await fetchJSON('/api/tunnel/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_id: document.getElementById('tun-account').value.trim(), api_token: document.getElementById('tun-token').value }) });
+    document.getElementById('tun-token').value = '';
+    tunMsg('Saved.');
+    loadTunnel();
+  } catch (e) { tunMsg(_httpDetail(e), true); }
+}
+async function tunAddHost() {
+  const access = document.getElementById('tun-access').checked;
+  try {
+    await fetchJSON('/api/tunnel/hostnames', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      hostname: document.getElementById('tun-host').value.trim(),
+      port: Number(document.getElementById('tun-port').value),
+      access, confirm: access ? '' : document.getElementById('tun-noaccess').value,
+    }) });
+    document.getElementById('tun-host').value = '';
+    tunMsg('Hostname saved.');
+    loadTunnel();
+  } catch (e) { tunMsg(_httpDetail(e), true); }
+}
+async function tunRemove(hostname) {
+  try { await fetchJSON('/api/tunnel/hostnames/' + encodeURIComponent(hostname), { method: 'DELETE' }); loadTunnel(); }
+  catch (e) { tunMsg(_httpDetail(e), true); }
+}
+async function tunEnable() {
+  try {
+    await fetchJSON('/api/tunnel/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: document.getElementById('tun-confirm').value }) });
+    tunMsg('Tunnel on.');
+    loadTunnel();
+  } catch (e) { tunMsg(_httpDetail(e), true); }
+}
+async function tunDisable() {
+  try { await fetchJSON('/api/tunnel/disable', { method: 'POST' }); tunMsg('Tunnel off. Names already published stay until you remove them.'); loadTunnel(); }
+  catch (e) { tunMsg(_httpDetail(e), true); }
+}
+document.addEventListener('DOMContentLoaded', bootAuth);
 
 </script>

@@ -44,31 +44,46 @@
         "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
         "container_name": "jellyfin-plex-prod",
         "restart": "unless-stopped",
-        "ports": ["$WEB_PORT:3000"],
+        "ports": [
+          "{{WEB_PORT}}:3000"
+        ],
         "volumes": [
-          "$CONFIG_PATH:/app/config",
-          "$MEDIA_PATH:/media:ro"
+          "{{CONFIG_PATH}}:/app/config",
+          "{{MEDIA_PATH}}:/media:ro"
         ],
         "environment": {
           "NODE_ENV": "production",
-          "JELLYFIN_API_URL": "$JELLYFIN_URL",
-          "JELLYFIN_API_KEY": "$API_KEY"
+          "JELLYFIN_API_URL": "{{JELLYFIN_URL}}",
+          "JELLYFIN_API_KEY": "{{API_KEY}}"
         },
-        "networks": ["helix_network"],
+        "networks": [
+          "helix_network"
+        ],
         "healthcheck": {
-          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
-          "interval": 30,
-          "timeout": 3,
+          "test": [
+            "CMD",
+            "wget",
+            "--quiet",
+            "--tries=1",
+            "--spider",
+            "http://localhost:3000/"
+          ],
+          "interval": "30s",
+          "timeout": "3s",
           "retries": 3,
-          "start_period": 10
+          "start_period": "10s"
         },
         "depends_on": {
-          "jellyfin": {"condition": "service_healthy"}
+          "jellyfin": {
+            "condition": "service_healthy"
+          }
         }
       }
     },
     "networks": {
-      "helix_network": {"external": true}
+      "helix_network": {
+        "external": true
+      }
     }
   },
   "options": {

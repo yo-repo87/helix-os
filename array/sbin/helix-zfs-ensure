@@ -1,0 +1,181 @@
+#!/bin/bash
+# helix-zfs-ensure — make sure ZFS (tools + kernel module) works on this machine.
+#
+# Used in two places, so the image build and the running system share one code path:
+#   * build.sh, inside the image chroot:   helix-zfs-ensure --build --kver <image kernel>
+#     compiles the module for the image's kernel and leaves the packages installed.
+#   * every boot (helix-zfs-ensure.service) and the ZFS page's "Install ZFS" button:
+#       1. zpool present and the module loads           → done (the normal case)
+#       2. a saved copy for this kernel on the boot flash → install it (offline, seconds)
+#       3. otherwise download + compile (needs the network, ~5 min), then save a copy
+#     and finally import the pools recorded on the ZFS page and re-apply shares.
+#
+# The root runs from RAM, so step 2/3 repeat at every boot until an image ships ZFS;
+# the saved copy keeps that offline and fast. ZFS comes from Debian bookworm-backports
+# (contrib): bookworm's own 2.1 is too old for pools made by current TrueNAS/Unraid.
+#
+# Status for the web UI: $STATE_DIR/zfs_install.json  {"state": ..., "message": ...}
+# Log: /var/log/helix-zfs.log
+set -uo pipefail
+
+MODE=boot KVER="" FORCE=no
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --build)  MODE=build ;;
+        --kver)   KVER="$2"; shift ;;
+        --force)  FORCE=yes ;;          # reinstall even if ZFS already works
+        --status) MODE=status ;;
+        *) echo "usage: $0 [--build --kver KVER] [--force] [--status]" >&2; exit 2 ;;
+    esac
+    shift
+done
+KVER="${KVER:-$(uname -r)}"
+
+STATE_DIR="${STATE_DIR:-/var/local/helix}"
+STATUS="$STATE_DIR/zfs_install.json"
+LOG=/var/log/helix-zfs.log
+BACKPORTS=/etc/apt/sources.list.d/helix-zfs-backports.list
+# Same priority as the backend's config.py: persistent data partition, else the boot flash.
+if [ -z "${HELIX_CONFIG:-}" ]; then
+    if [ -d /mnt/data/config ] && [ -w /mnt/data/config ]; then HELIX_CONFIG=/mnt/data/config; else HELIX_CONFIG=/boot/config; fi
+fi
+CACHE="$HELIX_CONFIG/zfs/cache/$KVER"
+ARCH=$(dpkg --print-architecture 2>/dev/null || echo unknown)
+
+[ "$MODE" = status ] && { cat "$STATUS" 2>/dev/null || echo '{"state":"unknown"}'; exit 0; }
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+
+log()    { echo "[$(date '+%F %T')] $*" | tee -a "$LOG" >&2; }
+status() {   # status STATE MESSAGE
+    [ "$MODE" = build ] && return 0
+    mkdir -p "$STATE_DIR"
+    python3 -c 'import json,sys,time; json.dump({"state":sys.argv[1],"message":sys.argv[2],"kernel":sys.argv[3],"at":int(time.time())}, open(sys.argv[4]+".tmp","w"))' \
+        "$1" "$2" "$KVER" "$STATUS" && mv -f "$STATUS.tmp" "$STATUS"
+    [ "$MODE" = build ] || chown helix:helix "$STATUS" 2>/dev/null || true
+}
+fail() { log "FAILED: $*"; status failed "$*"; cleanup_sources; exit 1; }
+apt_q() { DEBIAN_FRONTEND=noninteractive apt-get -y -q --no-install-recommends -o Dpkg::Options::=--force-confold "$@"; }
+cleanup_sources() { rm -f "$BACKPORTS"; }
+
+zfs_works() {
+    command -v zpool >/dev/null || return 1
+    [ "$MODE" = build ] && { modinfo -k "$KVER" zfs >/dev/null 2>&1; return; }
+    [ -e /dev/zfs ] || modprobe zfs 2>>"$LOG" || return 1
+    [ -e /dev/zfs ]
+}
+
+# After ZFS starts working on a running system: bring back the pools imported on the ZFS
+# page (array start skipped them while ZFS was missing) and their shares.
+after_ready() {
+    [ "$MODE" = build ] && return 0
+    local lib=/usr/local/sbin/helix-array-lib.sh state_file="$STATE_DIR/array_state"
+    [ -f "$lib" ] && [ -f "$state_file" ] && [ "$(head -1 "$state_file")" = started ] || return 0
+    # shellcheck disable=SC1090
+    source "$lib"
+    if declare -F zfs_import_recorded >/dev/null; then
+        zfs_import_recorded
+        [ -x /usr/local/sbin/helix-shares-apply ] && HELIX_CONFIG="$HELIX_CONFIG" /usr/local/sbin/helix-shares-apply >/dev/null 2>&1
+    fi
+}
+
+# ── 1. Already working ───────────────────────────────────────────────────────
+if [ "$FORCE" = no ] && zfs_works; then
+    status ready "ZFS $(zpool version 2>/dev/null | head -1 | sed 's/^zfs-//') is installed."
+    after_ready
+    exit 0
+fi
+
+# ── 2. Saved copy for this kernel (offline) ──────────────────────────────────
+if [ "$MODE" = boot ] && [ "$FORCE" = no ] && ls "$CACHE"/*.deb >/dev/null 2>&1; then
+    status installing "Installing ZFS from the copy saved on the boot device…"
+    log "Installing ZFS for $KVER from $CACHE"
+    if dpkg -i --force-confold "$CACHE"/*.deb >>"$LOG" 2>&1 && depmod -a "$KVER" && zfs_works; then
+        log "ZFS installed from the saved copy"
+        status ready "ZFS installed from the copy saved on the boot device."
+        after_ready
+        exit 0
+    fi
+    log "The saved copy did not install (packages from another Helix version?); downloading instead"
+fi
+
+# ── 3. Download and compile ───────────────────────────────────────────────────
+status installing "Downloading ZFS and compiling it for this kernel ($KVER). This takes a few minutes…"
+log "Downloading ZFS for $KVER ($MODE)"
+[ "$MODE" = build ] || command -v apt-get >/dev/null || fail "apt-get is missing"
+echo 'deb http://deb.debian.org/debian bookworm-backports main contrib' > "$BACKPORTS"
+apt-get update -q >>"$LOG" 2>&1 || fail "Could not reach the Debian package servers (is the network up?)."
+
+DL=$(mktemp -d)
+trap 'rm -rf "$DL"' EXIT
+apt_q install -t bookworm-backports zfsutils-linux >>"$LOG" 2>&1 || fail "Installing the ZFS tools failed (see $LOG)."
+# Keep the exact ZFS packages now installed (built from the zfs-linux source: zfsutils-linux and
+# its libzfs/libzpool/libnvpair/libuutil) for the saved copy. --download-only would skip packages
+# that are already installed; their other dependencies are part of the image.
+if [ "$MODE" = boot ]; then
+    ( cd "$DL" && dpkg-query -W -f='${Package}=${Version} ${source:Package}\n' \
+        | awk '$2=="zfs-linux" && $1 !~ /^zfs-dkms=/ {print $1}' \
+        | xargs -r apt-get download -q >>"$LOG" 2>&1 ) || log "WARN: could not keep the ZFS packages for the saved copy"
+fi
+
+# Kernel module: DKMS needs the headers for exactly this kernel.
+apt_q install "linux-headers-$KVER" >>"$LOG" 2>&1 \
+    || fail "Debian no longer offers kernel headers for $KVER, so the ZFS module cannot be built. Update Helix OS."
+apt_q install -t bookworm-backports zfs-dkms >>"$LOG" 2>&1 || fail "Installing zfs-dkms failed (see $LOG)."
+ZVER=$(dpkg-query -W -f='${Version}' zfs-dkms)
+ZSRC=${ZVER%%-*}
+MODDIR=/lib/modules/$KVER/updates/dkms
+# zfs-dkms only builds for `uname -r`; in the image build that is the build host's kernel.
+ls "$MODDIR"/zfs.ko* >/dev/null 2>&1 || dkms install -m zfs -v "$ZSRC" -k "$KVER" >>"$LOG" 2>&1 \
+    || fail "Compiling the ZFS module for $KVER failed (see $LOG)."
+ls "$MODDIR"/zfs.ko* "$MODDIR"/spl.ko* >/dev/null 2>&1 || fail "The ZFS module was not built (see $LOG)."
+
+# Package the built module so DKMS, the headers and the compiler can be removed again
+# (hundreds of MB, and the root is RAM), and so it can be saved for the next boot.
+P=$(mktemp -d)
+install -d "$P/DEBIAN" "$P/lib/modules/$KVER/extra/zfs"
+cp "$MODDIR"/zfs.ko* "$MODDIR"/spl.ko* "$P/lib/modules/$KVER/extra/zfs/"
+cat > "$P/DEBIAN/control" <<EOF
+Package: helix-zfs-modules
+Version: $ZVER
+Architecture: $ARCH
+Maintainer: Helix OS <noreply@localhost>
+Provides: zfs-modules
+Section: kernel
+Priority: optional
+Description: OpenZFS $ZSRC kernel modules built for Linux $KVER
+EOF
+MODDEB="$DL/helix-zfs-modules_${ZVER}_${ARCH}.deb"
+dpkg-deb --build --root-owner-group "$P" "$MODDEB" >>"$LOG" 2>&1 || fail "Packaging the ZFS module failed."
+rm -rf "$P"
+dpkg -i "$MODDEB" >>"$LOG" 2>&1 || fail "Installing the packaged ZFS module failed."
+apt-mark manual zfsutils-linux >/dev/null
+apt_q purge zfs-dkms dkms "linux-headers-$KVER" >>"$LOG" 2>&1
+apt_q autoremove --purge >>"$LOG" 2>&1
+rm -rf /var/lib/dkms /usr/src/zfs-*
+depmod -a "$KVER"
+cleanup_sources
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+# Helix imports pools itself (only the ones imported on the ZFS page): never at boot by scan.
+systemctl disable zfs-import-scan.service zfs-import-cache.service zfs-import.target >/dev/null 2>&1 || true
+
+zfs_works || fail "ZFS was installed but the module does not load (see $LOG and dmesg)."
+
+# Save a copy for the next boot (the image build ships the packages instead).
+if [ "$MODE" = boot ]; then
+    if mkdir -p "$CACHE.new" && cp "$DL"/*.deb "$CACHE.new/" 2>>"$LOG"; then
+        rm -rf "$CACHE"; mv "$CACHE.new" "$CACHE"
+        # Only this kernel's copy is useful; drop the others.
+        for d in "$HELIX_CONFIG/zfs/cache"/*; do [ "$d" = "$CACHE" ] || rm -rf "$d"; done
+        log "Saved a copy in $CACHE ($(du -sh "$CACHE" | cut -f1))"
+    else
+        rm -rf "$CACHE.new"
+        log "WARN: could not save a copy in $CACHE (the next boot will download again)"
+    fi
+fi
+
+log "ZFS $ZVER ready for $KVER"
+status ready "ZFS $ZSRC was downloaded and installed."
+after_ready
+exit 0

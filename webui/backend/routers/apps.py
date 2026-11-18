@@ -21,7 +21,7 @@ import yaml
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from config import STATE_DIR, HELIX_CONFIG
+from config import STATE_DIR, HELIX_CONFIG, USER_SHARE
 from services.template_loader import (
     add_source,
     invalidate_cache,
@@ -226,9 +226,15 @@ def list_installed():
 # ── Install helpers ───────────────────────────────────────────────────────────
 
 def _substitute_vars(obj: Any, vars_map: dict) -> Any:
+    """Fill a template's variables into its compose data. Helix templates write {{KEY}};
+    templates written compose-style use $KEY / ${KEY}, which docker-compose would otherwise
+    read as unset shell variables. Only declared keys are replaced (longest first, so
+    $API_KEY never becomes the value of $API + '_KEY'); anything else is left for compose."""
     if isinstance(obj, str):
-        for k, v in vars_map.items():
-            obj = obj.replace("{{" + k + "}}", str(v))
+        for k in sorted(vars_map, key=len, reverse=True):
+            v = str(vars_map[k])
+            obj = obj.replace("{{" + k + "}}", v).replace("${" + k + "}", v)
+            obj = re.sub(r"(?<!\$)\$" + re.escape(k) + r"(?![A-Za-z0-9_])", lambda _m: v, obj)
         return obj
     if isinstance(obj, list):
         return [_substitute_vars(i, vars_map) for i in obj]
@@ -492,15 +498,48 @@ def _apply_extras(compose: dict, extras: dict) -> dict:
     return compose
 
 
+def _dedupe_volumes(vols: list) -> list:
+    """One mapping per container path. The template's come first and the user's extra folders
+    after, so the later one wins: an extra folder on /media replaces the template's /media
+    instead of making compose fail with a duplicate mount point."""
+    def target(x):
+        if isinstance(x, dict):
+            return x.get("target")
+        parts = str(x).split(":")
+        return parts[1] if len(parts) >= 2 else parts[0]
+    seen, out = set(), []
+    for x in reversed(vols):
+        t = target(x)
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(x)
+    return list(reversed(out))
+
+
+_HC_DURATIONS = ("interval", "timeout", "start_period", "start_interval")
+
+
+def _fix_healthchecks(compose: dict) -> None:
+    """compose wants healthcheck durations as strings ("30s"); a bare number is rejected."""
+    for svc in (compose.get("services") or {}).values():
+        hc = svc.get("healthcheck") if isinstance(svc, dict) else None
+        if isinstance(hc, dict):
+            for k in _HC_DURATIONS:
+                if isinstance(hc.get(k), (int, float)) and not isinstance(hc.get(k), bool):
+                    hc[k] = f"{hc[k]}s"
+
+
 def _write_compose(app_dir: Path, template: dict, vars_map: dict, extras: dict | None = None) -> Path:
     compose = _substitute_vars(template["compose"], vars_map)
     extras = extras if extras is not None else _read_extras(app_dir)
     compose = _apply_extras(compose, extras)
     compose = _apply_options(compose, extras.get("options"))
+    _fix_healthchecks(compose)
     # a folder left empty is "not used": drop its mapping instead of mounting ':/path'
     for svc in (compose.get("services") or {}).values():
         if isinstance(svc.get("volumes"), list):
-            svc["volumes"] = [x for x in svc["volumes"] if not (isinstance(x, str) and x.startswith(":"))]
+            svc["volumes"] = _dedupe_volumes([x for x in svc["volumes"] if not (isinstance(x, str) and x.startswith(":"))])
             if not svc["volumes"]:
                 del svc["volumes"]
     if "version" not in compose:
@@ -599,6 +638,16 @@ class InstallRequest(BaseModel):
     extras: dict | None = None      # {"env": {...}, "volumes": [{host, container, ro}], "options": {...}}
 
 
+def _require_user_share(template: dict, vars_map: dict) -> None:
+    """Refuse (with the real reason) when an app's folders are on /mnt/user but the user share is
+    not mounted: the folder could only be created in the RAM root, which fails as 'Permission denied'."""
+    vals = [vars_map.get(v["key"], v.get("default", "")) for v in template.get("vars", []) if v.get("type") == "path"]
+    prefix = USER_SHARE.rstrip("/") + "/"
+    if any(str(x).startswith(prefix) for x in vals) and not os.path.ismount(USER_SHARE):
+        raise HTTPException(409, f"The user share {USER_SHARE} is not mounted, so the app's folders cannot be created. "
+                                 "Stop and start the array on Main, then install again.")
+
+
 @router.post("/install")
 def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
     templates = {t["name"]: t for t in load_all_templates()}
@@ -608,6 +657,7 @@ def install_app(req: InstallRequest, background_tasks: BackgroundTasks):
         raise HTTPException(409, f"'{req.name}' is already installed")
     _require_docker()
     _clean_extras(req.extras)    # fail fast (400) on bad input, before the background task
+    _require_user_share(templates[req.name], req.vars)
     clean_vars = _validate_path_vars(templates[req.name], {**{v["key"]: v["default"] for v in templates[req.name].get("vars", [])}, **req.vars})
     background_tasks.add_task(_do_install, req.name, {**req.vars, **{k: clean_vars[k] for k in req.vars if k in clean_vars}}, req.extras)
     return {"ok": True, "message": f"Installing {templates[req.name]['title']}…"}

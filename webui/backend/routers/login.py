@@ -74,14 +74,25 @@ def _verify_pw(password: str, stored_hash: str, salt: str) -> bool:
 
 # ── Session helpers ───────────────────────────────────────────────
 
-def _new_session(username: str, role: str) -> str:
+def _new_session(username: str, role: str, ua: str = "") -> str:
     token = secrets.token_urlsafe(32)
     sessions = _load_sessions()
     now = int(time.time())
     sessions = {k: v for k, v in sessions.items() if v.get("exp", 0) > now}
-    sessions[token] = {"username": username, "role": role, "exp": now + SESSION_TTL}
+    sessions[token] = {
+        "username": username, "role": role, "exp": now + SESSION_TTL,
+        "created": now, "ua": (ua or "")[:160], "sid": secrets.token_hex(4),
+    }
     _save_sessions(sessions)
     return token
+
+
+def _set_login_cookie(response: Response, request: Request, token: str) -> None:
+    from services import authz
+    response.set_cookie(
+        "helix_login", token, httponly=True, samesite="lax", path="/",
+        secure=authz.request_is_https(request), max_age=SESSION_TTL,
+    )
 
 
 def _get_session(request: Request) -> dict | None:
@@ -113,6 +124,7 @@ def get_current_user(request: Request) -> dict | None:
 class LoginReq(BaseModel):
     username: str
     password: str
+    totp: str | None = None
 
 class CreateUser(BaseModel):
     username: str
@@ -127,32 +139,47 @@ class ChangePassword(BaseModel):
 
 @router.get("/status")
 def login_status(request: Request):
+    from services import authz, passkeys
     users = _load_users()
-    if not users:
-        return {"enabled": False, "user": None}
-    s = _get_session(request)
+    session = _get_session(request)
     return {
-        "enabled": True,
-        "user": {"username": s["username"], "role": s["role"]} if s else None,
+        "enabled": bool(users),
+        "enforced": authz.login_enforced(),
+        "reason": authz.enforcement_reason(),
+        "user": {"username": session["username"], "role": session["role"]} if session else None,
+        "passkeys": passkeys.availability(passkeys.request_host(request), passkeys.request_https(request)),
     }
 
 
 @router.post("")
-def do_login(req: LoginReq, response: Response):
+def do_login(req: LoginReq, request: Request, response: Response):
     users = _load_users()
-    if not users:
-        # No accounts configured — always allow
-        token = _new_session("admin", "admin")
-        response.set_cookie("helix_login", token, httponly=True, samesite="lax", max_age=SESSION_TTL)
-        return {"ok": True, "token": token, "username": "admin", "role": "admin"}
+    if users:
+        u = users.get(req.username)
+        if not u or not _verify_pw(req.password, u["hash"], u["salt"]):
+            raise HTTPException(401, "Invalid username or password")
+        username, role = req.username, u.get("role", "admin")
+    else:
+        username, role = "admin", "admin"      # no accounts: password step is open
 
-    u = users.get(req.username)
-    if not u or not _verify_pw(req.password, u["hash"], u["salt"]):
-        raise HTTPException(401, "Invalid username or password")
+    # Global TOTP 2FA (auth.py). A recovery code is accepted in the same field (§54.8).
+    from routers import auth as _auth
+    from services import passkeys
+    acfg = _auth._load_auth()
+    if acfg.get("totp_enabled"):
+        code = (req.totp or "").strip()
+        totp_ok = False
+        compact = code.replace(" ", "")
+        if compact.isdigit() and len(compact) == 6:
+            totp_ok = int(compact) in _auth._totp(acfg.get("totp_secret") or "")
+        if not code:
+            raise HTTPException(401, "totp_required")
+        if not totp_ok and not passkeys.consume_recovery(username, code):
+            raise HTTPException(401, "Invalid TOTP code")
 
-    token = _new_session(req.username, u.get("role", "admin"))
-    response.set_cookie("helix_login", token, httponly=True, samesite="lax", max_age=SESSION_TTL)
-    return {"ok": True, "token": token, "username": req.username, "role": u.get("role", "admin")}
+    token = _new_session(username, role, request.headers.get("user-agent", ""))
+    _set_login_cookie(response, request, token)
+    return {"ok": True, "token": token, "username": username, "role": role}
 
 
 @router.post("/logout")
@@ -190,6 +217,65 @@ def delete_login_user(username: str):
         raise HTTPException(404, "User not found")
     del users[username]
     _save_users(users)
+    return {"ok": True}
+
+
+class RequireReq(BaseModel):
+    require: bool
+
+
+@router.get("/settings")
+def login_settings():
+    from services import authz
+    from services.tunnel import public_status
+    tunnel_on = bool(public_status().get("enabled"))
+    return {
+        "require": authz.login_enforced(),
+        "reason": authz.enforcement_reason(),
+        "tunnel": tunnel_on,
+    }
+
+
+@router.post("/settings")
+def set_login_settings(req: RequireReq):
+    from services import authz
+    from services.tunnel import public_status
+    if not req.require and public_status().get("enabled"):
+        raise HTTPException(409, "Turn the Cloudflare tunnel off before opening the UI.")
+    flag = authz.REQUIRE_FLAG
+    if req.require:
+        os.makedirs(os.path.dirname(flag), exist_ok=True)
+        open(flag, "a").close()
+    elif os.path.exists(flag):
+        os.remove(flag)
+    return login_settings()
+
+
+@router.get("/sessions")
+def list_sessions(request: Request):
+    current = _get_session(request)
+    rows = []
+    for token, row in _load_sessions().items():
+        if row.get("exp", 0) <= int(time.time()):
+            continue
+        rows.append({
+            "sid": row.get("sid") or token[:8],
+            "username": row.get("username"),
+            "created": row.get("created"),
+            "exp": row.get("exp"),
+            "ua": row.get("ua") or "",
+            "current": bool(current and current.get("token") == token),
+        })
+    return rows
+
+
+@router.delete("/sessions/{sid}")
+def revoke_session(sid: str):
+    sessions = _load_sessions()
+    for token, row in list(sessions.items()):
+        if row.get("sid") == sid or token.startswith(sid):
+            sessions.pop(token, None)
+    _save_sessions(sessions)
     return {"ok": True}
 
 

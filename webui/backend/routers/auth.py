@@ -157,7 +157,9 @@ def totp_enable(req: VerifyReq):
     cfg["totp_secret"]  = secret
     cfg["pending_secret"] = None
     _save_auth(cfg)
-    return {"ok": True, "message": "TOTP 2FA enabled"}
+    from services import passkeys
+    codes = passkeys.issue_global_recovery()
+    return {"ok": True, "message": "TOTP 2FA enabled", "recovery_codes": codes}
 
 
 @router.post("/totp/disable")

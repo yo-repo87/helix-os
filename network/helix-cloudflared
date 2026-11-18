@@ -1,0 +1,76 @@
+#!/bin/bash
+# Start or stop the Cloudflare Tunnel connector. The token file is on HELIXDATA.
+# The binary is downloaded once, pinned, and checked before it is executed.
+set -u
+DIR="${2:-${HELIX_TUNNEL_DIR:-/mnt/data/cloudflared}}"
+VER="2026.11.0"
+PIDFILE="/run/helix-cloudflared.pid"
+BIN="$DIR/bin/cloudflared"
+TOKEN="$DIR/connector.token"
+
+case "$(uname -m)" in
+  x86_64|amd64) ASSET="cloudflared-linux-amd64"; SUM="51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd" ;;
+  aarch64|arm64) ASSET="cloudflared-linux-arm64"; SUM="abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f" ;;
+  *) echo "cloudflared: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+install_bin() {
+  mkdir -p "$DIR/bin"
+  chmod 700 "$DIR" "$DIR/bin" 2>/dev/null || true
+  if [ -x "$BIN" ] && echo "$SUM  $BIN" | sha256sum -c --status; then
+    return 0
+  fi
+  tmp="$(mktemp)"
+  url="https://github.com/cloudflare/cloudflared/releases/download/${VER}/${ASSET}"
+  curl -fsSL --retry 2 -o "$tmp" "$url" || { rm -f "$tmp"; echo "cloudflared: download failed" >&2; exit 1; }
+  echo "$SUM  $tmp" | sha256sum -c --status || { rm -f "$tmp"; echo "cloudflared: checksum mismatch" >&2; exit 1; }
+  install -m 0755 "$tmp" "$BIN"
+  rm -f "$tmp"
+}
+
+running() {
+  [ -f "$PIDFILE" ] || return 1
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+start() {
+  install_bin
+  [ -f "$TOKEN" ] || { echo "cloudflared: connector token is missing" >&2; exit 1; }
+  if running; then
+    echo "running"
+    exit 0
+  fi
+  if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemd-run --unit=helix-cloudflared --collect --quiet \
+      "$BIN" tunnel --no-autoupdate run --token-file "$TOKEN"
+    # systemd-run does not leave a pid we own; record the unit's main pid.
+    sleep 0.5
+    pid="$(systemctl show -p MainPID --value helix-cloudflared 2>/dev/null || true)"
+    if [ -n "$pid" ] && [ "$pid" != "0" ]; then echo "$pid" > "$PIDFILE"; fi
+  else
+    nohup "$BIN" tunnel --no-autoupdate run --token-file "$TOKEN" >/var/log/helix-cloudflared.log 2>&1 &
+    echo $! > "$PIDFILE"
+  fi
+  echo "started"
+}
+
+stop() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop helix-cloudflared >/dev/null 2>&1 || true
+  fi
+  if [ -f "$PIDFILE" ]; then
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" >/dev/null 2>&1 || true
+    rm -f "$PIDFILE"
+  fi
+  echo "stopped"
+}
+
+case "${1:-status}" in
+  install) install_bin ;;
+  start) start ;;
+  stop) stop ;;
+  status) if running; then echo running; else echo stopped; fi ;;
+  *) echo "usage: helix-cloudflared install|start|stop|status" >&2; exit 2 ;;
+esac

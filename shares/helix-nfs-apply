@@ -47,6 +47,18 @@ while IFS= read -r section; do
     options=$(cfg_get "$section" "nfs_options" "$SHARES_CFG" 2>/dev/null || true)
     options="${options:-$NFS_OPTIONS}"
     path="$USER_SHARE/$section"
+    # A share on a ZFS pool says where it lives (path=/mnt/<pool>...); anything else stays on the user share.
+    custom=$(cfg_get "$section" "path" "$SHARES_CFG" 2>/dev/null || true)
+    case "$custom" in
+        /mnt/user|/mnt/user/*|*..*|"") ;;
+        # Exported only while its pool is mounted: once the pool is exported the folder left in the RAM
+    # root is on "/", and sharing that would offer an empty share that writes into RAM.
+    /mnt/?*) if [ -d "$custom" ] && [ "$(findmnt -rn -o TARGET -T "$custom" 2>/dev/null)" != "/" ]; then
+                 path="$custom"
+             else
+                 echo "skip [$section]: $custom is not mounted" >&2; continue
+             fi ;;
+    esac
 
     # Exports from the mergerfs (FUSE) user share require an explicit fsid=. Derive a
     # stable one from the share name so it never changes between regenerations.

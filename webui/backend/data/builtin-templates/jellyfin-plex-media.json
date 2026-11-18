@@ -25,17 +25,28 @@
         "image": "ghcr.io/yo-repo87/jellyfin-plex-enhancement:latest",
         "container_name": "jellyfin-plex-media",
         "restart": "unless-stopped",
-        "ports": ["$WEB_PORT:3000"],
-        "volumes": [
-          "$MEDIA_PATH:/media:ro"
+        "ports": [
+          "{{WEB_PORT}}:3000"
         ],
-        "environment": {"NODE_ENV": "production"},
+        "volumes": [
+          "{{MEDIA_PATH}}:/media:ro"
+        ],
+        "environment": {
+          "NODE_ENV": "production"
+        },
         "healthcheck": {
-          "test": ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"],
-          "interval": 30,
-          "timeout": 3,
+          "test": [
+            "CMD",
+            "wget",
+            "--quiet",
+            "--tries=1",
+            "--spider",
+            "http://localhost:3000/"
+          ],
+          "interval": "30s",
+          "timeout": "3s",
           "retries": 3,
-          "start_period": 10
+          "start_period": "10s"
         }
       }
     }

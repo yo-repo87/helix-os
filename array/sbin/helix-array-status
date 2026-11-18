@@ -25,7 +25,7 @@ for i in "${!DATA_DISKS[@]}"; do
         read -r size used avail pct _ < <(df -h --output=size,used,avail,pcent "$mnt" | tail -1)
     fi
 
-    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo "unknown")
+    fstype=$(fs_type "$dev"); fstype="${fstype:-unknown}"
     temp=$(smartctl -A "$dev" 2>/dev/null \
            | grep -i "temperature_celsius" | awk '{print $10}' || echo "")
 
@@ -44,7 +44,7 @@ for i in "${!CACHE_DISKS[@]}"; do
     if [ "$mounted" = "yes" ]; then
         read -r size used avail pct _ < <(df -h --output=size,used,avail,pcent "$mnt" | tail -1)
     fi
-    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo "unknown")
+    fstype=$(fs_type "$dev"); fstype="${fstype:-unknown}"
     temp=$(smartctl -A "$dev" 2>/dev/null | grep -i "temperature_celsius" | awk '{print $10}' || echo "")
     cache_info+=("$name|$dev|$present|$mounted|$fstype|$size|$used|$avail|$pct|$temp")
 done
@@ -61,7 +61,7 @@ for i in "${!PARITY_DEVS[@]}"; do
     if [ "$mounted" = "yes" ]; then
         read -r size used avail pct _ < <(df -h --output=size,used,avail,pcent "$mnt" | tail -1)
     fi
-    fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo "unknown")
+    fstype=$(fs_type "$dev"); fstype="${fstype:-unknown}"
     temp=$(smartctl -A "$dev" 2>/dev/null | grep -i "temperature_celsius" | awk '{print $10}' || echo "")
     parity_info+=("$name|$dev|$present|$mounted|$fstype|$size|$used|$avail|$pct|$temp")
 done

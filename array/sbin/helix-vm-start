@@ -35,10 +35,7 @@ fi
 [ -e /dev/kvm ] || helix_log "WARN: /dev/kvm is missing: VMs cannot start without hardware virtualization."
 
 load_disk_config
-base=""
-for m in "${CACHE_MNTS[@]:-}" "${DATA_MNTS[@]:-}"; do
-    [ -n "$m" ] && mountpoint -q "$m" && { base="$m"; break; }
-done
+base=$(system_disk libvirt)   # the disk that already holds the VM definitions, else cache, else first data disk
 [ -n "$base" ] || { echo "No formatted disk is mounted to keep the VM state on"; exit 1; }
 dest="$base/system/libvirt"
 

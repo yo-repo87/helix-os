@@ -87,7 +87,8 @@ def connect_info():
             e["smb"] = {"windows": f"\\\\{addr}\\{name}", "url": f"smb://{addr}/{name}", "host_url": f"smb://{host}/{name}",
                         "access": "guest access, no password" if public else "needs a user name and password"}
         if cfg.get("nfs") == "yes":
-            e["nfs"] = {"export": f"{addr}:{USER_SHARE}/{name}", "mount": f"sudo mount -t nfs {addr}:{USER_SHARE}/{name} /mnt/{name}"}
+            where = cfg.get("path") or f"{USER_SHARE}/{name}"
+            e["nfs"] = {"export": f"{addr}:{where}", "mount": f"sudo mount -t nfs {addr}:{where} /mnt/{name}"}
         if "smb" in e or "nfs" in e:
             out.append(e)
     return {"host": host, "ips": ips, "array_started": os.path.ismount(USER_SHARE), "shares": out}
@@ -98,7 +99,7 @@ def list_shares():
     shares = _parse_shares()
     result = []
     for name, cfg in shares.items():
-        share_path = os.path.join(USER_SHARE, name)
+        share_path = cfg.get("path") or os.path.join(USER_SHARE, name)
         info = {"name": name, **cfg}
         try:
             st = os.statvfs(share_path)
@@ -181,7 +182,7 @@ def get_share(name: str):
     shares = _parse_shares()
     if name not in shares:
         raise HTTPException(404, f"Share '{name}' not found")
-    share_path = os.path.join(USER_SHARE, name)
+    share_path = shares[name].get("path") or os.path.join(USER_SHARE, name)
     info = {"name": name, **shares[name]}
     try:
         st = os.statvfs(share_path)

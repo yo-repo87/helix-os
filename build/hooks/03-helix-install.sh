@@ -443,7 +443,9 @@ for helper in \
     /build/array/sbin/helix-mover \
     /build/array/sbin/helix-vm-start /build/array/sbin/helix-vm-stop \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
-    /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor /build/addins/helix-addin; do
+    /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor /build/addins/helix-addin \
+    /build/network/helix-cloudflared \
+    /build/array/sbin/helix-zfs-ensure; do
     if [ -f "$helper" ]; then
         install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
         echo "  installed /usr/local/sbin/$(basename "$helper")"
@@ -648,6 +650,32 @@ WantedBy=multi-user.target
 ASSVC
 systemctl enable helix-array-autostart 2>/dev/null || echo "  (helix-array-autostart enable deferred)"
 echo "  installed /usr/local/sbin/helix-firstboot + service"
+
+# ZFS is not in the base image. This oneshot installs it from the saved
+# copy on the boot flash, or compiles it, without holding up array start.
+# Timeout is long because a DKMS build can take most of an hour.
+cat > /etc/systemd/system/helix-zfs-ensure.service <<'ZFSSVC'
+[Unit]
+Description=Helix OS — make sure ZFS is installed for this kernel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=45min
+ExecStart=/usr/local/sbin/helix-zfs-ensure
+
+[Install]
+WantedBy=multi-user.target
+ZFSSVC
+systemctl enable helix-zfs-ensure 2>/dev/null || ln -sf /etc/systemd/system/helix-zfs-ensure.service /etc/systemd/system/multi-user.target.wants/helix-zfs-ensure.service
+echo "  installed helix-zfs-ensure.service"
+
+if [ -f /build/array/profile.d/helix-claude.sh ]; then
+    install -m 644 /build/array/profile.d/helix-claude.sh /etc/profile.d/helix-claude.sh
+    echo "  installed /etc/profile.d/helix-claude.sh"
+fi
 
 # Fallback: DHCP on any wired interface, so the machine is reachable out of the
 # box even if helix-apply-network hasn't run or network.cfg is empty. The

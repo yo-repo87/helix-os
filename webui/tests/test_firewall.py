@@ -86,7 +86,7 @@ check("container name shown", rows[("tcp", 32400)]["container"] == "plex")
 
 sug = fw.learn_rules({"mode": "learn"}, li, ctrs)
 names = {x["name"]: x for x in sug}
-check("learn: one LAN rule per service, SSH/loopback skipped", set(names) == {"plex", "redis-server", "Port 51820"}
+check("learn: one LAN rule per service, SSH/loopback skipped", set(names) == {"plex", "redis-server", "WireGuard"}
       and all(x["source"] == "lan" and x["learned"] for x in sug))
 ecfg = {"mode": "enforce", "rules": [names["plex"]]}
 rows = {(x["proto"], x["port"]): x for x in fw.audit(ecfg, li, ctrs)}

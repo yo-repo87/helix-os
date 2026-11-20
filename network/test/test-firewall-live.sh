@@ -151,6 +151,12 @@ sleep 3
 expect "watcher banned the address after 5 failed FTP logins" wanc 203.0.113.1:8080 no
 grep -q "banned 203.0.113.2" /tmp/watch.log && ok "watcher logged the ban" || bad "watcher log: $(cat /tmp/watch.log)"
 kill $WPID 2>/dev/null; $FW unban 203.0.113.2 >/dev/null
+EV=$STATE_DIR/firewall-events.jsonl
+[ "$(grep -c '"kind": "bans"' $EV 2>/dev/null)" -ge 2 ] && ok "ban notifications queued (manual + watcher)" || bad "ban events: $(cat $EV 2>/dev/null)"
+grep -q 'Firewall banned 203.0.113.2' $EV && ok "ban notification names the address" || bad "ban event text"
+pending "{\"mode\":\"enforce\",$BASE,\"blocklists\":[{\"id\":\"broken\",\"name\":\"t\",\"url\":\"https://invalid.example/list\",\"enabled\":true}]}"
+$FW apply >/dev/null; $FW update-lists >/dev/null 2>&1
+grep -q '"kind": "lists"' $EV && ok "failed list download queued a notification" || bad "list event: $(tail -2 $EV)"
 
 $FW off >/dev/null
 nft list table inet helix >/dev/null 2>&1 && bad "table still there after off" || ok "off removes the table"

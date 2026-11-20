@@ -28,7 +28,8 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 - `.142` **is on 3.3.8 since 2026-11-20 23:20** (array started by hand, 36 containers, Plex with both GPUs). Two more
   fixes are hot-patched into its RAM and lost at reboot until the next release: `routers/proxy.py` (reads root-only NPM
   files via sudo) and `addins/helix-addin` (dpkg passes until done).
-- **Unreleased fixes (ship in the next release):**
+- **3.3.9 (building 2026-11-20):** firewall notifications + the fixes below.
+- **Unreleased fixes (ship in 3.3.9):**
   - NVIDIA add-in restore: `apt-get` on local .debs fails ("Pathname to install is not absolute"), and two dpkg passes
     were not enough; `install_debs` now repeats `dpkg -i` + `dpkg --configure -a` until done or no progress (8 max).
   - Reverse proxy page said "not running yet" while NPM ran: `/run/npm`, `/run/helix`, `/data` are root-only and the
@@ -239,6 +240,12 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
   removed from every list (FireHOL 1 contains RFC1918). Country block / allow-only (LAN/VPN exempt). SYN-flood and ping
   limits; per-rule new-connection limit per source. Per-container outbound (lan / none / vpn = only via `pia0`, a kill
   switch) by container IPv4 (docker inspect at apply; the watcher re-applies on container start/die).
+- **Notifications (3.3.9):** bans, a change undone because Keep wasn't pressed, a list update that failed, a new service
+  listening without a rule. The root helper only queues events in `STATE_DIR/firewall-events.jsonl`;
+  `services/firewall_events.py` (backend thread) sends them via `notifications.notify(source="firewall")` and checks for
+  new uncovered services every 5 min (`HELIX_CONFIG/firewall-seen.json`: first check records, a port must be seen in
+  two checks, a returning port is not new). Switches in `firewall.json` `notify`; a notify-only change applies without
+  the Keep countdown. Tests: `webui/tests/test_firewall_events.py`, live test (48 checks), browser check.
 - Tests: `webui/tests/test_firewall.py` (offline, ~100 checks), `network/test/test-firewall-live.sh` (real packets in a
   privileged container's own netns on `.142`: 45 checks incl. bans, watcher, blocklist, countries, rate limit, outbound),
   Playwright runs of the page (21 + 16 checks against a throwaway backend with a stand-in `nft`; real list downloads).

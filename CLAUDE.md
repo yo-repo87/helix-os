@@ -191,6 +191,26 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
   back to `.prev`. **Only on live-boot systems** (`/run/helix/` exists); a plain Debian install gets `git pull` +
   service restart instead. `grub.cfg` is not updated by OTA.
 
+### 4.11a Firewall (3.3.6, core built 2026-11-20)
+- nftables, one Helix-owned table `inet helix` (input + forward hooks at priority filter-10, i.e. before Docker's).
+  Never `flush ruleset`; `nftables.service` is masked (Debian's would wipe Docker/PIA rules). Container ports are
+  filtered in forward only for DNATed traffic into Docker bridges (`docker0`, `br-*`, `br_*`; VM bridge `br0` untouched),
+  matched on `ct original proto-dst` (the published port). Container→container / →outside untouched.
+- Engine `services/firewall.py` (pure: validation, `generate`, `parse_ss`, `learn_rules`, `audit`, `parse_log`), root
+  helper `network/helix-firewall` (`boot|apply [--revert-after N]|confirm|revert|off|status`, checks with `nft -c`, one
+  atomic transaction), API `routers/firewall.py`, page `webui/frontend/firewall.js` (`#firewall`: Overview, Rules,
+  Exposure, Blocked). Config `HELIX_CONFIG/firewall.json`; pending change `STATE_DIR/firewall.pending.json`.
+- Modes off / learn / enforce. First boot without a config = learn (user decision). SSH + web UI (22/80/443/8443)
+  always allowed from LAN (private ranges by default) and VPN (`wg*`, `tailscale0`, 100.64/10). Enforcing changes undo
+  themselves after 90 s (`systemd-run` timer running the same helper) unless Keep; the API refuses a change that would
+  lock out the requesting client (409). Console escape: `sudo helix-firewall off`.
+- Drops logged (`helix-fw-drop:` / `helix-fw-learn:`, 10/s) → `journalctl -k`.
+- Traps: never use protocol names in rules (`ipv6-icmp` needs /etc/protocols → whole ruleset rejected); `ss -u` lists
+  client sockets too — ephemeral-range UDP owned by a process is skipped, kernel listeners (WireGuard, NFS) kept.
+- Tests: `webui/tests/test_firewall.py` (offline), `network/test/test-firewall-live.sh` (real packets in a privileged
+  container's own netns on `.142`: 25 checks), Playwright run of the page (21 checks, against a throwaway backend with a
+  stand-in `nft`). **Not yet tested:** the 90 s undo timer on real systemd, a booted image, the dashboard tile (not built).
+
 ### 4.11 Other features (brief)
 File manager (server-side jobs, chunked upload, rules in `services/fileutil.py`), FTP (vsftpd, chrooted to
 `/mnt/user`, users act as `helix`, anon read-only, applied at backend start), MCP server `POST /mcp` (bearer = API

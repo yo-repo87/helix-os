@@ -52,10 +52,10 @@ def layout(disk):
         f = line.rstrip(";").split(":")
         if len(f) >= 6 and f[0] == disk:
             table = f[5]
+        elif len(f) >= 5 and f[4] == "free":            # free rows also start with a number: check them first
+            frees.append((int(f[1].rstrip("B")), int(f[2].rstrip("B"))))
         elif len(f) >= 4 and f[0].isdigit():
             parts.append((int(f[0]), int(f[1].rstrip("B")), int(f[2].rstrip("B"))))
-        elif len(f) >= 5 and f[4] == "free":
-            frees.append((int(f[1].rstrip("B")), int(f[2].rstrip("B"))))
     last_end = max((p[2] for p in parts), default=0)
     tail = [fr for fr in frees if fr[0] > last_end]
     return table, parts, (max(tail, key=lambda fr: fr[1] - fr[0]) if tail else None)

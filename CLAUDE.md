@@ -220,7 +220,9 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
 - Tests: `webui/tests/test_firewall.py` (offline, ~100 checks), `network/test/test-firewall-live.sh` (real packets in a
   privileged container's own netns on `.142`: 45 checks incl. bans, watcher, blocklist, countries, rate limit, outbound),
   Playwright runs of the page (21 + 16 checks against a throwaway backend with a stand-in `nft`; real list downloads).
-  **Not yet tested:** the 90 s undo timer on real systemd, a booted image, IPv6 container outbound (sets are IPv4 only).
+  **Booted 3.3.6 USB image (QEMU/KVM on `.142`, USB stick, BIOS and UEFI, 2026-11-20):** first boot = learn mode, table
+  active, watcher running; enforce without Keep reverted itself after 90 s (web UI stayed reachable); Keep saved it;
+  survived a reboot. Not tested: IPv6 container outbound (sets are IPv4 only).
 
 ### 4.11 Other features (brief)
 File manager (server-side jobs, chunked upload, rules in `services/fileutil.py`), FTP (vsftpd, chrooted to
@@ -276,6 +278,12 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
   512 MiB x86 image and 2/2.5 GiB layouts silently broke as the image grew; v3.3.1–3.3.5 shipped no x86 `.img.xz`.
 - **v3.3.5's release lists arm64 in its manifest but lacks the arm64 squashfs and the Pi image** — Pis cannot update
   to it. 3.3.6 supersedes it; fixing 3.3.5 itself needs a GitHub token. `publish-update.sh` now refuses such a release.
+
+### Boot test of 3.3.6 (2026-11-20) — `.img.xz` as a USB stick, QEMU/KVM on `.142`
+BIOS and UEFI (OVMF) both up in ~25 s. Plymouth exited (no `plymouthd`), each fresh machine made its own SSH host key
+and kept it across a reboot, HELIXDATA mounted with config in `/mnt/data/config`, firewall checks above all passed.
+BIOS GRUB on a loop device needs a `device.map` (`(hd0) /dev/loopN`); the old image script hid that failure with
+`|| true`, so earlier x86 images were probably UEFI-only. The Pi image cannot be boot-tested in QEMU (Pi-specific kernel).
 
 ### Release (OTA)
 1. Bump `build/config/VERSION` (patch on every shipped update). Commit and **push** first.

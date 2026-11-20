@@ -204,8 +204,8 @@ block only written once a cert exists), Claude Code for the `helix` user stored 
 zvols and dir storage; groups by `source:container:vmid`; reads VM confs from pmxcfs `config.db` on the `root` LV;
 `import_spec` → vmxml spec (block disks as `/dev/disk/by-id/dm-name-…`). `routers/pve.py`: `/api/pve/{scan,confs,import}`,
 503 without lvm2/hypervisor. VMs page card "Import from Proxmox". Proven live on `.142` (VMs 102, 103 booted) — RAM-only.
-To finish: ship `lvm2` + `thin-provisioning-tools` in the image, record imports + re-activate at array start, bridge
-mapping, hostpci re-attach.
+`lvm2` + thin tools ship from 3.3.6 (auto-activation off). To finish: record imports + re-activate their VG at array
+start, bridge mapping, hostpci re-attach.
 
 ## 5. Build, test, release
 
@@ -266,8 +266,8 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 
 - 3.3.5 not yet applied/boot-tested on `.142`; NPM/OpenResty, Plymouth, tunnel never booted in a real image.
 - gpu-guard golden compose on `.142` still maps the deleted `/tv` folder.
-- `plymouthd` sometimes never exits after boot, wedging PID 1 on the console (kill -KILL it; not fixed — seen
-  again on `.142` after the 3.3.5 boot: Docker/containers only came up after the kill).
+- `plymouthd` never exiting after boot (blocked PID 1 on `.142`) is fixed in the repo for 3.3.6 (plymouth-start masked +
+  reaper); confirm on the first booted 3.3.6 image.
 - Per-share cache policy (yes/no/only/prefer), mover schedule, split level; Samba from `ident.cfg`; notifications not
   wired to real events beyond monitoring; global Apply/Reset; dated backups of boot config.
 - Not on real hardware: RAID-card drivers (3.3.4), Pi boot/splash, Netdata on arm64, GPU passthrough.

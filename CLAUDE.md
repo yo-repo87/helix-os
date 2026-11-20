@@ -13,14 +13,15 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 ## 1. Current state (2026-11-20) — read first
 
-- **3.3.6 locks out every box with a login account** (login route bug, fixed in `f9d4273`). 3.3.7 was built but never
-  published; the fix ships in **3.3.8** with the data-partition offer. `.142` runs 3.3.6 with the fixed `login.py`
-  hot-patched into RAM (lost at reboot until 3.3.8).
-- **Version 3.3.6 published 2026-11-20** (tag `v3.3.6` → `dd2a450`, GitHub "Latest"): firewall, per-machine SSH host
-  keys, WebSocket login, 3.3.6 fixes (§6a), 4 GiB boot partitions. Assets: OTA files for amd64 + arm64,
-  `helix-os-3.3.6.img.xz` (PC USB, BIOS + UEFI, no Secure Boot), `helix-os-pi-3.3.6.img.xz`; no ISO. Built on `.142`
-  with `build/builder/run.sh`, published with `build/builder/publish.sh` (all 9 assets verified). Releases on GitHub:
-  v3.3.0–v3.3.2, v3.3.4, v3.3.5 (amd64 only, tidied), v3.3.6. `.142` still runs 3.3.5 (its updater offers 3.3.6).
+- **Version 3.3.8 published 2026-11-20** (tag `v3.3.8` → `5aa8b1f`, GitHub "Latest"; all 9 assets verified): the
+  login fix + the data-partition offer on top of 3.3.6 (firewall, per-machine SSH host keys, WebSocket login, §6a
+  fixes, 4 GiB boot partitions). Boot-tested in QEMU (BIOS + UEFI) **with a login account and a real login**. Both arches
+  used the NPM build cache (whole build ~1 h). Assets: OTA files amd64 + arm64, `helix-os-3.3.8.img.xz` (PC USB, BIOS +
+  UEFI, no Secure Boot), `helix-os-pi-3.3.8.img.xz`; no ISO.
+- **3.3.6 is withdrawn** (marked pre-release, notes say why): its login never created a session. 3.3.7 was built but
+  never published. v3.3.5 is amd64-only (tidied).
+- `.142` runs 3.3.6 with the fixed `login.py` hot-patched into RAM; its updater offers 3.3.8. Its new HELIXDATA
+  (`/dev/sdj3`) is mounted from the next boot; the array must be started by hand after a reboot (autostart off).
 - **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).
   `./gitkey` (ignored by git, chmod 600) holds labelled lines with a fine-grained `github_pat_` and a classic `ghp_`
   token, both with push to `yo-repo87/helix-os`. Scripts take the first `github_pat_` line. Never print it. Neither

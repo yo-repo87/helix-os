@@ -40,8 +40,13 @@ check("off: runtime removed", "runtime" not in p)
 check("off: NVIDIA env removed, TZ kept", p["environment"] == {"TZ": "UTC"})
 check("off: form reads it back", apps._effective_options(c)["gpu_nvidia"] is False)
 
+c = compose(["NVIDIA_VISIBLE_DEVICES=all", "NVIDIA_DRIVER_CAPABILITIES=all"]); c["services"]["plex"]["runtime"] = "nvidia"
+c = apps._apply_options(c, off)
+check("list env with only NVIDIA keys + off: runtime and environment dropped",
+      "environment" not in c["services"]["plex"] and "runtime" not in c["services"]["plex"])
 c = apps._apply_options(compose(["NVIDIA_VISIBLE_DEVICES=all"]), off)
-check("list env with only NVIDIA keys + off: environment dropped", "environment" not in c["services"]["plex"])
+check("template's own NVIDIA env without the runtime is left alone",
+      c["services"]["plex"]["environment"] == {"NVIDIA_VISIBLE_DEVICES": "all"})
 c = apps._apply_options(compose(), on)
 check("no env + on: environment created", c["services"]["plex"]["environment"]["NVIDIA_VISIBLE_DEVICES"] == "all")
 check("template runtime nvidia shows as on", apps._effective_options(

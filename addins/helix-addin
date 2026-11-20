@@ -40,8 +40,10 @@ def log(msg):
 def run(cmd, check=True, **kw):
     log("$ " + " ".join(cmd))
     r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
-    if r.stdout.strip():
-        log(r.stdout.rstrip()[-4000:])
+    out = r.stdout.rstrip()
+    if out:
+        # Keep the start too: with ~100 packages the first error is what matters.
+        log(out if len(out) <= 8000 else out[:3000] + "\n[... output trimmed ...]\n" + out[-5000:])
     if check and r.returncode != 0:
         raise SystemExit(f"FAILED ({r.returncode}): {' '.join(cmd)}")
     return r
@@ -138,7 +140,17 @@ def install_debs(cache):
     if not debs:
         raise SystemExit("no packages in the cache")
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    # One `dpkg -i` over the whole cache fails on Pre-Depends (glx-diversions needs glx-alternative-mesa
+    # configured before it is unpacked), which broke every restore. apt orders the set itself and,
+    # given local paths with --no-download, never touches the network.
+    r = run(["apt-get", "install", "-y", "--no-download", "--no-install-recommends", "--allow-downgrades",
+             "-o", "Dpkg::Options::=--force-confold", *debs], check=False, env=env)
+    if r.returncode == 0:
+        return
+    log("apt-get could not install the cached set; falling back to dpkg in two passes")
+    run(["dpkg", "--force-confold", "-i", *debs], check=False, env=env)
     run(["dpkg", "--force-confold", "-i", *debs], env=env)
+    run(["dpkg", "--configure", "-a"], env=env)
 
 
 IMAGE_SQUASHFS = "/boot/boot/filesystem.squashfs"

@@ -50,6 +50,8 @@ def drain_events(cfg: dict | None = None, notify=_notify) -> int:
                     e = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(e, dict):                 # valid JSON is not always an event
+                    continue
                 if not on.get(e.get("kind"), True):
                     continue
                 notify(e.get("level", "warning"), str(e.get("title", "Firewall"))[:120], str(e.get("message", ""))[:800])

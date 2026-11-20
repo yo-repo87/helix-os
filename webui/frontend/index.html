@@ -1223,6 +1223,7 @@ main { padding-bottom: 44px; }
       <a class="panel-action" href="#vm-settings">VM Manager settings</a>
       <button class="ctr-btn" id="vm-startall-btn" onclick="vmAll('start-all')">Start all</button>
       <button class="ctr-btn" id="vm-stopall-btn" onclick="vmAll('stop-all')">Stop all</button>
+      <button class="ctr-btn" id="vm-pve-btn" onclick="loadPveImport()">⇪ Import from Proxmox</button>
       <button class="settings-btn primary" id="vm-add-btn" onclick="location.hash='#vm/new'">+ Add VM</button>
     </div>
     <div id="vm-banner"></div>
@@ -1230,6 +1231,14 @@ main { padding-bottom: 44px; }
     <div class="panel" id="vm-table-wrap" hidden><div style="overflow-x:auto"><table class="vm-table">
       <thead><tr><th style="width:44px"></th><th>Name</th><th>Description</th><th>CPUs</th><th>Memory</th><th>vDisks / size</th><th>Graphics</th><th>IP address</th><th>Autostart</th></tr></thead>
       <tbody id="vm-tbody"></tbody></table></div></div>
+    <div class="panel" id="pve-import-panel" hidden style="margin-top:14px">
+      <div class="vm-head" style="margin-bottom:8px">
+        <span class="section-title" style="margin:0">Import from Proxmox</span>
+        <span style="flex:1"></span>
+        <button class="settings-btn" onclick="loadPveImport()" style="font-size:11px">↺ Rescan</button>
+      </div>
+      <div id="pve-import-body" class="muted">Scanning…</div>
+    </div>
   </div>
 
   <!-- VM add/edit form (#vm/new, #vm/<name>) -->
@@ -11002,6 +11011,66 @@ async function tunDisable() {
   try { await fetchJSON('/api/tunnel/disable', { method: 'POST' }); tunMsg('Tunnel off. Names already published stay until you remove them.'); loadTunnel(); }
   catch (e) { tunMsg(_httpDetail(e), true); }
 }
+
+// ── Proxmox VM import (CLAUDE.md §58) ──────────────────────────────────────────
+async function loadPveImport() {
+  const panel = document.getElementById('pve-import-panel');
+  const body = document.getElementById('pve-import-body');
+  if (!panel || !body) return;
+  panel.hidden = false;
+  body.className = 'muted';
+  body.textContent = 'Scanning the assigned disks for former-Proxmox VMs…';
+  let d;
+  try { d = await fetchJSON('/api/pve/scan'); }
+  catch (e) { body.textContent = 'Scan failed: ' + _httpDetail(e); return; }
+  const vms = d.vms || [];
+  let html = '';
+  if (d.hints && d.hints.length)
+    html += '<div class="muted" style="margin-bottom:8px">' + d.hints.map(_esc).join('<br>') + '</div>';
+  if (!vms.length) {
+    body.className = '';
+    body.innerHTML = html + '<div class="muted">No former-Proxmox VM disks found on the assigned disks.</div>';
+    return;
+  }
+  html += '<div style="overflow-x:auto"><table class="vm-table"><thead><tr>' +
+          '<th>VM</th><th>Storage</th><th>Disks</th><th></th></tr></thead><tbody>';
+  for (const v of vms) {
+    const names = (v.disks || []).map(x => _esc(x.name)).join(', ');
+    const tag = v.template ? ' <span class="muted">(template)</span>' : '';
+    const act = v.template
+      ? '<span class="muted">clone in Proxmox first</span>'
+      : `<button class="ctr-btn" onclick="pveImport('${_esc(v.key)}', this)">Import</button>`;
+    html += `<tr><td>VMID ${v.vmid}${tag}</td><td>${_esc(v.source)}:${_esc(v.container)}</td>` +
+            `<td title="${names}">${(v.disks || []).length}</td><td>${act}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  html += '<div class="muted" style="margin-top:8px">Import reads the VM\'s definition from a ' +
+          'former Proxmox root when one is present, attaches its existing disk(s), and creates the VM. ' +
+          'The source VM must be powered off in Proxmox.</div>';
+  body.className = '';
+  body.innerHTML = html;
+}
+async function pveImport(key, btn) {
+  if (!confirm('Import ' + key + ' into Helix?\n\nThe source VM must be powered off in Proxmox.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+  try {
+    const r = await fetchJSON('/api/pve/import', {
+      method: 'POST',
+      body: JSON.stringify({ key, bridge: 'br0', with_config: true, start: false }),
+    });
+    const nm = (r.spec && r.spec.name) || key;
+    let msg = 'Imported ' + key + ' as VM "' + nm + '"' +
+              (r.used_config ? ' (with its Proxmox config).' : ' (disk-only — set CPU/RAM/boot).');
+    if (r.warnings && r.warnings.length) msg += '\n\nNotes:\n• ' + r.warnings.join('\n• ');
+    alert(msg);
+    if (typeof loadVMs === 'function') loadVMs();
+    loadPveImport();
+  } catch (e) {
+    alert('Import failed: ' + _httpDetail(e));
+    if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+  }
+}
+
 document.addEventListener('DOMContentLoaded', bootAuth);
 
 </script>

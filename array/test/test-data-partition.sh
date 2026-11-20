@@ -9,7 +9,9 @@ ok()  { echo "PASS $1"; P=$((P+1)); }
 bad() { echo "FAIL $1"; F=$((F+1)); }
 J() { python3 -c "import json,sys; d=json.load(sys.stdin); print(d$1)"; }
 stick() {   # stick <gpt|msdos> <total MiB> <boot end MiB> [extra partitions]
-    umount /tmp/tb 2>/dev/null; rm -f /tmp/stick.img; truncate -s "$2M" /tmp/stick.img
+    umount /tmp/tb 2>/dev/null
+    for l in "${LOOPS[@]}"; do losetup -d "$l" 2>/dev/null; done; LOOPS=()     # one stick at a time
+    rm -f /tmp/stick.img; truncate -s "$2M" /tmp/stick.img
     L=$(losetup -fP --show /tmp/stick.img); LOOPS+=("$L")
     parted -s "$L" mklabel "$1"
     if [ "$1" = gpt ]; then parted -s "$L" mkpart biosboot 1MiB 2MiB; parted -s "$L" set 1 bios_grub on

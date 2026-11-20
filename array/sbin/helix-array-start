@@ -139,7 +139,27 @@ if command -v dockerd >/dev/null 2>&1; then
         helix_log "WARN: Docker left stopped — no formatted disk for its data."
     else
         mkdir -p "$droot" /etc/docker
-        printf '{\n  "data-root": "%s"\n}\n' "$droot" > /etc/docker/daemon.json
+        # Merge, never replace: the NVIDIA add-in adds a "runtimes" entry here and an array stop/start in the same
+        # boot must keep it. An unreadable file is replaced (and kept as .bad) rather than blocking Docker.
+        python3 - "$droot" <<'PYEOF' || printf '{\n  "data-root": "%s"\n}\n' "$droot" > /etc/docker/daemon.json
+import json, os, sys
+p = "/etc/docker/daemon.json"
+cfg = {}
+if os.path.exists(p):
+    try:
+        cfg = json.load(open(p))
+        if not isinstance(cfg, dict):
+            raise ValueError("not an object")
+    except ValueError:
+        os.replace(p, p + ".bad")
+        cfg = {}
+cfg["data-root"] = sys.argv[1]
+tmp = p + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+os.replace(tmp, p)
+PYEOF
         if systemctl start docker 2>/dev/null; then
             helix_log "Docker started (data-root $droot)"
         else
@@ -151,7 +171,16 @@ fi
 # ── Add-ins (NVIDIA driver etc.): re-install from the copy kept on the array, in the background ──
 # The root filesystem is RAM, so they vanish at every boot. DKMS compiles can take minutes.
 if [ -x /usr/local/sbin/helix-addin ]; then
-    ( HELIX_CONFIG="$HELIX_CONFIG" nohup python3 /usr/local/sbin/helix-addin restore >/var/log/helix-addin-restore.log 2>&1 & )
+    # In its own systemd unit: array start runs from the backend, and a child left in the backend's cgroup is killed by
+    # any backend restart (OTA, crash, dev push) halfway through a DKMS build.
+    if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl reset-failed helix-addin-restore.service 2>/dev/null
+        systemd-run --unit=helix-addin-restore --collect --setenv=HELIX_CONFIG="$HELIX_CONFIG" \
+            /bin/sh -c 'exec python3 /usr/local/sbin/helix-addin restore >/var/log/helix-addin-restore.log 2>&1' >/dev/null 2>&1 \
+            || helix_log "WARN: could not start the add-in restore"
+    else
+        ( HELIX_CONFIG="$HELIX_CONFIG" nohup python3 /usr/local/sbin/helix-addin restore >/var/log/helix-addin-restore.log 2>&1 & )
+    fi
 fi
 
 # ── Share services (SMB / NFS) ────────────────────────────────────────────────
@@ -167,8 +196,18 @@ fi
 
 # ── Monitoring (Checkmk) — only when it has been enabled; after Docker and VMs so they are all seen ──
 if [ -x /usr/local/sbin/helix-monitor ]; then
-    HELIX_CONFIG="$HELIX_CONFIG" STATE_DIR="$STATE_DIR" python3 /usr/local/sbin/helix-monitor start \
-        || helix_log "WARN: monitoring did not start (helix-monitor start)"
+    # In the background and in its own unit: it waits up to 5 min for Docker, which must not hold up the array
+    # start, and a backend restart must not kill it (array start runs from the backend).
+    if command -v systemd-run >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl reset-failed helix-monitor-start.service 2>/dev/null
+        systemd-run --unit=helix-monitor-start --collect \
+            --setenv=HELIX_CONFIG="$HELIX_CONFIG" --setenv=STATE_DIR="$STATE_DIR" \
+            /usr/bin/python3 /usr/local/sbin/helix-monitor start >/dev/null 2>&1 \
+            || helix_log "WARN: could not start monitoring (helix-monitor start)"
+    else
+        HELIX_CONFIG="$HELIX_CONFIG" STATE_DIR="$STATE_DIR" python3 /usr/local/sbin/helix-monitor start \
+            || helix_log "WARN: monitoring did not start (helix-monitor start)"
+    fi
 fi
 
 set -e

@@ -48,11 +48,12 @@ async function monOverview(st) {
   if (gate) { el.innerHTML = gate; return; }
   const ok = (b) => b ? 'var(--ok)' : 'var(--err)';
   const html = `<div class="vf-card"><div class="vm-h">Status</div>
-    <div style="font-size:12.5px;line-height:1.9">${monDot(ok(st.ready))}${monName(st)}: ${st.ready ? 'running' : (st.container === 'running' ? 'starting up…' : 'not running (' + _esc(st.container) + '). It starts with the array.')}<br>
+    <div style="font-size:12.5px;line-height:1.9">${monDot(ok(st.ready))}${monName(st)}: ${st.ready ? 'running' : (st.container === 'running' ? 'starting up…' : 'not running (' + _esc(st.container) + '). ' + (st.array_started ? 'The array is started, so it should be running: use Repair below.' : 'It starts with the array.'))}<br>
     ${st.provider === 'netdata' ? `${monDot(ok(st.ready))}Containers, VMs and disks: found automatically by Netdata` : `${monDot(ok(st.agent_socket))}Agent on this machine: ${st.agent_socket ? 'answering' : 'not running'}<br>
     ${monDot(ok(st.sync))}Automatic updates: ${st.sync ? 'watching for new or removed containers, VMs and disks' : 'not running'}`}
     ${st.last_sync && st.last_sync.at ? `<span class="vm-dim"> · last change ${new Date(st.last_sync.at * 1000).toLocaleTimeString()} (+${st.last_sync.added.length} / −${st.last_sync.removed.length})</span>` : ''}</div>
-    ${st.container === 'absent' ? `<div class="fm-warn" style="margin-top:8px">${monName(st)}'s container is missing. <button class="ctr-btn" onclick="monEnable()">Repair</button> recreates it; your saved Checkmk data is reused when it still exists.</div>` : ''}
+    ${st.container === 'absent' ? `<div class="fm-warn" style="margin-top:8px">${monName(st)}'s container is missing. <button class="ctr-btn" onclick="monEnable()">Repair</button> recreates it; your saved Checkmk data is reused when it still exists.</div>`
+      : (!st.ready && st.container !== 'running' && st.array_started) ? `<div class="fm-warn" style="margin-top:8px">${monName(st)} is not running although the array is started. <button class="ctr-btn" onclick="monEnable()">Repair</button> starts it again (your data is kept).</div>` : ''}
     <div class="vf-foot"><a class="settings-btn primary" style="text-decoration:none" href="#monitoring/checkmk">Open ${st.provider === 'netdata' ? 'dashboard' : 'Checkmk'}</a>${st.provider === 'netdata' ? '' : '<button class="ctr-btn" onclick="monShowLogin()">Show login</button>'}<span style="flex:1"></span><button class="ctr-btn" onclick="monDisable()">Turn off</button></div></div>
     <div class="vf-card"><div class="vm-h">What is being monitored</div><div id="mon-svcs" class="vm-dim">Loading…</div></div>`;
   if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
@@ -99,7 +100,7 @@ async function monSetting(cb) {
 async function monCheckmk(st, first) {
   const el = document.getElementById('mon-pane-checkmk'), gate = monGate(st);
   if (gate) { el.innerHTML = gate; mon.framed = false; return; }
-  if (!st.ready) { el.innerHTML = `<div class="vm-note warn">${monName(st)} is ${st.container === 'running' ? 'still starting up' : 'not running'}. ${st.container === 'running' ? 'This page opens by itself in a moment.' : 'It starts with the array.'}</div>`; mon.framed = false; setTimeout(() => { if (mon.tab === 'checkmk') monRefresh(false); }, 4000); return; }
+  if (!st.ready) { el.innerHTML = `<div class="vm-note warn">${monName(st)} is ${st.container === 'running' ? 'still starting up' : 'not running'}. ${st.container === 'running' ? 'This page opens by itself in a moment.' : (st.array_started ? 'The array is started: use Repair on the Overview tab.' : 'It starts with the array.')}</div>`; mon.framed = false; setTimeout(() => { if (mon.tab === 'checkmk') monRefresh(false); }, 4000); return; }
   if (mon.framed && el.querySelector('iframe')) return;
   if (st.provider === 'netdata') {
     el.innerHTML = `<div class="vf-foot" style="margin:0 0 8px"><span class="vm-dim" style="font-size:12px">Netdata's live dashboard: every chart, per container and per VM.</span><span style="flex:1"></span><a class="ctr-btn" style="text-decoration:none" href="/netdata/" target="_blank" rel="noopener">Open in its own tab ↗</a></div>

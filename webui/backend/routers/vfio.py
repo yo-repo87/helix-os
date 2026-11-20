@@ -18,11 +18,14 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, HTTPException
+
+from services import vfio_bind
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/vfio", tags=["vfio"])
 
-VFIO_IDS_FILE = "/etc/modprobe.d/vfio.conf"
+# Old-style binding by vendor:device ID (grabs every identical card). No longer written; removed when seen.
+LEGACY_IDS_FILE = "/etc/modprobe.d/vfio.conf"
 # Read by GRUB on the HELIXBOOT partition (build/grub/grub.cfg).
 BOOT_PARAMS_FILE = os.getenv("HELIX_BOOT_PARAMS", "/boot/config/boot-params.cfg")
 GRUB_CFG_FILE    = os.getenv("HELIX_GRUB_CFG", "/boot/grub/grub.cfg")
@@ -75,7 +78,9 @@ def _pci_info(addr: str) -> dict:
 
 
 def _current_driver(addr: str) -> str:
-    return _sysfs(f"/sys/bus/pci/devices/{addr}/driver").split("/")[-1] if _sysfs(f"/sys/bus/pci/devices/{addr}/driver") else ""
+    # `driver` is a symlink to a directory: read the link (reading it as a file always gave "", so the old
+    # handover unbound "nvidia" whatever the card really used).
+    return vfio_bind.driver(addr)
 
 
 def _get_gpus() -> list[dict]:
@@ -235,15 +240,7 @@ def vfio_status():
     rc, lsmod = _run("lsmod")
     vfio_loaded = "vfio_pci" in lsmod
 
-    # Existing vfio.conf ids
-    ids_bound = []
-    try:
-        for line in Path(VFIO_IDS_FILE).read_text().splitlines():
-            m = re.search(r"ids=([0-9a-fA-F:, ]+)", line)
-            if m:
-                ids_bound = [i.strip() for i in m.group(1).split(",") if i.strip()]
-    except FileNotFoundError:
-        pass
+    ids_bound = vfio_bind.saved()   # PCI addresses handed to vfio-pci at boot
 
     return {
         "iommu_enabled":  iommu_enabled,
@@ -290,34 +287,35 @@ def assign_gpu(req: AssignReq):
             bind_ids.add(f"{peer_vid}:{peer_did}")
 
     ids_str = ",".join(sorted(bind_ids))
-    conf_content = f"options vfio-pci ids={ids_str}\nsoftdep nvidia pre: vfio-pci\n"
+    addrs = [a for a in gpu["group_devices"] if vfio_bind.valid_addr(a)
+             and not _sysfs(f"/sys/bus/pci/devices/{a}/class").startswith("0x0604")]   # bridges stay
 
-    import subprocess as sp
-    r = sp.run(["sudo", "-n", "tee", VFIO_IDS_FILE],
-               input=conf_content, capture_output=True, text=True, timeout=10)
-    if r.returncode != 0:
-        raise HTTPException(500, f"Could not write {VFIO_IDS_FILE}: {r.stderr}")
+    # 1. Save the binding per PCI address (applied at boot by helix-vfio-bind, before any GPU driver loads).
+    try:
+        vfio_bind.save(addrs)
+    except (OSError, ValueError) as e:
+        raise HTTPException(500, f"Could not save the VFIO binding: {e}")
+    _drop_legacy_ids_file()
 
-    # 2. Try to rebind to vfio-pci now (best-effort, may need reboot)
-    for peer_addr in gpu["group_devices"]:
-        peer_vid = _sysfs(f"/sys/bus/pci/devices/{peer_addr}/vendor").replace("0x","").lower()
-        peer_did = _sysfs(f"/sys/bus/pci/devices/{peer_addr}/device").replace("0x","").lower()
-        _sudo("bash", "-c",
-              f"echo {peer_vid} {peer_did} > /sys/bus/pci/drivers/vfio-pci/new_id 2>/dev/null; "
-              f"echo {peer_addr} > /sys/bus/pci/drivers/{_current_driver(peer_addr) or 'nvidia'}/unbind 2>/dev/null; "
-              f"echo {peer_addr} > /sys/bus/pci/drivers/vfio-pci/bind 2>/dev/null")
+    # 2. Hand it over now only when nothing is using it (a busy GPU deadlocks the kernel on unbind).
+    live = vfio_bind.handover(addrs)
 
     # 3. Patch VM XML with hostdev element
     vm_errors = []
     if req.vm_name:
-        vm_errors = _add_hostdev_to_vm(req.vm_name, gpu["group_devices"])
+        vm_errors = _add_hostdev_to_vm(req.vm_name, addrs)
 
     return {
         "ok": True,
         "bound_ids": ids_str,
         "vm_name": req.vm_name,
         "vm_errors": vm_errors,
-        "note": "VFIO binding written. If the driver is still active, a reboot is required for the rebind to take effect.",
+        "bound_addrs": addrs,
+        "moved_now": live["moved"],
+        "skipped": live["skipped"],
+        "note": ("The GPU is ready for the VM now." if not live["skipped"] else
+                 "Saved. The GPU was not switched now: " + "; ".join(f"{a} {why}" for a, why in live["skipped"].items())
+                 + ". Stop those programs and assign again, or reboot to apply."),
     }
 
 
@@ -393,13 +391,23 @@ def unassign_gpu(req: UnassignReq):
             except Exception:
                 pass
 
-    # Remove vfio.conf
+    addrs = []
+    if vfio_bind.valid_addr(req.pci_addr):
+        gpu = next((g for g in _get_gpus() if g["addr"] == req.pci_addr), None)
+        addrs = [a for a in (gpu["group_devices"] if gpu else [req.pci_addr]) if vfio_bind.valid_addr(a)]
     try:
-        Path(VFIO_IDS_FILE).unlink()
-    except FileNotFoundError:
-        pass
+        vfio_bind.forget(addrs)
+    except OSError as e:
+        raise HTTPException(500, f"Could not update the VFIO binding: {e}")
+    _drop_legacy_ids_file()
+    back = vfio_bind.release(addrs)
+    return {"ok": True, "devices": back["devices"],
+            "message": "VFIO binding removed; the GPU was given back to its normal driver."}
 
-    return {"ok": True, "message": "VFIO binding removed. Reboot to restore normal GPU driver."}
+
+def _drop_legacy_ids_file():
+    if os.path.exists(LEGACY_IDS_FILE):
+        _sudo("rm", "-f", LEGACY_IDS_FILE)
 
 
 @router.get("/vm/{vm_name}/gpu")

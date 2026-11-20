@@ -202,6 +202,7 @@ def setup_status():
         d = {"enabled": False, "container": "unknown", "ready": False}
     d["installed"] = True
     d["provider"] = d.get("provider") or _provider()
+    d["array_started"] = _array_started()
     d["job"] = _job_view()
     return d
 
@@ -252,6 +253,13 @@ def _write_prompt(state: str) -> None:
     json.dump({"state": state}, open(PROMPT, "w"))
 
 
+def _array_started() -> bool:
+    try:
+        return open(os.path.join(STATE_DIR, "array_state")).readline().strip() == "started"
+    except OSError:
+        return False
+
+
 @router.get("/prompt")
 def prompt_info():
     """Should the UI invite the user to turn monitoring on? Only once the array is started (Checkmk lives in Docker on it)."""
@@ -263,10 +271,7 @@ def prompt_info():
         enabled = bool(json.load(open(os.path.join(HELIX_CONFIG, "checkmk", "monitor.json"))).get("enabled"))
     except (OSError, ValueError):
         enabled = False
-    try:
-        started = open(os.path.join(STATE_DIR, "array_state")).readline().strip() == "started"
-    except OSError:
-        started = False
+    started = _array_started()
     import shutil
     ready = started and shutil.which("docker") is not None and os.path.exists(MONITOR)
     return {"show": ready and not enabled, "state": state, "enabled": enabled, "array_started": started, "provider": _provider()}

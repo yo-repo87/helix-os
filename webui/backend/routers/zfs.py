@@ -403,56 +403,84 @@ def _mountpoint(ds: str) -> str:
 
 @router.get("/available-drives")
 def available_drives():
-    """Get list of drives not in any ZFS pool or Helix array."""
-    from pathlib import Path
-    from services.drive_health import DRIVES_CACHE
+    """Physical disks that can go into a new ZFS pool.
 
-    # Load drives from cache
-    all_disks = []
-    try:
-        all_disks = json.loads(Path(DRIVES_CACHE).read_text())
-    except:
-        pass
+    Everything is compared as real whole-disk names (/dev/sdX): disks.cfg holds by-id links and
+    `zpool status` names members by id or by partition, so comparing raw strings (the old code) never
+    matched and array disks were offered for a new pool. Left out: array disks, the boot medium, members
+    of imported pools, disks with anything mounted. Disks that already hold data are listed with a
+    warning (e.g. members of a pool used by a VM or not imported here).
+    """
+    from routers import drives as drives_router
+    phys = drives_router.available_drives().get("disks", [])
+    pool_members = _pool_member_disks()
+    layout = _lsblk_layout()
+    available, in_use = [], {}
+    for d in phys:
+        dev = d["device"]
+        info = layout.get(dev, {})
+        if d.get("is_boot"):
+            in_use[dev] = "boot device"
+        elif d.get("assigned"):
+            in_use[dev] = f"array ({d.get('array_name') or d.get('role')})"
+        elif dev in pool_members:
+            in_use[dev] = f"ZFS pool {pool_members[dev]}"
+        elif info.get("mounted"):
+            in_use[dev] = "mounted (" + ", ".join(info["mounted"]) + ")"
+        else:
+            sizes = d.get("size_gb") or 0
+            available.append({**d, "size": f"{sizes / 1000:.1f} TB" if sizes >= 1000 else f"{sizes:.0f} GB",
+                              "warn": ("holds data: " + ", ".join(info["signatures"]) + ". It will be erased.")
+                                      if info.get("signatures") else ""})
+    return {"available": available, "in_use_count": len(in_use),
+            "in_use_devices": sorted(in_use), "in_use": in_use}
 
-    # Get disks in ZFS pools
-    zfs_disks = set()
+
+def _whole(dev: str) -> str:
+    """/dev/sdb1, /dev/nvme0n1p3 or a by-id link -> the whole disk (/dev/sdb, /dev/nvme0n1)."""
+    real = os.path.realpath(dev)
+    name = os.path.basename(real)
+    if os.path.exists(f"/sys/class/block/{name}/partition"):
+        return "/dev/" + os.path.basename(os.path.dirname(os.path.realpath(f"/sys/class/block/{name}")))
+    return real
+
+
+def _pool_member_disks() -> dict:
+    """{whole disk: pool} for every vdev of every imported pool (-P full paths, -L resolve links)."""
+    out = {}
     for pool in _parse_pool_list():
-        rc, out, err = _run("zpool", "status", pool["name"])
-        for line in out.splitlines():
-            # Parse device lines from zpool status
-            if "ONLINE" in line or "OFFLINE" in line or "DEGRADED" in line:
-                parts = line.split()
-                if parts:
-                    dev = parts[0]
-                    if dev not in ("NAME", "state", "scan"):
-                        # Normalize to /dev/xxx
-                        if not dev.startswith("/dev/"):
-                            dev = f"/dev/{dev}"
-                        zfs_disks.add(dev)
+        rc, text, _ = _run("zpool", "status", "-P", "-L", pool["name"])
+        for line in text.splitlines():
+            parts = line.split()
+            if parts and parts[0].startswith("/dev/"):
+                out[_whole(parts[0])] = pool["name"]
+    return out
 
-    # Get disks in Helix array (from disks.cfg)
-    array_disks = set()
+
+def _lsblk_layout() -> dict:
+    """{whole disk: {mounted: [...], signatures: [...]}} from lsblk (disk and its partitions)."""
     try:
-        from config import DISKS_CFG
-        content = open(DISKS_CFG).read() if os.path.exists(DISKS_CFG) else ""
-        # Extract all device= values
-        for dev_match in re.finditer(r'device=([^\s\n]+)', content):
-            array_disks.add(dev_match.group(1))
-    except:
-        pass
+        r = subprocess.run(["lsblk", "-J", "-o", "PATH,TYPE,FSTYPE,MOUNTPOINT"], capture_output=True, text=True, timeout=15)
+        data = json.loads(r.stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+    out = {}
 
-    # Filter out boot disk
-    boot_disk = _get_boot_disk()
-    in_use = zfs_disks | array_disks
-    if boot_disk:
-        in_use.add(boot_disk)
+    def walk(node, disk):
+        info = out.setdefault(disk, {"mounted": [], "signatures": []})
+        if node.get("mountpoint"):
+            info["mounted"].append(node["mountpoint"])
+        if node.get("fstype"):
+            info["signatures"].append(node["fstype"] + ("" if node.get("path") == disk else f" on {os.path.basename(node.get('path', ''))}"))
+        elif node.get("path") != disk and node.get("type") == "part":
+            info["signatures"].append(f"partition {os.path.basename(node.get('path', ''))}")
+        for c in node.get("children") or []:
+            walk(c, disk)
 
-    available = [d for d in all_disks if d.get("device") not in in_use]
-    return {
-        "available": available,
-        "in_use_count": len(in_use),
-        "in_use_devices": sorted(list(in_use))
-    }
+    for d in data.get("blockdevices", []):
+        if d.get("type") == "disk" and d.get("path"):
+            walk(d, d["path"])
+    return out
 
 
 def _get_boot_disk() -> str:

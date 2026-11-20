@@ -13,6 +13,7 @@ Install/remove uses docker compose and stores state in STATE_DIR/apps/{name}/.
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -327,7 +328,9 @@ def _clean_extras(raw: dict | None) -> dict:
 # Stored in extras.json as "options". Absent = the template's compose is used unchanged.
 
 RESTART_POLICIES = ("unless-stopped", "always", "on-failure", "no")
-_BOOL_OPTIONS = ("privileged", "init", "localtime", "log_limit", "gpu_dri")
+_BOOL_OPTIONS = ("privileged", "init", "localtime", "log_limit", "gpu_dri", "gpu_nvidia")
+# NVIDIA GPU (needs the NVIDIA add-in: driver + container toolkit registered as Docker runtime "nvidia").
+_NVIDIA_ENV = {"NVIDIA_VISIBLE_DEVICES": "all", "NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility"}
 _LOG_LIMIT = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
 
 
@@ -400,6 +403,7 @@ def _effective_options(compose: dict) -> dict:
         "localtime":  any(_is_localtime(v) for v in (main.get("volumes") or [])),
         "log_limit":  bool(allsvc) and all(bool(s.get("logging")) for s in allsvc),
         "gpu_dri":    any(_is_dri(d) for d in (main.get("devices") or [])),
+        "gpu_nvidia": main.get("runtime") == "nvidia",
         "memory_gb":  _mem_to_gb(main.get("mem_limit")),
         "cpus":       f"{float(main['cpus']):g}" if main.get("cpus") else "",
     }
@@ -441,12 +445,22 @@ def _apply_options(compose: dict, opts: dict | None) -> dict:
         if opts["localtime"]:
             vols.append("/etc/localtime:/etc/localtime:ro")
             env.setdefault("TZ", _host_timezone())
+        if opts.get("gpu_nvidia"):
+            svc["runtime"] = "nvidia"
+            for k, val in _NVIDIA_ENV.items():
+                env.setdefault(k, val)
+        elif svc.get("runtime") == "nvidia":
+            svc.pop("runtime", None)
+            for k in _NVIDIA_ENV:
+                env.pop(k, None)
         if vols:
             svc["volumes"] = vols
         else:
             svc.pop("volumes", None)
         if env:
             svc["environment"] = env
+        else:
+            svc.pop("environment", None)
         devs = [d for d in (svc.get("devices") or []) if not _is_dri(d)]
         if opts["gpu_dri"]:
             devs.append("/dev/dri:/dev/dri")
@@ -463,10 +477,21 @@ def _apply_options(compose: dict, opts: dict | None) -> dict:
     return compose
 
 
+def _nvidia_runtime_available() -> bool:
+    """Docker can run NVIDIA containers: the container toolkit is installed and registered."""
+    if not shutil.which("nvidia-container-runtime"):
+        return False
+    try:
+        return "nvidia" in (json.load(open("/etc/docker/daemon.json")).get("runtimes") or {})
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _options_info(compose: dict, saved: dict | None) -> dict:
     """Current option values for the form plus what this host can offer."""
     return {"values": saved or _effective_options(compose),
             "gpu_dri_available": os.path.isdir("/dev/dri"),
+            "gpu_nvidia_available": _nvidia_runtime_available(),
             "max_cpus": os.cpu_count() or 1,
             "timezone": _host_timezone()}
 

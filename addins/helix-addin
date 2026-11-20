@@ -29,6 +29,8 @@ HELIX_CONFIG = os.environ.get("HELIX_CONFIG", "/boot/config")
 STATE_FILE = os.path.join(HELIX_CONFIG, "addins.json")
 ALLOWED_HOSTS = {"deb.debian.org", "security.debian.org", "nvidia.github.io", "developer.download.nvidia.com"}
 ALLOWED_POST = {"depmod", "swap-nouveau", "docker-nvidia-runtime"}
+# Kernel-module options that must exist before udev loads drivers at boot (read by helix-modprobe-restore).
+BOOT_MODPROBE = os.environ.get("HELIX_BOOT_MODPROBE", "/boot/config/modprobe.d")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 PKG_RE = re.compile(r"^[a-z0-9][a-zA-Z0-9.+:$()-]{0,80}$")
 
@@ -124,7 +126,15 @@ def post_actions(e):
             run(["depmod", "-a"], check=False)
         elif p == "swap-nouveau":
             # nouveau is loaded by udev before this runs; the NVIDIA driver cannot bind while it is.
-            open("/etc/modprobe.d/helix-blacklist-nouveau.conf", "w").write("blacklist nouveau\noptions nouveau modeset=0\n")
+            conf = "blacklist nouveau\noptions nouveau modeset=0\n"
+            open("/etc/modprobe.d/helix-blacklist-nouveau.conf", "w").write(conf)
+            # Also on the flash: helix-modprobe-restore copies it into /etc/modprobe.d before udev loads drivers at the
+            # next boot, so nouveau never binds the GPU in the first place (the RAM copy above is gone by then).
+            try:
+                os.makedirs(BOOT_MODPROBE, exist_ok=True)
+                open(os.path.join(BOOT_MODPROBE, f"helix-addin-{e['id']}-nouveau.conf"), "w").write(conf)
+            except OSError as ex:
+                log(f"could not save the nouveau blacklist to {BOOT_MODPROBE}: {ex}")
             run(["modprobe", "-r", "nouveau"], check=False)
             run(["modprobe", "nvidia"], check=False)
         elif p == "docker-nvidia-runtime" and os.path.exists("/usr/bin/nvidia-ctk"):
@@ -321,6 +331,10 @@ def cmd_remove(aid):
         run(["rm", "-rf", rec["cache"]], check=False)
     for f in glob.glob(f"/etc/apt/sources.list.d/helix-{aid}-*.list"):
         os.remove(f)
+    for f in glob.glob(os.path.join(BOOT_MODPROBE, f"helix-addin-{aid}-*.conf")):
+        os.remove(f)
+        if f.endswith("-nouveau.conf") and os.path.exists("/etc/modprobe.d/helix-blacklist-nouveau.conf"):
+            os.remove("/etc/modprobe.d/helix-blacklist-nouveau.conf")
     save_state(st)
     log("DONE")
 

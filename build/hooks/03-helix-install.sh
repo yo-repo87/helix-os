@@ -458,6 +458,37 @@ if [ -d /build/boot-assets/plymouth-helix ]; then
     cp /build/boot-assets/plymouth-helix/* /usr/share/plymouth/themes/helix/
     install -d /etc/plymouth
     printf '[Daemon]\nTheme=helix\nShowDelay=0\nDeviceTimeout=8\n' > /etc/plymouth/plymouthd.conf
+    # The splash is started in the initramfs and handed over (update-root-fs). Debian's plymouth-start.service would
+    # start a SECOND plymouthd with --attach-to-session, which captures /dev/console; when it stops reading, PID 1
+    # blocks on every console write and systemctl times out (seen on real hardware, 3.3.4 and 3.3.5). Never start it.
+    ln -sf /dev/null /etc/systemd/system/plymouth-start.service
+    # Safety net: whatever happens, no plymouthd survives the end of boot.
+    cat > /usr/local/sbin/helix-plymouth-reaper <<'PRSCRIPT'
+#!/bin/sh
+pgrep -x plymouthd >/dev/null || exit 0
+plymouth quit 2>/dev/null
+i=0
+while [ $i -lt 10 ]; do pgrep -x plymouthd >/dev/null || exit 0; sleep 1; i=$((i + 1)); done
+echo "[helix-plymouth-reaper] plymouthd ignored quit; killing it"
+pkill -KILL -x plymouthd
+exit 0
+PRSCRIPT
+    chmod 0755 /usr/local/sbin/helix-plymouth-reaper
+    cat > /etc/systemd/system/helix-plymouth-reaper.service <<'PRSVC'
+[Unit]
+Description=Helix OS — make sure the boot splash has exited
+After=plymouth-quit.service plymouth-quit-wait.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30
+ExecStart=/usr/local/sbin/helix-plymouth-reaper
+
+[Install]
+WantedBy=multi-user.target
+PRSVC
+    systemctl enable helix-plymouth-reaper 2>/dev/null \
+        || ln -sf /etc/systemd/system/helix-plymouth-reaper.service /etc/systemd/system/multi-user.target.wants/
     echo "  installed boot splash theme (helix)"
 fi
 
@@ -722,6 +753,96 @@ fi
 # unprivileged backend can't write them (drive cache stays empty, etc.).
 mkdir -p /var/local/helix/config
 chown -R helix:helix /var/local/helix
+
+# ── Persistent kernel-module options (/boot/config/modprobe.d) ───────────────
+# /etc is RAM. Blacklists/options that must be in place before udev loads drivers (e.g. the NVIDIA add-in's
+# "blacklist nouveau") are kept on the flash and copied in before udev's coldplug trigger. The initramfs mounts
+# /boot (mount --move) before systemd starts, so it is readable this early.
+cat > /usr/local/sbin/helix-modprobe-restore <<'MPRSCRIPT'
+#!/bin/sh
+SRC=/boot/config/modprobe.d
+[ -d "$SRC" ] || exit 0
+mkdir -p /etc/modprobe.d
+for f in "$SRC"/*.conf; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in *[!A-Za-z0-9._-]*) continue ;; esac
+    install -m 644 "$f" "/etc/modprobe.d/$(basename "$f")" && echo "[helix-modprobe-restore] $(basename "$f")"
+done
+exit 0
+MPRSCRIPT
+chmod 0755 /usr/local/sbin/helix-modprobe-restore
+cat > /etc/systemd/system/helix-modprobe-restore.service <<'MPRSVC'
+[Unit]
+Description=Helix OS — kernel-module options kept on the boot device
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=systemd-udev-trigger.service systemd-modules-load.service sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-modprobe-restore
+
+[Install]
+WantedBy=sysinit.target
+MPRSVC
+systemctl enable helix-modprobe-restore 2>/dev/null \
+    || { mkdir -p /etc/systemd/system/sysinit.target.wants
+         ln -sf /etc/systemd/system/helix-modprobe-restore.service /etc/systemd/system/sysinit.target.wants/; }
+
+# ── VFIO: hand saved PCI devices to vfio-pci before any GPU driver loads ────
+# /boot/config/vfio-pci.cfg (`BIND=<addr> ...`, written by the VM page) lists devices by PCI address. Binding by
+# vendor:device ID would also take an identical second GPU. driver_override is set before udev's coldplug, so the
+# graphics driver never touches the card (no risky live unbind).
+cat > /usr/local/sbin/helix-vfio-bind <<'VFIOSCRIPT'
+#!/bin/sh
+CFG=/boot/config/vfio-pci.cfg
+[ -f "$CFG" ] || exit 0
+addrs=$(sed -n 's/^BIND=//p' "$CFG" | tr ' ' '\n' | grep -E '^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$')
+[ -n "$addrs" ] || exit 0
+modprobe vfio-pci 2>/dev/null
+for a in $addrs; do
+    d=/sys/bus/pci/devices/$a
+    [ -d "$d" ] || { echo "[helix-vfio-bind] $a: no such device (card moved or removed?)"; continue; }
+    echo vfio-pci > "$d/driver_override"
+    if [ -e "$d/driver" ] && [ "$(basename "$(readlink "$d/driver")")" != vfio-pci ]; then
+        echo "$a" > "$d/driver/unbind" 2>/dev/null
+    fi
+    echo "$a" > /sys/bus/pci/drivers_probe 2>/dev/null
+    echo "[helix-vfio-bind] $a -> $(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)"
+done
+exit 0
+VFIOSCRIPT
+chmod 0755 /usr/local/sbin/helix-vfio-bind
+cat > /etc/systemd/system/helix-vfio-bind.service <<'VFIOSVC'
+[Unit]
+Description=Helix OS — give PCI devices saved for VM passthrough to vfio-pci
+DefaultDependencies=no
+After=systemd-remount-fs.service helix-modprobe-restore.service
+Before=systemd-udev-trigger.service sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-vfio-bind
+
+[Install]
+WantedBy=sysinit.target
+VFIOSVC
+systemctl enable helix-vfio-bind 2>/dev/null \
+    || ln -sf /etc/systemd/system/helix-vfio-bind.service /etc/systemd/system/sysinit.target.wants/
+
+# ── LVM: never activate volume groups by themselves ─────────────────────────
+# A disk from a former Proxmox host carries VG "pve" with its VM disks. Debian's udev rule would
+# auto-activate it at boot; Helix activates a VG only when the user imports a VM from it
+# (vgchange -ay, which ignores this list).
+if [ -f /etc/lvm/lvm.conf ]; then
+    sed -i '/^[[:space:]]*auto_activation_volume_list[[:space:]]*=/d' /etc/lvm/lvm.conf
+    sed -i '0,/^activation {/s//activation {\n\tauto_activation_volume_list = []/' /etc/lvm/lvm.conf
+    [ "$(lvmconfig --type full activation/auto_activation_volume_list 2>/dev/null)" = "auto_activation_volume_list=[]" ] \
+        || { echo "ERROR: could not turn off LVM auto-activation" >&2; exit 1; }
+    echo "  LVM auto-activation off"
+fi
 
 # ── SSH host keys: one set per machine, kept on the flash ────────────────────
 # openssh-server's postinst made host keys inside the build chroot. Shipping them would give every

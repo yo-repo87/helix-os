@@ -33,6 +33,19 @@ done
     exit 1
 }
 
+# Every parity file must be on its mounted parity disk. If /mnt/parityN is just an empty folder (the disk has no
+# file system or failed to mount), SnapRAID would write the whole parity into the RAM root and fill it.
+# The API and UI check this too; this is the last line of defence for anything else that runs the script.
+while read -r _kw pfiles; do
+    for pfile in ${pfiles//,/ }; do            # split parity: several files, comma-separated
+        pdir=$(dirname "$pfile")
+        if ! mountpoint -q "$pdir"; then
+            helix_err "Parity location $pdir is not a mounted disk; refusing to sync (format or mount the parity disk first)."
+            exit 1
+        fi
+    done
+done < <(grep -E '^[[:space:]]*([2-6]-)?parity[[:space:]]' "$SNAPRAID_CONF")
+
 START=$(date +%s)
 helix_log "Starting parity sync..."
 snapraid -c "$SNAPRAID_CONF" sync

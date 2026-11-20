@@ -332,9 +332,22 @@ def enable_netdata():
     say("DONE: monitoring is on. Open the dashboard from the Monitoring page.")
 
 
+def wait_for_docker(limit=300):
+    """At boot Docker can take minutes (many containers, a slow disk). Asking it about the container before it
+    answers made the container look "missing" and monitoring never started."""
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        if run(["docker", "info"], timeout=20).returncode == 0:
+            return True
+        time.sleep(5)
+    return False
+
+
 def cmd_start():
     if not settings().get("enabled"):
         return
+    if not wait_for_docker():
+        raise SystemExit("Docker did not come up within 5 minutes; monitoring not started (journalctl -u docker)")
     if provider() == "netdata":
         if nd_state() == "absent":
             say("Netdata container is missing; run enable again"); return

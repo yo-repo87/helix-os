@@ -181,7 +181,7 @@ async function fwExposure() {
     <div class="vf-card"><div class="vm-h">What listens on the network</div>
       <p class="vm-dim" style="margin:0 0 8px">${mode === 'enforce' ? '' : 'While the firewall is ' + (mode === 'off' ? 'off' : 'learning') + ', everything here can be reached by anyone who can reach this server.'}</p>
       <div style="overflow-x:auto"><table class="vm-table"><thead><tr><th>Port</th><th>Service</th><th>Reachable by</th><th></th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td>${r.port}/${r.proto}</td><td>${_esc(r.container ? r.container + ' (container)' : r.process || '?')}${r.sensitive ? `<div class="vm-dim">${_esc(r.sensitive)}</div>` : ''}</td>
+      ${rows.map(r => `<tr><td>${r.port}/${r.proto}</td><td>${_esc(r.container ? r.container + ' (container)' : r.process || '?')}${r.sensitive && r.sensitive.toLowerCase() !== String(r.process || '').toLowerCase() ? `<div class="vm-dim">${_esc(r.sensitive)}</div>` : ''}</td>
         <td>${reachCol(r)}${!r.covered && mode !== 'off' ? ' <span class="vm-dim">(no rule)</span>' : ''}</td><td style="color:var(--err);font-size:12px">${r.warn ? '⚠ ' + _esc(r.warn) : ''}</td></tr>`).join('')}
       </tbody></table></div>
       <p class="vm-dim" style="margin:8px 0 0">${a.rows.filter(r => r.loopback).length} more only listen on this machine itself (not reachable from the network).</p></div>`;

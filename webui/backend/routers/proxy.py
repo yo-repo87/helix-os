@@ -72,11 +72,37 @@ def _admin_file() -> str:
     return os.getenv("NPM_ADMIN_FILE", os.path.join(NPM_DATA_DIR, "helix-admin.json"))
 
 
+# /run/npm, /run/helix and /data are root-only on purpose (the admin password, peer secret and keys live there); the
+# backend runs as `helix`, for whom plain os.path.exists()/open() just see "missing". 3.3.6–3.3.8 therefore reported a
+# running NPM as "not running yet". Fall back to root (sudo) for these reads.
+def _root_exists(path: str) -> bool:
+    if os.path.exists(path):
+        return True
+    from services import privileged
+    return privileged.run(["test", "-e", path]).returncode == 0
+
+
+def _root_read(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read()
+    except PermissionError:
+        from services import privileged
+        txt = privileged.read_file(path)
+        if txt is None:
+            raise OSError(f"cannot read {path}")
+        return txt
+
+
+def _admin() -> dict:
+    return json.loads(_root_read(_admin_file()))
+
+
 # ── Availability ──────────────────────────────────────────────────────────────
 
 def _storage_mode() -> tuple[str, str]:
     try:
-        txt = open(NPM_STORAGE).read()
+        txt = _root_read(NPM_STORAGE)
     except OSError:
         return "unknown", ""
     mode = reason = ""
@@ -90,7 +116,7 @@ def _storage_mode() -> tuple[str, str]:
 
 def _availability() -> dict:
     """{available, reason} — available means NPM is enabled and should answer."""
-    if not os.path.exists(_admin_file()) and not os.path.exists(os.path.join(NPM_RUN_DIR, "enabled")):
+    if not _root_exists(_admin_file()) and not _root_exists(os.path.join(NPM_RUN_DIR, "enabled")):
         mode, reason = _storage_mode()
         if mode == "ram":
             from routers import datapart
@@ -117,7 +143,7 @@ def _get_token() -> str:
     if _token["value"] and _token["expires"] - time.time() > 60:
         return _token["value"]
     try:
-        admin = json.load(open(_admin_file()))
+        admin = _admin()
     except (OSError, ValueError):
         raise HTTPException(503, "The NPM admin account is not set up yet (no /data/helix-admin.json).")
     body = json.dumps({"identity": admin.get("email"), "secret": admin.get("password")}).encode()
@@ -414,7 +440,7 @@ def dns_providers():
 def login():
     _require_npm()
     try:
-        admin = json.load(open(_admin_file()))
+        admin = _admin()
     except (OSError, ValueError):
         raise HTTPException(503, "The NPM admin account is not set up yet.")
     return {"user": admin.get("email"), "password": admin.get("password"),

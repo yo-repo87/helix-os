@@ -25,7 +25,16 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
   hand 2026-11-20: staged files checked against the v3.3.8 manifest, `helix-osupdate commit 3.3.8` run (took 264 s).
   **The flash drive now boots 3.3.8 at the next reboot** (3.3.6 kept as `.prev`). Until then it runs 3.3.6 with the
   login fix hot-patched into RAM. HELIXDATA (`/dev/sdj3`) is mounted and holds the config. Array: start by hand.
-- **Unreleased fix (ship in the next release):** `routers/osupdate.py` — no time limit on stage/commit/rollback;
+- `.142` **is on 3.3.8 since 2026-11-20 23:20** (array started by hand, 36 containers, Plex with both GPUs). Two more
+  fixes are hot-patched into its RAM and lost at reboot until the next release: `routers/proxy.py` (reads root-only NPM
+  files via sudo) and `addins/helix-addin` (dpkg passes until done).
+- **Unreleased fixes (ship in the next release):**
+  - NVIDIA add-in restore: `apt-get` on local .debs fails ("Pathname to install is not absolute"), and two dpkg passes
+    were not enough; `install_debs` now repeats `dpkg -i` + `dpkg --configure -a` until done or no progress (8 max).
+  - Reverse proxy page said "not running yet" while NPM ran: `/run/npm`, `/run/helix`, `/data` are root-only and the
+    backend (user `helix`) saw them as missing. `proxy.py` falls back to `services/privileged` for those reads.
+    Test NPM/proxy paths with the backend as `helix`, never as root.
+  - OTA: `routers/osupdate.py` — no time limit on stage/commit/rollback;
   `helix-osupdate commit` renames instead of copying (seconds instead of minutes). A stuck "error" after staging must
   not lead to a reboot into the old system again.
 - **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).

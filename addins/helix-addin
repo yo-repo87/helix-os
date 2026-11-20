@@ -150,17 +150,28 @@ def install_debs(cache):
     if not debs:
         raise SystemExit("no packages in the cache")
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
-    # One `dpkg -i` over the whole cache fails on Pre-Depends (glx-diversions needs glx-alternative-mesa
-    # configured before it is unpacked), which broke every restore. apt orders the set itself and,
-    # given local paths with --no-download, never touches the network.
-    r = run(["apt-get", "install", "-y", "--no-download", "--no-install-recommends", "--allow-downgrades",
-             "-o", "Dpkg::Options::=--force-confold", *debs], check=False, env=env)
-    if r.returncode == 0:
-        return
-    log("apt-get could not install the cached set; falling back to dpkg in two passes")
-    run(["dpkg", "--force-confold", "-i", *debs], check=False, env=env)
-    run(["dpkg", "--force-confold", "-i", *debs], env=env)
-    run(["dpkg", "--configure", "-a"], env=env)
+    # dpkg -i over the whole cache leaves packages unconfigured when their Pre-Depends / Depends were not configured
+    # yet (glx-diversions, nvidia-kernel-dkms ...); each pass configures another layer. Repeat until dpkg succeeds or
+    # a pass makes no progress. (apt-get on local paths was tried in 3.3.6 and fails with "Pathname to install is not
+    # absolute" on this set.)
+    def unconfigured():
+        r = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Package}\n"], text=True, capture_output=True)
+        return sum(1 for l in r.stdout.splitlines() if l[:2] not in ("ii", "rc", "un") and l.strip())
+    before = None
+    for attempt in range(1, 9):
+        r = run(["dpkg", "--force-confold", "-i", *debs], check=False, env=env)
+        if r.returncode == 0:
+            break
+        run(["dpkg", "--configure", "-a"], check=False, env=env)
+        left = unconfigured()
+        log(f"pass {attempt}: {left} package(s) not configured yet")
+        if left == 0:
+            break
+        if before is not None and left >= before:
+            raise SystemExit(f"dpkg makes no progress ({left} package(s) left unconfigured)")
+        before = left
+    else:
+        raise SystemExit("dpkg did not finish after 8 passes")
 
 
 IMAGE_SQUASHFS = "/boot/boot/filesystem.squashfs"

@@ -13,16 +13,16 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 ## 1. Current state (2026-11-20) — read first
 
-- **Version** `build/config/VERSION` = **3.3.5**, tagged `v3.3.5`. Releases on GitHub `yo-repo87/helix-os` (public):
-  v3.3.0, v3.3.1, v3.3.2, v3.3.4, v3.3.5. Only `main` + `feature/npm` remain as branches.
+- **Version 3.3.6 published 2026-11-20** (tag `v3.3.6` → `dd2a450`, GitHub "Latest"): firewall, per-machine SSH host
+  keys, WebSocket login, 3.3.6 fixes (§6a), 4 GiB boot partitions. Assets: OTA files for amd64 + arm64,
+  `helix-os-3.3.6.img.xz` (PC USB, BIOS + UEFI, no Secure Boot), `helix-os-pi-3.3.6.img.xz`; no ISO. Built on `.142`
+  with `build/builder/run.sh`, published with `build/builder/publish.sh` (all 9 assets verified). Releases on GitHub:
+  v3.3.0–v3.3.2, v3.3.4, v3.3.5 (amd64 only, tidied), v3.3.6. `.142` still runs 3.3.5 (its updater offers 3.3.6).
 - **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).
   `./gitkey` (ignored by git, chmod 600) holds labelled lines with a fine-grained `github_pat_` and a classic `ghp_`
   token, both with push to `yo-repo87/helix-os`. Scripts take the first `github_pat_` line. Never print it. Neither
-  machine has `gh`: publish with `build/builder/publish.sh` on `.142` (gh is in the builder image). (Older notes refer to `/home/pi/Claude/UnraidProject`,
-  remote `helix-os`, and a PAT in `./gitkey`; that file is not in this checkout — GitHub ops need a token from the user.)
-- **Uncommitted:** SSH host-key persistence (`network/helix-ssh-hostkeys` + hook 03) and WebSocket login check
-  (`authz.ws_problem`, `_WebSocketLogin` in `main.py`, `tests/test_ws_auth.py`); Proxmox VM import (§4.12: `services/pve_import.py`, `routers/pve.py`, `tests/test_pve_import.py`,
-  `main.py`, `index.html` card), `launch.sh` trimmed, this file + `docs/unraid-reference.md`.
+  machine has `gh`: publish with `build/builder/publish.sh` on `.142` (gh is in the builder image).
+- **Uncommitted:** only the user's own `launch.sh` change (leave it).
 - **Machines:**
   - `192.168.50.142` (hostname `Tower`, SSH `helix@` with `~/.ssh/helix_ed25519`) — real server: kernel 6.1.0-50,
     28 GB, 2× RTX 3050. Array disk1 `…CXYY4`, disk2 `…BJ9JN`, cache1 = 1 TB SSD (ext4); `array.cfg autostart=no`, so

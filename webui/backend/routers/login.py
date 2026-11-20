@@ -152,7 +152,6 @@ def login_status(request: Request):
     }
 
 
-@router.post("")
 def _peer_ip(request: Request) -> str:
     """The address nginx saw (X-Real-IP, else the last X-Forwarded-For entry, which nginx appends). Earlier
     X-Forwarded-For entries come from the client and can be forged, so they are never used for bans."""
@@ -169,6 +168,7 @@ def _log_failure(request: Request, user: str, why: str) -> None:
     print(f"helix-auth: login failed user={safe} ip={_peer_ip(request)} reason={why}", flush=True)
 
 
+@router.post("")
 def do_login(req: LoginReq, request: Request, response: Response):
     users = _load_users()
     if users:

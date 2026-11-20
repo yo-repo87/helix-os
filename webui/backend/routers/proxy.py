@@ -93,10 +93,10 @@ def _availability() -> dict:
     if not os.path.exists(_admin_file()) and not os.path.exists(os.path.join(NPM_RUN_DIR, "enabled")):
         mode, reason = _storage_mode()
         if mode == "ram":
-            return {"available": False,
-                    "reason": "The reverse proxy needs writable boot media. "
-                              "Boot Helix from a USB/disk (not an ISO/CD) so its settings and "
-                              "certificates persist. " + (reason or "")}
+            from routers import datapart
+            return {"available": False, "needs_data_partition": True,
+                    "reason": datapart.explain("The reverse proxy keeps its settings and certificates on the data "
+                                               "partition (HELIXDATA), which this system does not have mounted.")}
         return {"available": False,
                 "reason": "Nginx Proxy Manager is not running yet. It starts with the array on a "
                           "writable install; check the array is started."}

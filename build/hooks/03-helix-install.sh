@@ -445,7 +445,7 @@ for helper in \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
     /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor /build/addins/helix-addin \
     /build/network/helix-cloudflared /build/network/helix-firewall \
-    /build/array/sbin/helix-zfs-ensure; do
+    /build/array/sbin/helix-zfs-ensure /build/array/sbin/helix-data-partition; do
     if [ -f "$helper" ]; then
         install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
         echo "  installed /usr/local/sbin/$(basename "$helper")"

@@ -45,7 +45,11 @@ if mountpoint -q "$DATA_DIR" && mountpoint -q "$LE_DIR"; then
 fi
 
 if ! mountpoint -q "$DATA_MNT"; then
-    write_state ram "no HELIXDATA partition mounted at $DATA_MNT (read-only or legacy boot media)"
+    if [ "$(findmnt -n -o FSTYPE --target /boot 2>/dev/null)" = iso9660 ]; then
+        write_state ram "booted from read-only media (ISO/CD): no data partition"
+    else
+        write_state ram "no HELIXDATA data partition on the boot drive (older layout; the web UI can add one)"
+    fi
     exit 0
 fi
 FSTYPE=$(findmnt -n -o FSTYPE --target "$DATA_MNT" 2>/dev/null)

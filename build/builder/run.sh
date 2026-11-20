@@ -17,10 +17,14 @@ if [[ " ${*:-amd64 arm64} " == *" arm64 "* ]] && [ ! -e /proc/sys/fs/binfmt_misc
 fi
 
 LOG="$WORK/logs/build-$(date +%Y%m%d-%H%M%S).log"
-echo "Building (log: $LOG)"
+NAME="helix-build-$$"
+echo "Building (log: $LOG, container $NAME)"
+# Stopping this script (systemctl stop helix-build) must stop the container too: `docker run` exiting does not.
+trap 'sudo -n docker kill "$NAME" >/dev/null 2>&1; exit 143' TERM INT
 rc=0
-sudo -n docker run --rm --privileged -v /dev:/dev -v "$SRC:/src" -v "$WORK:/work" "$IMAGE" \
-    bash /src/build/builder/build-release.sh "$@" >"$LOG" 2>&1 || rc=$?
+sudo -n docker run --rm --name "$NAME" --privileged -v /dev:/dev -v "$SRC:/src" -v "$WORK:/work" "$IMAGE" \
+    bash /src/build/builder/build-release.sh "$@" >"$LOG" 2>&1 &
+wait $! || rc=$?
 sudo -n chown -R "$(id -u):$(id -g)" "$SRC" "$WORK" 2>/dev/null || true
 tail -25 "$LOG"
 exit $rc

@@ -13,8 +13,9 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 ## 1. Current state (2026-11-20) — read first
 
-- **3.3.6 locks out every box with a login account** (login route bug, fixed in `f9d4273` → 3.3.7). `.142` runs 3.3.6
-  with the fixed `login.py` hot-patched into RAM (lost at reboot until 3.3.7).
+- **3.3.6 locks out every box with a login account** (login route bug, fixed in `f9d4273`). 3.3.7 was built but never
+  published; the fix ships in **3.3.8** with the data-partition offer. `.142` runs 3.3.6 with the fixed `login.py`
+  hot-patched into RAM (lost at reboot until 3.3.8).
 - **Version 3.3.6 published 2026-11-20** (tag `v3.3.6` → `dd2a450`, GitHub "Latest"): firewall, per-machine SSH host
   keys, WebSocket login, 3.3.6 fixes (§6a), 4 GiB boot partitions. Assets: OTA files for amd64 + arm64,
   `helix-os-3.3.6.img.xz` (PC USB, BIOS + UEFI, no Secure Boot), `helix-os-pi-3.3.6.img.xz`; no ISO. Built on `.142`
@@ -270,6 +271,16 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
   can't be imported (`python -c "import main"`) or `nginx -t` fails.
 - **Verify the image, not the source:** `unsquashfs -cat output/boot/filesystem.squashfs opt/helix/backend/routers/X.py | grep …`;
   for initramfs changes check the cpio contents.
+
+### Data partition on old sticks (3.3.8)
+`array/sbin/helix-data-partition status|create` (root; `routers/datapart.py` = `GET/POST /api/system/data-partition`):
+adds an ext4 `HELIXDATA` partition in the unused space after the last partition of the boot drive (GPT or MBR, ≥ 2 GiB
+free, never touches existing partitions, refuses if one exists / read-only ISO boot / MBR already has 4). The proxy
+page and the tunnel card explain the real reason and offer a **Create data partition** button; it takes effect at the
+next boot (helix-firstboot mounts it and copies /boot/config once). Traps: `parted -m` free-space rows also start with a
+number; find the new node via `/sys/class/block`, not lsblk (no udev data in containers). Tests:
+`array/test/test-data-partition.sh` (loop devices, 14 checks). `.142` had a 231 GB stick with only 4 GiB used: its
+HELIXDATA (`/dev/sdj3`, 227 GB) was added by hand 2026-11-20 and is mounted from its next boot.
 
 ### NPM build cache (2026-11-20)
 `build/builder/build-release.sh` sets `HELIX_NPM_CACHE=/work/npm-cache` (`/mnt/disk1/helix-work/npm-cache` on `.142`);

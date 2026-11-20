@@ -8959,6 +8959,31 @@ function proxyTab(t) {
   }
   loadProxy();
 }
+// ── Data partition (HELIXDATA) offer: older boot drives have none; the proxy and the tunnel need one ──
+async function dataPartOffer(el) {
+  if (!el) return;
+  let st; try { st = await fetchJSON('/api/system/data-partition'); } catch (_) { el.innerHTML = ''; return; }
+  if (st.data_partition && !st.data_mounted) {
+    el.innerHTML = '<div class="fm-warn">A data partition was created on the boot drive. Reboot Helix to start using it.</div>'; return;
+  }
+  if (!st.can_create) { el.innerHTML = ''; return; }
+  const gb = Math.floor((st.free_bytes || 0) / 1e9);
+  el.innerHTML = `<div class="vf-card" style="margin-top:10px"><div class="vm-h">Add a data partition</div>
+    <p style="font-size:12.5px;margin:0 0 8px">${_esc(st.reason)} Helix can turn that unused space into a data partition (ext4, labelled HELIXDATA).
+    Nothing on the boot drive is moved or erased. After a reboot your settings are copied onto it and the reverse proxy and the tunnel can be used.</p>
+    <button class="settings-btn primary" onclick="dataPartCreate(this)">Create data partition (${gb} GB)</button> <span class="dp-msg vm-dim"></span></div>`;
+}
+function dataPartCreate(btn) {
+  openModal('Create a data partition?', `<p style="font-size:13px">Helix adds a new partition in the unused space at the end of the boot drive and formats it.
+    The existing boot partition and everything on it stay as they are. Takes a few seconds; then reboot.</p>`,
+    [{label: 'Cancel', onclick: closeModal}, {label: 'Create', primary: true, onclick: async () => {
+      closeModal(); btn.disabled = true; const m = btn.parentElement.querySelector('.dp-msg'); m.textContent = 'Creating…';
+      try { const r = await fetchJSON('/api/system/data-partition', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirm: true})});
+            m.textContent = r.message || 'Created. Reboot to use it.'; m.style.color = 'var(--ok)'; }
+      catch (e) { m.textContent = _httpDetail ? _httpDetail(e) : errText(e); m.style.color = 'var(--err)'; btn.disabled = false; }
+    }}]);
+}
+
 async function loadProxy() {
   const bar = document.getElementById('proxy-status-bar');
   const acts = document.getElementById('proxy-actions');
@@ -8972,6 +8997,9 @@ async function loadProxy() {
     acts.innerHTML = '';
     for (const x of ['hosts','certs','admin']) document.getElementById('proxy-pane-'+x).innerHTML =
       `<div style="text-align:center;color:var(--fg-dim);padding:30px;font-size:12px">${_esc(st.reason||'Unavailable.')}</div>`;
+    if (st.needs_data_partition) {
+      const box = document.createElement('div'); document.getElementById('proxy-pane-' + _proxyTab).appendChild(box); dataPartOffer(box);
+    }
     return;
   }
   bar.textContent = `Nginx Proxy Manager · ${st.hosts} proxy host${st.hosts===1?'':'s'}`;
@@ -10985,6 +11013,9 @@ async function loadTunnel() {
   window._tunBlockers = s.blockers || [];
   window._tunOn = !!s.enabled;
   line.textContent = !s.available ? (s.reason || 'Tunnel unavailable.') : (s.enabled ? (s.running ? 'Tunnel is on.' : 'Tunnel is on. The connector is not running yet.') : 'Tunnel is off.');
+  let dp = document.getElementById('tun-datapart');
+  if (!dp) { dp = document.createElement('div'); dp.id = 'tun-datapart'; line.after(dp); }
+  if (!s.available && s.needs_data_partition) dataPartOffer(dp); else dp.innerHTML = '';
   line.style.color = s.enabled ? 'var(--ok)' : 'var(--fg-muted)';
   const blockers = document.getElementById('tun-blockers');
   if (blockers) blockers.textContent = (s.blockers || []).join(' ');

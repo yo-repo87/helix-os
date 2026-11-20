@@ -21,6 +21,15 @@ MGMT_PORTS = {22, 80, 81, 443, 8082, 8443, 3781, 5050, 6556}
 _HOST = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
 
 
+def _no_data_reason() -> str:
+    try:
+        from routers import datapart
+        return datapart.explain("The tunnel keeps its token on the data partition (HELIXDATA), which this system does "
+                                "not have mounted.")
+    except Exception:                                    # noqa: BLE001 - never break the status call
+        return "The tunnel keeps its token on the data partition (HELIXDATA), which this system does not have mounted."
+
+
 def tunnel_dir() -> str | None:
     override = os.environ.get("HELIX_TUNNEL_DIR")
     if override:
@@ -79,7 +88,8 @@ def public_status(rp_id: str = "") -> dict:
     if not directory:
         return {
             "available": False,
-            "reason": "The tunnel keeps its token on the data partition. Boot from writable media (HELIXDATA) first.",
+            "reason": _no_data_reason(),
+            "needs_data_partition": True,
             "enabled": False,
             "hostnames": [],
             "token_set": False,

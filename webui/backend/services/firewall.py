@@ -273,12 +273,14 @@ def parse_ss(text: str, ephemeral=(32768, 60999), published=frozenset()) -> list
         if not m or m.group(2) == "*":
             continue
         addr, port = m.group(1), int(m.group(2))
-        if proto == "udp" and ephemeral[0] <= port <= ephemeral[1] and (proto, port) not in published:
-            continue
         proc = ""
         pm = re.search(r'users:\(\("([^"]+)"', line)
         if pm:
             proc = pm.group(1)
+        # Client sockets always belong to a process; kernel listeners (WireGuard, NFS) have none and are services.
+        if (proto == "udp" and proc and ephemeral[0] <= port <= ephemeral[1]
+                and (proto, port) not in published and port not in WELL_KNOWN):
+            continue
         loopback = addr in ("127.0.0.1", "::1") or addr.startswith("127.") or addr == "localhost"
         key = (proto, port, loopback)
         if key in seen:

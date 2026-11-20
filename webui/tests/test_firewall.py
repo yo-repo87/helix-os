@@ -8,10 +8,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from services import firewall as fw  # noqa: E402
 
 fails = 0
-def check(name, cond):
+def check(name, cond, detail=""):
     global fails
     fails += not cond
-    print(("PASS " if cond else "FAIL ") + name)
+    print(("PASS " if cond else "FAIL ") + name + ("" if cond or not detail else f" -- {detail}"))
 
 def raises(fn, *a):
     try:
@@ -100,12 +100,14 @@ udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*
 tcp LISTEN 0 64 0.0.0.0:2049 0.0.0.0:*
 tcp LISTEN 0 64 0.0.0.0:6556 0.0.0.0:* users:(("systemd",pid=1,fd=50))
 tcp LISTEN 0 64 0.0.0.0:39875 0.0.0.0:* users:(("rpc.mountd",pid=7,fd=9))
-udp UNCONN 0 0 0.0.0.0:45000 0.0.0.0:* users:(("docker-proxy",pid=8,fd=4))"""
+udp UNCONN 0 0 0.0.0.0:45000 0.0.0.0:* users:(("docker-proxy",pid=8,fd=4))
+udp UNCONN 0 0 0.0.0.0:41641 0.0.0.0:* users:(("tailscaled",pid=6,fd=4))"""
 li2 = fw.parse_ss(SS2, (32768, 60999), frozenset({("udp", 45000)}))
 ports2 = {(x["proto"], x["port"]) for x in li2}
 check("ephemeral UDP client socket skipped", ("udp", 41234) not in ports2)
-check("UDP 51820 (WireGuard, inside 32768-60999) skipped: it is not in ss as a process socket either", ("udp", 51820) not in ports2)
+check("kernel UDP listener in the ephemeral range kept (WireGuard 51820)", ("udp", 51820) in ports2)
 check("published UDP in the ephemeral range kept", ("udp", 45000) in ports2)
+check("well-known UDP port kept (Tailscale 41641)", ("udp", 41641) in ports2)
 check("TCP listener in the ephemeral range kept", ("tcp", 39875) in ports2)
 names2 = {x["name"] for x in fw.learn_rules({"mode": "learn"}, li2, {("udp", 45000): "game"})}
 check("kernel/systemd sockets get service names", {"NFS", "Checkmk agent"} <= names2, str(names2))

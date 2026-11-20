@@ -15,7 +15,7 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 - **Version** `build/config/VERSION` = **3.3.5**, tagged `v3.3.5`. Releases on GitHub `yo-repo87/helix-os` (public):
   v3.3.0, v3.3.1, v3.3.2, v3.3.4, v3.3.5. Only `main` + `feature/npm` remain as branches.
-- **This checkout:** `/home/pi/Downloads/helix-os`, remote `origin`. (Older notes refer to `/home/pi/Claude/UnraidProject`,
+- **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH). (Older notes refer to `/home/pi/Claude/UnraidProject`,
   remote `helix-os`, and a PAT in `./gitkey`; that file is not in this checkout — GitHub ops need a token from the user.)
 - **Uncommitted:** SSH host-key persistence (`network/helix-ssh-hostkeys` + hook 03) and WebSocket login check
   (`authz.ws_problem`, `_WebSocketLogin` in `main.py`, `tests/test_ws_auth.py`); Proxmox VM import (§4.12: `services/pve_import.py`, `routers/pve.py`, `tests/test_pve_import.py`,
@@ -211,8 +211,11 @@ mapping, hostpci re-attach.
 
 ### Build
 **All builds (amd64 and arm64) run on `192.168.50.142`, never on this dev machine (`192.168.50.88`)** — user rule,
-2026-11-20. On `.142`: checkout `/mnt/user/docker-projects/HelixOS/UnraidProject` (bring it up to date with the
-commits made here before building), scratch `/mnt/disk1/helix-work`. Its root is RAM, so build tools must not be
+2026-11-20. Sync with **`build/tools/sync-to-build-host.sh`** (commit first; it pushes over SSH to the bare repo
+`/mnt/disk1/helix-work/helix-os.git` and hard-resets the build checkout **`/mnt/disk1/helix-work/src`** — never edit
+there). Scratch `/mnt/disk1/helix-work`. Run backend tests there with `/opt/helix/venv/bin/python webui/tests/test_*.py`.
+The older checkout `/mnt/user/docker-projects/HelixOS/UnraidProject` (branch `feature/npm`) holds someone's uncommitted
+migration scripts and notes — leave it alone. Its root is RAM, so build tools must not be
 apt-installed on the host (they vanish at reboot): build inside a privileged bookworm **builder container** (repo +
 scratch mounted; to be created), and register arm64 emulation per boot with
 `docker run --privileged --rm tonistiigi/binfmt --install arm64`. The commands below run inside that container.

@@ -1,190 +1,58 @@
 #!/bin/bash
-# Helix OS — Build x86_64 Disk Image (USB / Proxmox)
+# Helix OS — flashable x86_64 disk image for a USB flash drive (or a VM disk): helix-os-<version>.img.xz
 #
-# Usage: sudo ./make-x86-image.sh [--output helix-os-amd64.img.xz]
+# Usage: sudo build/make-x86-image.sh [--output helix-os-<version>.img.xz] [--size-mb 4608]
 #
-# Creates a raw disk image (.img.xz) with a FAT32 partition labeled HELIXBOOT.
-# Unlike the ISO, this image has a real FAT32 /boot that is writable, so
-# config changes survive reboots — the same live-boot model as the Pi image.
+# This is what goes on a flash drive for a real install (balenaEtcher / Raspberry Pi Imager / dd). It is NOT the
+# ISO: an ISO written to a stick boots from a read-only CD file system, so settings are not kept and updates
+# cannot install. The ISO is for virtual machines (attach as a CD) and trying Helix out.
 #
-# USE THIS instead of the ISO for:
-#   - Writing to a physical USB drive (dd to /dev/sdX)
-#   - Importing into Proxmox as a VM disk (qm importdisk ...)
-#   - Any scenario where the initramfs looks for a FAT32 HELIXBOOT device
-#
-# The ISO is for virtual CD-ROM boot and does not have a writable /boot.
-#
-# Requires: output/ from: sudo ./build.sh --arch amd64
-# Tools: parted, dosfstools, grub-efi-amd64-bin, grub-pc-bin, xz-utils
-
+# Layout = exactly what write-usb.sh writes to a real stick (it runs that script on a loop device):
+#   FAT32 HELIXBOOT 4 GiB (system image + room for an update's .new/.prev copies + /config)
+#   ext4  HELIXDATA (small in the image; helix-firstboot grows it to fill the drive at first boot)
+#   GRUB for BIOS (MBR) and UEFI (EFI/BOOT/BOOTX64.EFI).
+# Requires: output/ from build.sh --arch amd64; parted, dosfstools, e2fsprogs, grub-pc-bin, xz-utils.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/../output"
-WORK_DIR="/tmp/helix-x86-build"
-# File names carry the Helix OS version (build/config/VERSION), not the build date.
-VERSION="$(tr -d " \n" < "$SCRIPT_DIR/config/VERSION")"
-IMG_NAME="helix-os-amd64-${VERSION}.img"
-IMG_PATH="$SCRIPT_DIR/../$IMG_NAME"
-IMG_SIZE_MB=2048       # 2 GB image
-BOOT_SIZE_MB=512       # FAT32 boot partition (holds squashfs + kernel)
+PROJECT_DIR="$SCRIPT_DIR/.."
+VERSION="$(cat "$SCRIPT_DIR/config/VERSION")"
+OUTPUT_DIR="${HELIX_OUTPUT:-$PROJECT_DIR/output}"
+OUT="$PROJECT_DIR/helix-os-$VERSION.img.xz"
+SIZE_MB=4608           # 4 GiB boot + 512 MiB data (grown at first boot)
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --output) IMG_PATH="${2%.xz}"; IMG_NAME="$(basename "$IMG_PATH")"; shift 2 ;;
-        --size)   IMG_SIZE_MB="$2"; shift 2 ;;
+        --output)  OUT="$2"; shift 2 ;;
+        --size-mb) SIZE_MB="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
-XZ_PATH="${IMG_PATH}.xz"
 
-[[ $EUID -eq 0 ]] || { echo "Must run as root (sudo $0)"; exit 1; }
-
-for cmd in parted mkfs.fat grub-install xz; do
-    command -v $cmd >/dev/null || {
-        echo "Missing: $cmd"
-        echo "Install: apt install parted dosfstools grub-efi-amd64-bin grub-pc-bin xz-utils"
-        exit 1
-    }
+[[ $EUID -eq 0 ]] || { echo "Must run as root"; exit 1; }
+for f in boot/vmlinuz boot/initrd.img boot/filesystem.squashfs grub/grub.cfg EFI/BOOT/BOOTX64.EFI; do
+    [ -f "$OUTPUT_DIR/$f" ] || { echo "ERROR: $OUTPUT_DIR/$f missing — run build.sh --arch amd64 first"; exit 1; }
 done
+for cmd in parted mkfs.fat mkfs.ext4 grub-install xz losetup; do
+    command -v "$cmd" >/dev/null || { echo "ERROR: $cmd not found"; exit 1; }
+done
+[ -d /usr/lib/grub/i386-pc ] || { echo "ERROR: grub-pc-bin is not installed (BIOS boot)"; exit 1; }
 
-[ -f "$OUTPUT_DIR/boot/filesystem.squashfs" ] || {
-    echo "output/boot/filesystem.squashfs not found."
-    echo "Run: sudo ./build.sh --arch amd64"
-    exit 1
-}
-
-echo "════════════════════════════════════════════════════════"
-echo " Helix OS x86_64 Disk Image Builder"
-echo " Source:  $OUTPUT_DIR"
-echo " Output:  $XZ_PATH"
-echo " Image:   ${IMG_SIZE_MB}MB raw / ${BOOT_SIZE_MB}MB FAT32 boot partition"
-echo "════════════════════════════════════════════════════════"
-
-mkdir -p "$WORK_DIR"
-MNT="$WORK_DIR/mnt"
-mkdir -p "$MNT"
-
-# ── Create raw disk image ─────────────────────────────────────────────────────
-echo ""
-echo "Creating ${IMG_SIZE_MB}MB raw disk image..."
-rm -f "$IMG_PATH"
-dd if=/dev/zero of="$IMG_PATH" bs=1M count="$IMG_SIZE_MB" status=progress
-
-# ── Partition: GPT with one FAT32 boot partition + tiny BIOS boot partition ──
-echo "Partitioning (GPT)..."
-parted -s "$IMG_PATH" mklabel gpt
-# 1 MiB gap, then BIOS boot partition (for GRUB legacy BIOS)
-parted -s "$IMG_PATH" mkpart "'BIOS boot'" 1MiB 2MiB
-parted -s "$IMG_PATH" set 1 bios_grub on
-# FAT32 HELIXBOOT partition (UEFI + live-boot)
-parted -s "$IMG_PATH" mkpart "'HELIXBOOT'" fat32 2MiB "${BOOT_SIZE_MB}MiB"
-parted -s "$IMG_PATH" set 2 esp on
-
-# ── Loop device ───────────────────────────────────────────────────────────────
-LOOP_DEV=$(losetup -f --show -P "$IMG_PATH")
-BOOT_PART="${LOOP_DEV}p2"
-
-cleanup() {
-    umount "$MNT/boot/efi"  2>/dev/null || true
-    umount "$MNT"           2>/dev/null || true
-    losetup -d "$LOOP_DEV"  2>/dev/null || true
-}
+IMG="$(mktemp -p "${TMPDIR:-/var/tmp}" helix-x86-XXXXXX.img)"
+LOOP=""
+cleanup() { [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; rm -f "$IMG"; }
 trap cleanup EXIT
 
-sleep 1
-[ -b "$BOOT_PART" ] || {
-    echo "ERROR: Partition device $BOOT_PART not found after losetup"
-    exit 1
-}
-
-# ── Format FAT32 ──────────────────────────────────────────────────────────────
-echo "Formatting FAT32 (label=HELIXBOOT)..."
-mkfs.fat -F32 -n "HELIXBOOT" "$BOOT_PART"
-
-# ── Mount and populate ────────────────────────────────────────────────────────
-mount "$BOOT_PART" "$MNT"
-mkdir -p "$MNT/boot" "$MNT/config"
-
-echo "Copying Helix OS boot files..."
-cp "$OUTPUT_DIR/boot/vmlinuz"    "$MNT/boot/"
-cp "$OUTPUT_DIR/boot/initrd.img" "$MNT/boot/"
-echo -n "  Copying filesystem.squashfs... "
-cp "$OUTPUT_DIR/boot/filesystem.squashfs" "$MNT/boot/"
-echo "done."
-
-cp -r "$OUTPUT_DIR/config/." "$MNT/config/"
-
-# Default config/go
-[ -f "$MNT/config/go" ] || cat > "$MNT/config/go" <<'EOF'
-#!/bin/bash
-# Helix OS startup script — runs at every boot (writable, persists on disk).
-systemctl start helix-backend nginx 2>/dev/null || true
-EOF
-chmod +x "$MNT/config/go"
-
-# ── Install GRUB (BIOS + UEFI) ───────────────────────────────────────────────
-echo "Installing GRUB..."
-mkdir -p "$MNT/EFI/BOOT" "$MNT/grub"
-
-cp "$SCRIPT_DIR/grub/grub.cfg" "$MNT/grub/grub.cfg"
-cp "$SCRIPT_DIR/boot-assets/splash.png" "$MNT/grub/splash.png"
-mkdir -p "$MNT/grub/fonts"
-cp /usr/share/grub/unicode.pf2 "$MNT/grub/fonts/unicode.pf2"
-
-# UEFI GRUB binary — only include modules that actually exist in this GRUB build
-GRUB_MODS=""
-for mod in part_gpt part_msdos fat normal linux search search_label \
-           echo all_video gfxterm gfxterm_background png font gzio serial terminal test configfile ls reboot halt; do
-    [ -f "/usr/lib/grub/x86_64-efi/${mod}.mod" ] && GRUB_MODS="$GRUB_MODS $mod"
-done
-# shellcheck disable=SC2086
-grub-mkimage \
-    -O x86_64-efi \
-    -o "$MNT/EFI/BOOT/BOOTX64.EFI" \
-    -p "/grub" \
-    $GRUB_MODS
-
-# BIOS GRUB — install to the disk MBR and BIOS boot partition
-grub-install \
-    --target=i386-pc \
-    --boot-directory="$MNT" \
-    --no-floppy \
-    "$LOOP_DEV" 2>/dev/null || true
-
+echo "Creating a ${SIZE_MB} MiB image..."
+truncate -s "${SIZE_MB}M" "$IMG"
+LOOP="$(losetup -fP --show "$IMG")"
+HELIX_ASSUME_YES=1 HELIX_REQUIRE_GRUB=1 HELIX_OUTPUT="$OUTPUT_DIR" bash "$SCRIPT_DIR/write-usb.sh" "$LOOP"
 sync
-SQUASH_SIZE=$(du -sh "$MNT/boot/filesystem.squashfs" | cut -f1)
-echo "  Squashfs: $SQUASH_SIZE"
-umount "$MNT"
-losetup -d "$LOOP_DEV"
-trap - EXIT
+losetup -d "$LOOP"; LOOP=""
 
-# ── Compress with xz ──────────────────────────────────────────────────────────
-echo ""
-echo "Compressing image (xz -T0 --fast)..."
-rm -f "$XZ_PATH"
-xz -T0 --fast "$IMG_PATH"
-# xz replaces the source file with ${IMG_PATH}.xz
-[ "${IMG_PATH}.xz" != "$XZ_PATH" ] && mv -f "${IMG_PATH}.xz" "$XZ_PATH"
-
-SIZE=$(du -sh "$XZ_PATH" | cut -f1)
-
-echo ""
-echo "════════════════════════════════════════════════════════"
-echo " Helix OS x86_64 disk image built successfully!"
-echo ""
-echo " File: $XZ_PATH"
-echo " Size: $SIZE (compressed)"
-echo ""
-echo " Flash to USB drive:"
-echo "   xzcat $XZ_PATH | sudo dd of=/dev/sdX bs=4M status=progress"
-echo "   (replace sdX with your drive — check with lsblk first!)"
-echo ""
-echo " Import into Proxmox as a VM disk:"
-echo "   xz -d $XZ_PATH"
-echo "   qm importdisk <vmid> ${IMG_PATH%.xz}.img local-lvm --format raw"
-echo "   Then: VM → Hardware → unused disk → Edit → Boot Order → enable"
-echo ""
-echo " NOTE: This image has a writable FAT32 /boot — config changes persist."
-echo " Use this instead of the ISO when booting from USB or a VM disk."
-echo "════════════════════════════════════════════════════════"
+echo "Compressing to $OUT ..."
+xz -T0 -6 -c "$IMG" > "$OUT.tmp"
+mv "$OUT.tmp" "$OUT"
+sha256sum "$OUT" | tee "$OUT.sha256"
+echo "Done: $OUT"
+echo "Flash it to a USB drive with balenaEtcher or: xzcat $(basename "$OUT") | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress"

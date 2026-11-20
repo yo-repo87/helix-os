@@ -4,7 +4,13 @@
 # Usage: sudo ./write-usb.sh /dev/sdX
 #
 # Creates:
-#   Partition 1: FAT32 (512MB) labeled HELIXBOOT — boot files + config
+#   Partition 1: FAT32 (4 GiB) labeled HELIXBOOT — boot files + config. 4 GiB holds the running system image plus
+#                the .new and .prev copies an OS update needs (~1 GB each and growing).
+#   Partition 2: ext4 labeled HELIXDATA — the rest of the drive (helix-firstboot grows it to fill a bigger drive).
+#
+# Also used by make-x86-image.sh on a loop device to build the flashable helix-os-<version>.img.xz:
+#   HELIX_ASSUME_YES=1   no confirmation prompt      HELIX_REQUIRE_GRUB=1  a failed BIOS GRUB install is fatal
+#   HELIX_BOOT_MIB=4096  boot partition size (MiB)   HELIX_OUTPUT=<dir>    build output to copy from
 #
 # WARNING: This WIPES the target device. Double-check your device path.
 
@@ -42,19 +48,23 @@ echo ""
 # Show what's currently on the device so the user can confirm
 lsblk "$DEVICE"
 echo ""
-read -rp "This will WIPE $DEVICE. Type 'yes' to continue: " confirm
-[ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
+if [ "${HELIX_ASSUME_YES:-}" != 1 ]; then
+    read -rp "This will WIPE $DEVICE. Type 'yes' to continue: " confirm
+    [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
+fi
+BOOT_MIB="${HELIX_BOOT_MIB:-4096}"
+BOOT_END=$((BOOT_MIB + 1))
 
 # ── Unmount any existing mounts ───────────────────────────────────────────────
 umount "${DEVICE}"* 2>/dev/null || true
 
 # ── Partition: one FAT32 partition spanning the drive ────────────────────────
-echo "Partitioning $DEVICE (2 GiB boot + HELIXDATA for the rest)..."
+echo "Partitioning $DEVICE (${BOOT_MIB} MiB boot + HELIXDATA for the rest)..."
 parted -s "$DEVICE" mklabel msdos
-parted -s "$DEVICE" mkpart primary fat32 1MiB 2049MiB
+parted -s "$DEVICE" mkpart primary fat32 1MiB "${BOOT_END}MiB"
 parted -s "$DEVICE" set 1 boot on
 # Use the leftover space as an ext4 data partition (persistent config + appdata).
-parted -s "$DEVICE" mkpart primary ext4 2049MiB 100%
+parted -s "$DEVICE" mkpart primary ext4 "${BOOT_END}MiB" 100%
 
 # ── Format ───────────────────────────────────────────────────────────────────
 echo "Formatting $PART as FAT32 (label=$LABEL)..."
@@ -89,11 +99,16 @@ cp -r "$OUTPUT_DIR/config/"*             "$MNT/config/"
 # ── Install GRUB to MBR (BIOS boot) ──────────────────────────────────────────
 if command -v grub-install >/dev/null; then
     echo "Installing GRUB to MBR..."
-    grub-install --target=i386-pc \
-        --boot-directory="$MNT" \
-        --no-floppy \
-        "$DEVICE" 2>/dev/null || echo "  SKIP GRUB MBR install (grub-pc not available)"
+    if ! grub-install --target=i386-pc --boot-directory="$MNT" --no-floppy "$DEVICE"; then
+        [ "${HELIX_REQUIRE_GRUB:-}" = 1 ] && { echo "ERROR: GRUB install for BIOS boot failed"; umount "$MNT"; exit 1; }
+        echo "  SKIP GRUB MBR install (grub-pc not available)"
+    fi
+elif [ "${HELIX_REQUIRE_GRUB:-}" = 1 ]; then
+    echo "ERROR: grub-install not found (apt install grub-pc-bin)"; umount "$MNT"; exit 1
 fi
+# Menu background and font (same as the ISO's GRUB menu).
+[ -f "$SCRIPT_DIR/boot-assets/splash.png" ] && cp "$SCRIPT_DIR/boot-assets/splash.png" "$MNT/grub/splash.png"
+[ -f /usr/share/grub/unicode.pf2 ] && { mkdir -p "$MNT/grub/fonts"; cp /usr/share/grub/unicode.pf2 "$MNT/grub/fonts/"; }
 
 sync
 umount "$MNT"

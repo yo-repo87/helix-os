@@ -264,13 +264,25 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 - **Verify the image, not the source:** `unsquashfs -cat output/boot/filesystem.squashfs opt/helix/backend/routers/X.py | grep …`;
   for initramfs changes check the cpio contents.
 
+### What each image is for (users ask)
+- `helix-os-<v>.img.xz` (x86, `make-x86-image.sh` = `write-usb.sh` on a loop device): **flash to a USB drive for a real
+  install**. FAT32 HELIXBOOT 4 GiB + ext4 HELIXDATA (grown at first boot), GRUB BIOS + UEFI.
+- `helix-os-pi-<v>.img.xz` (`make-pi-image.sh`): SD card / USB for a Pi. Same 4 GiB boot partition.
+- `helix-os-<v>.iso`: VMs (attach as a CD) and try-outs only. Written to a stick it boots from read-only iso9660:
+  settings are not kept and OTA cannot install.
+- Boot partitions must hold three system images (current, `.new`, `.prev`, ~1 GB each) → 4 GiB everywhere. The old
+  512 MiB x86 image and 2/2.5 GiB layouts silently broke as the image grew; v3.3.1–3.3.5 shipped no x86 `.img.xz`.
+- **v3.3.5's release lists arm64 in its manifest but lacks the arm64 squashfs and the Pi image** — Pis cannot update
+  to it. 3.3.6 supersedes it; fixing 3.3.5 itself needs a GitHub token. `publish-update.sh` now refuses such a release.
+
 ### Release (OTA)
 1. Bump `build/config/VERSION` (patch on every shipped update). Commit and **push** first.
 2. Build both arches on `.142`; keep each arch's `output/boot` separate (`/mnt/disk1/helix-work/out-<arch>-final`).
 3. `sudo build/make-update-bundle.sh --arch <a> --from <out>/boot --version X.Y.Z` per arch.
 4. **Verify every manifest sha256 against `sha256sum dist/update/*`** (v3.3.4 shipped with wrong hashes twice).
-5. `build/publish-update.sh --repo yo-repo87/helix-os` (tags `--target HEAD`, refuses unpushed commits).
-6. After any `gh release upload --clobber`, list assets — a GitHub 500 mid-upload leaves the asset deleted.
+5. `build/publish-update.sh --repo yo-repo87/helix-os`: tags `--target HEAD` (refuses unpushed commits), verifies every
+   manifest file's sha256, requires the flash images (`.iso` + `.img.xz` for amd64, `-pi-…img.xz` for arm64), uploads,
+   then re-checks the release's asset list/sizes and re-uploads anything missing.
 7. Boot-test in QEMU before publishing:
    `sudo qemu-system-x86_64 -enable-kvm -m 2048 -cdrom helix-os-X.iso -boot d -display none -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:8094-:80`
    then wait for `/api/health` = ok (502 for ~10 s first). The qemu `-pidfile` is root-owned 600: read it with `sudo` to

@@ -99,13 +99,18 @@ cp -r "$OUTPUT_DIR/config/"*             "$MNT/config/"
 # ── Install GRUB to MBR (BIOS boot) ──────────────────────────────────────────
 if command -v grub-install >/dev/null; then
     echo "Installing GRUB to MBR..."
-    if ! grub-install --target=i386-pc --boot-directory="$MNT" --no-floppy "$DEVICE"; then
+    # A device.map tells GRUB which disk the boot partition is on. Without it grub-install fails on a loop device
+    # ("cannot find a GRUB drive for /dev/loopNp1"), which is how the flashable image is built.
+    mkdir -p "$MNT/grub"
+    echo "(hd0) $DEVICE" > "$MNT/grub/device.map"
+    if ! grub-install --target=i386-pc --boot-directory="$MNT" --no-floppy --modules="part_msdos fat" "$DEVICE"; then
         [ "${HELIX_REQUIRE_GRUB:-}" = 1 ] && { echo "ERROR: GRUB install for BIOS boot failed"; umount "$MNT"; exit 1; }
         echo "  SKIP GRUB MBR install (grub-pc not available)"
     fi
 elif [ "${HELIX_REQUIRE_GRUB:-}" = 1 ]; then
     echo "ERROR: grub-install not found (apt install grub-pc-bin)"; umount "$MNT"; exit 1
 fi
+rm -f "$MNT/grub/device.map"                  # it names this machine's device, not the target's
 # Menu background and font (same as the ISO's GRUB menu).
 [ -f "$SCRIPT_DIR/boot-assets/splash.png" ] && cp "$SCRIPT_DIR/boot-assets/splash.png" "$MNT/grub/splash.png"
 [ -f /usr/share/grub/unicode.pf2 ] && { mkdir -p "$MNT/grub/fonts"; cp /usr/share/grub/unicode.pf2 "$MNT/grub/fonts/"; }

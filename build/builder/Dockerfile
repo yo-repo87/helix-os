@@ -6,6 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         debootstrap squashfs-tools xorriso isolinux syslinux-common syslinux-utils \
         grub-common grub2-common grub-pc-bin grub-efi-amd64-bin dosfstools mtools \
         parted fdisk e2fsprogs xz-utils zstd cpio kmod busybox-static binutils file \
-        curl wget ca-certificates gnupg python3 rsync git util-linux procps qemu-utils \
+        curl wget ca-certificates gnupg python3 rsync git util-linux procps qemu-utils udev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

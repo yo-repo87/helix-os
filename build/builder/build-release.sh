@@ -2,6 +2,7 @@
 # Runs INSIDE the builder container (see run.sh). Builds one or both architectures from a fresh rootfs and stages
 # the OTA bundle. Per-arch scratch lives on the host disk (/work), never shared between architectures.
 #   build-release.sh [amd64] [arm64]      (default: both)
+#   build-release.sh amd64-image arm64    reuse /work/out-amd64 (system already built): only redo the USB image + bundle
 set -euo pipefail
 cd /src
 V="$(cat build/config/VERSION)"
@@ -10,6 +11,14 @@ mkdir -p /work
 rm -rf dist/update                                     # a fresh manifest for this version only
 
 for ARCH in "${ARCHES[@]}"; do
+    if [ "$ARCH" = amd64-image ]; then
+        echo "════ amd64: reusing /work/out-amd64 ════"
+        [ -f /work/out-amd64/boot/filesystem.squashfs ] || { echo "ERROR: no /work/out-amd64"; exit 1; }
+        rm -rf output; cp -a /work/out-amd64 output
+        bash build/make-x86-image.sh
+        bash build/make-update-bundle.sh --arch amd64 --from output/boot --version "$V"
+        continue
+    fi
     echo "════ $ARCH: fresh rootfs ════"
     mkdir -p "/work/build-$ARCH"
     rm -rf "/work/build-$ARCH/rootfs"                   # a reused rootfs keeps packages added earlier

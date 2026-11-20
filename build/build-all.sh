@@ -1,5 +1,5 @@
 #!/bin/bash
-# Helix OS — Full Build: amd64 ISO + amd64 USB image + arm64 Pi image
+# Helix OS — Full Build: amd64 USB image + arm64 Pi image (an ISO for VMs: build/make-iso.sh by hand)
 # Runs both builds sequentially, logs everything to build-all.log
 #
 # Usage: sudo ./build-all.sh
@@ -31,12 +31,7 @@ rm -rf "$ROOTFS_DIR"
 bash "$SCRIPT_DIR/build.sh" --arch amd64
 
 # ── PHASE 2: Build ISO from amd64 output ──────────────────────────────────────
-section "Phase 2/4: Building amd64 ISO"
-bash "$SCRIPT_DIR/make-iso.sh"
-echo ""
-echo "$(stamp) ISO: $PROJECT_DIR/helix-os-$(cat "$SCRIPT_DIR/config/VERSION").iso"
-
-section "Phase 2b/4: Building amd64 USB flash-drive image"
+section "Phase 2/4: Building amd64 USB flash-drive image"
 bash "$SCRIPT_DIR/make-x86-image.sh"
 
 # Save the amd64 squashfs so the arm64 build doesn't clobber it
@@ -69,8 +64,6 @@ echo ""
 V="$(cat "$SCRIPT_DIR/config/VERSION")"
 echo "  USB image (x86_64): $PROJECT_DIR/helix-os-$V.img.xz      <- flash this to a USB drive for a real install"
 echo "  Pi image (arm64):   $PROJECT_DIR/helix-os-pi-$V.img.xz   <- flash this to an SD card / USB for a Pi"
-echo "  ISO (x86_64):       $PROJECT_DIR/helix-os-$V.iso         <- virtual machines (attach as a CD) / try-out only:"
-echo "                      written to a stick it boots read-only (settings are not kept, updates cannot install)"
 echo ""
 echo "Flash with balenaEtcher / Raspberry Pi Imager, or:"
 echo "  xzcat helix-os-$V.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync"

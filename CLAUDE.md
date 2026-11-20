@@ -268,8 +268,10 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 - `helix-os-<v>.img.xz` (x86, `make-x86-image.sh` = `write-usb.sh` on a loop device): **flash to a USB drive for a real
   install**. FAT32 HELIXBOOT 4 GiB + ext4 HELIXDATA (grown at first boot), GRUB BIOS + UEFI.
 - `helix-os-pi-<v>.img.xz` (`make-pi-image.sh`): SD card / USB for a Pi. Same 4 GiB boot partition.
-- `helix-os-<v>.iso`: VMs (attach as a CD) and try-outs only. Written to a stick it boots from read-only iso9660:
-  settings are not kept and OTA cannot install.
+- `helix-os-<v>.iso`: **no longer released (user decision 2026-11-20)**; it was only for testing on Proxmox.
+  `make-iso.sh` is kept. Written to a stick an ISO boots read-only iso9660: settings not kept, OTA cannot install.
+  For a VM use the `.img.xz` as a disk (e.g. Proxmox `qm importdisk`, or QEMU `-drive if=none,id=u,file=… -device usb-storage,drive=u`).
+  The user flashes with balenaEtcher / Rufus (both take `.img.xz` directly).
 - Boot partitions must hold three system images (current, `.new`, `.prev`, ~1 GB each) → 4 GiB everywhere. The old
   512 MiB x86 image and 2/2.5 GiB layouts silently broke as the image grew; v3.3.1–3.3.5 shipped no x86 `.img.xz`.
 - **v3.3.5's release lists arm64 in its manifest but lacks the arm64 squashfs and the Pi image** — Pis cannot update
@@ -281,10 +283,10 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 3. `sudo build/make-update-bundle.sh --arch <a> --from <out>/boot --version X.Y.Z` per arch.
 4. **Verify every manifest sha256 against `sha256sum dist/update/*`** (v3.3.4 shipped with wrong hashes twice).
 5. `build/publish-update.sh --repo yo-repo87/helix-os`: tags `--target HEAD` (refuses unpushed commits), verifies every
-   manifest file's sha256, requires the flash images (`.iso` + `.img.xz` for amd64, `-pi-…img.xz` for arm64), uploads,
+   manifest file's sha256, requires the flash images (`.img.xz` for amd64, `-pi-…img.xz` for arm64), uploads,
    then re-checks the release's asset list/sizes and re-uploads anything missing.
-7. Boot-test in QEMU before publishing:
-   `sudo qemu-system-x86_64 -enable-kvm -m 2048 -cdrom helix-os-X.iso -boot d -display none -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:8094-:80`
+7. Boot-test in QEMU before publishing, from the flash image as a USB stick (both BIOS and UEFI/OVMF):
+   `xz -dc helix-os-X.img.xz > t.img; sudo qemu-system-x86_64 -enable-kvm -m 3072 -drive if=none,id=u,format=raw,file=t.img -device qemu-xhci -device usb-storage,drive=u,bootindex=0 -display none -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:8094-:80,hostfwd=tcp:127.0.0.1:2222-:22`
    then wait for `/api/health` = ok (502 for ~10 s first). The qemu `-pidfile` is root-owned 600: read it with `sudo` to
    kill qemu, and confirm no `qemu-system-x86_64` is left afterwards.
    `make-iso.sh` needs `xorriso isolinux syslinux-common syslinux-utils grub-efi-amd64-bin dosfstools mtools` (builder container).

@@ -15,7 +15,7 @@
 #
 # Before anything is uploaded it checks that every architecture in the manifest has its three files with matching
 # sha256 (3.3.4 shipped wrong hashes; 3.3.5 listed arm64 without the arm64 files), and that the flash images exist:
-#   amd64 -> helix-os-<v>.iso (VMs) and helix-os-<v>.img.xz (USB drive)   arm64 -> helix-os-pi-<v>.img.xz
+#   amd64 -> helix-os-<v>.img.xz (USB drive)   arm64 -> helix-os-pi-<v>.img.xz   (no ISO since 3.3.6)
 # After uploading it compares the release's asset list and sizes with what was sent and re-uploads anything missing
 # (gh release upload --clobber deletes first; a GitHub 500 mid-upload has left releases without a file).
 set -euo pipefail
@@ -95,7 +95,7 @@ for a in $ARCHES; do
 done
 if [ -z "$UPDATE_ONLY" ]; then
     want=()
-    [[ " $ARCHES " == *" amd64 "* ]] && want+=("helix-os-$VERSION.iso" "helix-os-$VERSION.img.xz")
+    [[ " $ARCHES " == *" amd64 "* ]] && want+=("helix-os-$VERSION.img.xz")
     [[ " $ARCHES " == *" arm64 "* ]] && want+=("helix-os-pi-$VERSION.img.xz")
     for f in "${want[@]}"; do
         [ -f "$PROJECT_DIR/$f" ] || { echo "ERROR: $f not found in $PROJECT_DIR (build it, or pass --update-only)"; exit 1; }

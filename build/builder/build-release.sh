@@ -16,8 +16,7 @@ for ARCH in "${ARCHES[@]}"; do
     ln -sfn "/work/build-$ARCH" /tmp/helix-build
     bash build/build.sh --arch "$ARCH"
     if [ "$ARCH" = amd64 ]; then
-        bash build/make-iso.sh
-        bash build/make-x86-image.sh
+        bash build/make-x86-image.sh                    # the ISO is no longer a release product (make-iso.sh is kept)
     else
         bash build/make-pi-image.sh
     fi

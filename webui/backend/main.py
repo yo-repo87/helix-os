@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth, vmconsole, addins
-from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp, passkeys, tunnel, pve
+from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp, passkeys, tunnel, pve, firewall
 import threading
 from services import monitor_alerts
 from services.drive_health import poll_loop
@@ -102,6 +102,7 @@ app.include_router(tailscale.router)
 app.include_router(pia.router)
 app.include_router(vms.router)
 app.include_router(pve.router)
+app.include_router(firewall.router)
 app.include_router(vmconsole.router)
 app.include_router(terminal.router)
 app.include_router(ups.router)

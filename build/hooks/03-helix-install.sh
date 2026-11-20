@@ -444,7 +444,7 @@ for helper in \
     /build/array/sbin/helix-vm-start /build/array/sbin/helix-vm-stop \
     /build/shares/helix-shares-apply /build/shares/helix-samba-apply /build/shares/helix-nfs-apply \
     /build/gpu/setup-ai-gpu.sh /build/checkmk/helix-monitor /build/addins/helix-addin \
-    /build/network/helix-cloudflared \
+    /build/network/helix-cloudflared /build/network/helix-firewall \
     /build/array/sbin/helix-zfs-ensure; do
     if [ -f "$helper" ]; then
         install -m 0755 "$helper" "/usr/local/sbin/$(basename "$helper")"
@@ -831,6 +831,31 @@ WantedBy=sysinit.target
 VFIOSVC
 systemctl enable helix-vfio-bind 2>/dev/null \
     || ln -sf /etc/systemd/system/helix-vfio-bind.service /etc/systemd/system/sysinit.target.wants/
+
+# ── Firewall (nftables table "inet helix", managed by helix-firewall + the Firewall page) ──
+# Debian's nftables.service runs `flush ruleset` from /etc/nftables.conf, which would wipe Docker's and PIA's
+# rules too: never let it run. Helix applies only its own table, early (before the network is up), from the
+# saved config; the first boot without one starts in learn mode (nothing blocked).
+ln -sf /dev/null /etc/systemd/system/nftables.service
+cat > /etc/systemd/system/helix-firewall.service <<'FWSVC'
+[Unit]
+Description=Helix OS — firewall (nftables table inet helix)
+DefaultDependencies=no
+After=local-fs.target helix-firstboot.service
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/helix-firewall boot
+
+[Install]
+WantedBy=multi-user.target
+FWSVC
+systemctl enable helix-firewall 2>/dev/null \
+    || ln -sf /etc/systemd/system/helix-firewall.service /etc/systemd/system/multi-user.target.wants/
 
 # ── LVM: never activate volume groups by themselves ─────────────────────────
 # A disk from a former Proxmox host carries VG "pve" with its VM disks. Debian's udev rule would

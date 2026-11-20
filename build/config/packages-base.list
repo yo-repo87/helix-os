@@ -37,6 +37,8 @@ gdisk
 parted
 
 # ── Networking ────────────────────────────────────────────────────────────────
+# Firewall: Helix owns the nftables table "inet helix" (helix-firewall). nftables.service is masked in hook 03.
+nftables
 iproute2
 net-tools
 iputils-ping

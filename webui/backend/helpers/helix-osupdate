@@ -87,8 +87,10 @@ cmd_commit() {
         [ -f "$IMGDIR/$f.new" ] || die "commit: $f.new not staged — run stage first"
     done
     : > "$INFLIGHT"; sync
+    # Renames on one partition, not copies: copying ~1 GB to .prev took 4+ minutes on a slow stick. If power fails in
+    # between, the in-flight marker makes the initramfs boot the .prev set.
     for f in "${FILES[@]}"; do
-        [ -f "$IMGDIR/$f" ] && cp -f "$IMGDIR/$f" "$IMGDIR/$f.prev"
+        [ -f "$IMGDIR/$f" ] && mv -f "$IMGDIR/$f" "$IMGDIR/$f.prev"
     done
     sync
     for f in "${FILES[@]}"; do

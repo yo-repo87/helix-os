@@ -267,8 +267,12 @@ def _fetch_manifest(repo: str, channel: str, token: str):
 
 
 def _helper(*args) -> subprocess.CompletedProcess:
+    # stage/commit write ~1 GB to the boot drive: a slow USB stick needs minutes (3.4 MB/s measured on .142). A
+    # 120 s limit killed the call mid-update while the copy carried on, so the switch-in never ran and the next boot
+    # started the old system. Only the quick commands get a limit.
+    slow = bool(args) and args[0] in ("stage", "commit", "rollback")
     return subprocess.run(["sudo", "-n", HELPER, *args],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=None if slow else 120)
 
 
 # ── endpoints ─────────────────────────────────────────────────────

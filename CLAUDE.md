@@ -20,8 +20,14 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
   UEFI, no Secure Boot), `helix-os-pi-3.3.8.img.xz`; no ISO.
 - **3.3.6 is withdrawn** (marked pre-release, notes say why): its login never created a session. 3.3.7 was built but
   never published. v3.3.5 is amd64-only (tidied).
-- `.142` runs 3.3.6 with the fixed `login.py` hot-patched into RAM; its updater offers 3.3.8. Its new HELIXDATA
-  (`/dev/sdj3`) is mounted from the next boot; the array must be started by hand after a reboot (autostart off).
+- `.142`: the user's update to 3.3.8 **staged but never committed** (the updater's 120 s limit killed the stage call on
+  a stick that writes ~3.4 MB/s; the copy finished, the switch-in never ran), so it rebooted into 3.3.6 again. Fixed by
+  hand 2026-11-20: staged files checked against the v3.3.8 manifest, `helix-osupdate commit 3.3.8` run (took 264 s).
+  **The flash drive now boots 3.3.8 at the next reboot** (3.3.6 kept as `.prev`). Until then it runs 3.3.6 with the
+  login fix hot-patched into RAM. HELIXDATA (`/dev/sdj3`) is mounted and holds the config. Array: start by hand.
+- **Unreleased fix (ship in the next release):** `routers/osupdate.py` — no time limit on stage/commit/rollback;
+  `helix-osupdate commit` renames instead of copying (seconds instead of minutes). A stuck "error" after staging must
+  not lead to a reboot into the old system again.
 - **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).
   `./gitkey` (ignored by git, chmod 600) holds labelled lines with a fine-grained `github_pat_` and a classic `ghp_`
   token, both with push to `yo-repo87/helix-os`. Scripts take the first `github_pat_` line. Never print it. Neither

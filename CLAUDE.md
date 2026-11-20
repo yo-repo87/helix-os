@@ -253,7 +253,8 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 - Run locally: `webui/.venv/bin/uvicorn main:app --app-dir webui/backend --host 127.0.0.1 --port 8094` with throwaway
   `HELIX_CONFIG` / `STATE_DIR` (and `HELIX_TUNNEL_DIR`, `HELIX_MOVER_DIRECT=1`, `NETWORK_SBIN`=stub, small
   `NET_CONFIRM_SECS` as needed). Free ports: 8094, 8098, 8099. **8096 is Emby.** Stop servers with `fuser -k <port>/tcp`, not `pkill -f`.
-- Push dev code to a box: `webui/.venv/bin/python build/tools/vmsh.py --push-dev` (restarts backend; wait ~8 s).
+- Push dev code to a box: `python3 build/tools/vmsh.py --host <ip> --push-dev` (SSH as `helix`; restarts the backend;
+  wait ~8 s). `vmsh.py --host <ip> 'cmd'` runs a command.
   Hot-pushed code and hot-installed packages vanish at reboot.
 - Tests: `webui/tests/test_*.py` (offline; venv python), `array/test/test-{mover,disk-flow,disk-format}.sh`
   (loop devices/image files — **never real disks**), `proxy/test/*.sh` (Docker), `webui/tests/vm_api_test.py <host>`.
@@ -264,14 +265,9 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 ## 6. Open items
 
 - 3.3.5 not yet applied/boot-tested on `.142`; NPM/OpenResty, Plymouth, tunnel never booted in a real image.
-- `.142` RAM-only state: ZFS (restore copy exists for 6.1.0-50), NVIDIA driver, compose v2 plugin, lvm2/libvirt, Proxmox
-  VMs. `helix-array-start` rewrites `daemon.json` (drops the nvidia runtime until add-in restore re-adds it).
-- App form can't express `runtime: nvidia` → add an "NVIDIA GPU" container option. gpu-guard golden compose still maps
-  the deleted `/tv` folder.
-- nouveau binds before the NVIDIA add-in restore (needs early blacklist). Checkmk doesn't retry if started before Docker.
+- gpu-guard golden compose on `.142` still maps the deleted `/tv` folder.
 - `plymouthd` sometimes never exits after boot, wedging PID 1 on the console (kill -KILL it; not fixed — seen
   again on `.142` after the 3.3.5 boot: Docker/containers only came up after the kill).
-- ZFS page "Available drives" lists array disks as free. `helix-parity-check` doesn't itself check the parity mount.
 - Per-share cache policy (yes/no/only/prefer), mover schedule, split level; Samba from `ident.cfg`; notifications not
   wired to real events beyond monitoring; global Apply/Reset; dated backups of boot config.
 - Not on real hardware: RAID-card drivers (3.3.4), Pi boot/splash, Netdata on arm64, GPU passthrough.
@@ -283,14 +279,16 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 
 ## 6a. Plan for 3.3.6 (agreed 2026-11-20)
 
-**Done in repo, needs commit + image:** SSH host keys per machine (`helix-ssh-hostkeys`), WebSocket login check
-(terminal/VM console), `helix-addin` restore via `apt-get --no-download` (Pre-Depends), Proxmox VM import.
-
-**To fix:** plymouthd never exits (force-quit at multi-user); ship `lvm2` + `thin-provisioning-tools`; array start
-must merge `daemon.json` (keeps `nvidia` runtime); blacklist nouveau early when the NVIDIA add-in is installed;
-"NVIDIA GPU" container option in the app form; GPU→vfio rebind must check the GPU is idle and use libvirt with a
-timeout; Checkmk retry after Docker starts; ZFS "Available drives" excludes array disks; `helix-parity-check` checks
-the parity mount; `vmsh.py` needs a session (or use SSH) once login is enforced.
+**Committed (2026-11-20, `1a37569`…`a4a2ec0`), needs the image build:** SSH host keys per machine
+(`helix-ssh-hostkeys`); WebSocket login check (terminal/VM console); `helix-addin` restore via `apt-get --no-download`
+(Pre-Depends); Proxmox VM import; plymouth-start masked + `helix-plymouth-reaper`; `lvm2` + thin tools with LVM
+auto-activation off; `daemon.json` merged at array start; add-in restore + monitoring start in their own systemd units
+(`helix-addin-restore`, `helix-monitor-start`); `/boot/config/modprobe.d` copied in before udev
+(`helix-modprobe-restore`, NVIDIA add-in saves its nouveau blacklist there); "NVIDIA graphics" app option; VFIO per
+PCI address (`/boot/config/vfio-pci.cfg`, `helix-vfio-bind` before udev, live handover refused while the GPU is in
+use — `services/vfio_bind.py`); `helix-monitor start` waits for Docker + Repair offered when the array is up; ZFS
+available drives by real whole disk with "holds data" warnings; `helix-parity-check` refuses an unmounted parity
+location; `vmsh.py` over SSH. Not yet exercised on a booted image.
 
 **New: firewall** (user request). `.142` today: iptables all ACCEPT, no `nft`, ~50 services on 0.0.0.0, most of them
 Docker-published ports (which bypass a host INPUT firewall).
@@ -359,6 +357,7 @@ Docker-published ports (which bypass a host INPUT firewall).
 - Never test Format/Erase against a real device.
 - Every WebSocket route needs auth too — HTTP middleware doesn't cover them. Test with an unauthenticated client.
 - Never ship generated host keys/secrets in the image; generate per machine at first boot and persist to the flash.
+- GPU passthrough binds by PCI address, never `options vfio-pci ids=` (that takes every identical card).
 - Never unbind a GPU from `nvidia` while it's in use (Plex, containers, nvidia-persistenced) — the unbind deadlocks
   holding the device lock, and anything reading that device's sysfs hangs until reboot. Stop users first, use libvirt
   `managed='yes'`/`virsh nodedev-detach`, and wrap manual rebinds in `timeout`.

@@ -12,6 +12,12 @@
 #   /opt/npm/production.conf.template   admin-port server block (helix-npm-setup fills it at boot)
 #   /opt/certbot             certbot + DNS plugins in a venv (NPM calls `certbot` from PATH)
 #   /etc/nginx/conf.d/include/*, /etc/nginx/mime.types, /etc/letsencrypt.ini   NPM's nginx pieces
+#
+# Build cache: when /build-cache/npm exists (build.sh bind-mounts $HELIX_NPM_CACHE there), the result is saved as
+# npm-<arch>-<key>.tar and reused while the key matches. The key covers npm.env (all version pins), this script,
+# wheelhouse-specs.py, the architecture and the libc6 / libstdc++6 / python3 versions. A cached copy is only used
+# after the same runtime checks a fresh build must pass; if they fail it is deleted and the build runs. Under qemu
+# (arm64 on x86) this turns roughly an hour of webpack/sqlite3/wheel building into seconds.
 set -euo pipefail
 SRC=${1:-$(cd "$(dirname "$0")" && pwd)}
 # shellcheck source=npm.env
@@ -27,6 +33,51 @@ case "$(dpkg --print-architecture)" in
     arm64) NODE_ARCH=arm64 ;;
     *) echo "install-npm: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;;
 esac
+
+# ── Build cache ──────────────────────────────────────────────────────────────
+CACHE_DIR="${HELIX_NPM_CACHE_DIR:-/build-cache/npm}"
+ARCH_DEB="$(dpkg --print-architecture)"
+CACHE_KEY="$( { cat "$SRC/npm.env" "${BASH_SOURCE[0]}" "$SRC/wheelhouse-specs.py"; echo "$ARCH_DEB";
+               dpkg-query -W -f='${Package}=${Version}\n' libc6 libstdc++6 python3 2>/dev/null; } | sha256sum | cut -c1-16)"
+CACHE_TAR="$CACHE_DIR/npm-$ARCH_DEB-$CACHE_KEY.tar"
+CACHE_PATHS=(opt/npm opt/certbot etc/nginx/conf.d/include etc/nginx/mime.types etc/letsencrypt.ini)
+
+ensure_libatomic() {   # Node needs it at runtime; mark it manual so purging build tools never removes it
+    if ! dpkg-query -W -f='${Status}' libatomic1 2>/dev/null | grep -q "install ok installed"; then
+        apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1 >/dev/null
+    fi
+    apt-mark manual libatomic1 >/dev/null
+}
+runtime_ok() {         # the checks every build must pass (also run on a cached copy)
+    "$PREFIX/node/bin/node" -e 'require("node:crypto")' >/dev/null 2>&1 \
+    && ( cd "$PREFIX/backend" && "$PREFIX/node/bin/node" -e 'new (require("better-sqlite3"))(":memory:"); require("sqlite3"); require("bcrypt")' ) >/dev/null 2>&1 \
+    && /opt/certbot/bin/certbot --version >/dev/null 2>&1 \
+    && [ -s "$PREFIX/frontend/index.html" ]
+}
+save_cache() {
+    [ -d "$CACHE_DIR" ] || return 0
+    if tar -cf "$CACHE_TAR.tmp" -C / "${CACHE_PATHS[@]}" && mv "$CACHE_TAR.tmp" "$CACHE_TAR"; then
+        log "saved to the build cache: $(basename "$CACHE_TAR")"
+        ls -t "$CACHE_DIR"/npm-"$ARCH_DEB"-*.tar 2>/dev/null | tail -n +3 | xargs -r rm -f   # keep the newest two
+    else
+        rm -f "$CACHE_TAR.tmp"; log "could not save to the build cache (continuing)"
+    fi
+}
+# HELIX_NPM_SEED=1: save an existing, working /opt/npm (from a finished build) to the cache; build nothing.
+if [ -n "${HELIX_NPM_SEED:-}" ]; then
+    runtime_ok || { echo "install-npm: nothing working to seed the cache with" >&2; exit 1; }
+    save_cache; exit 0
+fi
+if [ -d "$CACHE_DIR" ] && [ -f "$CACHE_TAR" ]; then
+    log "using the cached build $(basename "$CACHE_TAR")"
+    rm -rf "$PREFIX" /opt/certbot
+    if tar -xf "$CACHE_TAR" -C / && ensure_libatomic && runtime_ok; then
+        log "done (cached): $(du -sh "$PREFIX" /opt/certbot | awk '{printf "%s %s  ", $2, $1}')"
+        exit 0
+    fi
+    log "the cached build does not run in this image: deleting it and building"
+    rm -f "$CACHE_TAR"; rm -rf "$PREFIX" /opt/certbot
+fi
 
 # Build-only tools for native modules (better-sqlite3, sqlite3, bcrypt) when no prebuilt binary
 # matches this Node; removed again at the end if this script added them.
@@ -193,4 +244,6 @@ fi
     || { echo "install-npm: node does not start after removing the build tools" >&2; exit 1; }
 ( cd "$PREFIX/backend" && "$PREFIX/node/bin/node" -e 'new (require("better-sqlite3"))(":memory:"); require("sqlite3"); require("bcrypt")' ) \
     || { echo "install-npm: native modules do not load after removing the build tools" >&2; exit 1; }
+runtime_ok || { echo "install-npm: the finished build does not pass its runtime checks" >&2; exit 1; }
+save_cache
 log "done: $(du -sh "$PREFIX" /opt/certbot | awk '{printf "%s %s  ", $2, $1}')"

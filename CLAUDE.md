@@ -266,6 +266,15 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 - **Verify the image, not the source:** `unsquashfs -cat output/boot/filesystem.squashfs opt/helix/backend/routers/X.py | grep …`;
   for initramfs changes check the cpio contents.
 
+### NPM build cache (2026-11-20)
+`build/builder/build-release.sh` sets `HELIX_NPM_CACHE=/work/npm-cache` (`/mnt/disk1/helix-work/npm-cache` on `.142`);
+`build.sh` bind-mounts it at `/build-cache/npm` in the chroot for the hooks only and refuses to pack the squashfs if it
+is still there. `proxy/install-npm.sh` keeps `npm-<arch>-<key>.tar` (/opt/npm, /opt/certbot, NPM's nginx includes,
+mime.types, letsencrypt.ini; ~445 MB, newest two per arch). Key = npm.env + install-npm.sh + wheelhouse-specs.py + arch
++ libc6/libstdc++6/python3 versions. A hit is used only after the runtime checks (node, native modules, certbot,
+frontend) pass; a damaged/incompatible copy is deleted and rebuilt. Cache hit = 3 s. `HELIX_NPM_SEED=1` saves an
+existing working build. Changing any NPM/certbot pin in `npm.env` (or the script) misses the cache by design.
+
 ### What each image is for (users ask)
 - `helix-os-<v>.img.xz` (x86, `make-x86-image.sh` = `write-usb.sh` on a loop device): **flash to a USB drive for a real
   install**. FAT32 HELIXBOOT 4 GiB + ext4 HELIXDATA (grown at first boot), GRUB BIOS + UEFI.

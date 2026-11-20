@@ -23,7 +23,7 @@ for ARCH in "${ARCHES[@]}"; do
     mkdir -p "/work/build-$ARCH"
     rm -rf "/work/build-$ARCH/rootfs"                   # a reused rootfs keeps packages added earlier
     ln -sfn "/work/build-$ARCH" /tmp/helix-build
-    bash build/build.sh --arch "$ARCH"
+    HELIX_NPM_CACHE=/work/npm-cache bash build/build.sh --arch "$ARCH"
     if [ "$ARCH" = amd64 ]; then
         bash build/make-x86-image.sh                    # the ISO is no longer a release product (make-iso.sh is kept)
     else

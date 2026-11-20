@@ -105,7 +105,18 @@ mount --bind /proc "$ROOTFS_DIR/proc"
 mount --bind /sys  "$ROOTFS_DIR/sys"
 mount -t devpts devpts "$ROOTFS_DIR/dev/pts" 2>/dev/null || true
 
+# Optional build cache for slow steps (Nginx Proxy Manager: install-npm.sh). Bind-mounted into the chroot for the
+# hooks only, and gone again before the squashfs is packed.
+NPM_CACHE_MNT="$ROOTFS_DIR/build-cache/npm"
+if [ -n "${HELIX_NPM_CACHE:-}" ]; then
+    mkdir -p "$HELIX_NPM_CACHE" "$NPM_CACHE_MNT"
+    mount --bind "$HELIX_NPM_CACHE" "$NPM_CACHE_MNT"
+    echo "  NPM build cache: $HELIX_NPM_CACHE"
+fi
+
 cleanup_mounts() {
+    umount "$NPM_CACHE_MNT" 2>/dev/null || true
+    rmdir "$NPM_CACHE_MNT" "$ROOTFS_DIR/build-cache" 2>/dev/null || true
     umount "$ROOTFS_DIR/dev/pts" 2>/dev/null || true
     umount "$ROOTFS_DIR/dev"     2>/dev/null || true
     umount "$ROOTFS_DIR/proc"    2>/dev/null || true
@@ -201,6 +212,9 @@ ln -sf /run/systemd/resolve/stub-resolv.conf "$ROOTFS_DIR/etc/resolv.conf" 2>/de
 
 cleanup_mounts
 trap - EXIT
+if mountpoint -q "$NPM_CACHE_MNT" 2>/dev/null || [ -e "$ROOTFS_DIR/build-cache" ]; then
+    echo "ERROR: the build cache is still mounted/present in the rootfs; refusing to pack it into the image"; exit 1
+fi
 
 # ── Step 4: Pack squashfs ─────────────────────────────────────────────────────
 echo ""

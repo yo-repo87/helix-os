@@ -212,8 +212,10 @@ def generate(cfg: dict) -> str:
           '    iif "lo" accept',
           "    ct state established,related accept",
           "    ct state invalid drop",
-          "    meta l4proto ipv6-icmp accept",                         # neighbour discovery, router adverts
-          "    ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept",
+          # Numbers / built-in keywords only: protocol *names* come from /etc/protocols, which a minimal system
+          # may not have, and then nft rejects the whole ruleset.
+          "    meta l4proto 58 accept",                                 # ICMPv6: neighbour discovery, router adverts
+          "    icmp type { echo-request, destination-unreachable, time-exceeded } accept",
           "    udp sport 67 udp dport 68 accept",                       # DHCPv4 replies
           "    udp sport 547 udp dport 546 accept",                     # DHCPv6 replies
           "    ip saddr @lan4 fib daddr type { broadcast, multicast } accept",   # discovery (mDNS, NetBIOS, SSDP, WSD)

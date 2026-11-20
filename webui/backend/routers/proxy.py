@@ -236,7 +236,8 @@ def _domains(s: str) -> list[str]:
 def status():
     a = _availability()
     if not a["available"]:
-        return {"available": False, "reason": a["reason"], "hosts": 0}
+        return {"available": False, "reason": a["reason"], "hosts": 0,
+                "needs_data_partition": bool(a.get("needs_data_partition"))}
     try:
         hosts = _npm("GET", "/nginx/proxy-hosts")
     except HTTPException as e:

@@ -31,6 +31,14 @@ REVERT_UNIT = "helix-firewall-revert"
 NFT = os.environ.get("HELIX_NFT", "nft")
 
 
+def sh(cmd, **kw):
+    """subprocess.run that never raises: a missing tool (no systemd in a rescue shell) is just a failed call."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except OSError as e:
+        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
 def log(msg):
     print(f"[helix-firewall] {msg}", flush=True)
 
@@ -63,12 +71,12 @@ def _helix_ids():
 def nft_apply(cfg) -> None:
     script = fw.generate(cfg)
     if not script:                                   # mode off
-        subprocess.run([NFT, "delete", "table", "inet", "helix"], capture_output=True)
+        sh([NFT, "delete", "table", "inet", "helix"])
     else:
-        chk = subprocess.run([NFT, "-c", "-f", "-"], input=script, capture_output=True, text=True)
+        chk = sh([NFT, "-c", "-f", "-"], input=script)
         if chk.returncode != 0:
             raise SystemExit("nft rejected the ruleset (nothing changed): " + (chk.stderr.strip() or chk.stdout.strip()))
-        r = subprocess.run([NFT, "-f", "-"], input=script, capture_output=True, text=True)
+        r = sh([NFT, "-f", "-"], input=script)
         if r.returncode != 0:
             raise SystemExit("nft could not apply the ruleset: " + r.stderr.strip())
     with open(ACTIVE, "w") as f:
@@ -76,8 +84,8 @@ def nft_apply(cfg) -> None:
 
 
 def cancel_revert():
-    subprocess.run(["systemctl", "stop", f"{REVERT_UNIT}.timer", f"{REVERT_UNIT}.service"], capture_output=True)
-    subprocess.run(["systemctl", "reset-failed", f"{REVERT_UNIT}.timer", f"{REVERT_UNIT}.service"], capture_output=True)
+    sh(["systemctl", "stop", f"{REVERT_UNIT}.timer", f"{REVERT_UNIT}.service"])
+    sh(["systemctl", "reset-failed", f"{REVERT_UNIT}.timer", f"{REVERT_UNIT}.service"])
 
 
 def saved_config():
@@ -106,9 +114,8 @@ def cmd_apply(revert_after):
     cancel_revert()
     nft_apply(cfg)
     if revert_after:
-        r = subprocess.run(["systemd-run", f"--unit={REVERT_UNIT}", f"--on-active={int(revert_after)}",
-                            "--timer-property=AccuracySec=1s", "/usr/local/sbin/helix-firewall", "revert", "--from-timer"],
-                           capture_output=True, text=True)
+        r = sh(["systemd-run", f"--unit={REVERT_UNIT}", f"--on-active={int(revert_after)}",
+                            "--timer-property=AccuracySec=1s", "/usr/local/sbin/helix-firewall", "revert", "--from-timer"])
         if r.returncode != 0:
             nft_apply(saved_config() or fw.default_config())       # no safety net -> do not keep it
             raise SystemExit("could not schedule the automatic undo, so the change was not kept: " + r.stderr.strip())
@@ -169,7 +176,7 @@ def cmd_off():
 
 
 def cmd_status():
-    table = subprocess.run([NFT, "list", "table", "inet", "helix"], capture_output=True).returncode == 0
+    table = sh([NFT, "list", "table", "inet", "helix"]).returncode == 0
     meta = read(META) or {}
     active = read(ACTIVE) or {}
     print(json.dumps({"table": table, "active_mode": active.get("mode") if table else "off",

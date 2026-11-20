@@ -17,14 +17,21 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
   v3.3.0, v3.3.1, v3.3.2, v3.3.4, v3.3.5. Only `main` + `feature/npm` remain as branches.
 - **This checkout:** `/home/pi/Downloads/helix-os`, remote `origin`. (Older notes refer to `/home/pi/Claude/UnraidProject`,
   remote `helix-os`, and a PAT in `./gitkey`; that file is not in this checkout — GitHub ops need a token from the user.)
-- **Uncommitted:** Proxmox VM import (§4.12: `services/pve_import.py`, `routers/pve.py`, `tests/test_pve_import.py`,
+- **Uncommitted:** SSH host-key persistence (`network/helix-ssh-hostkeys` + hook 03) and WebSocket login check
+  (`authz.ws_problem`, `_WebSocketLogin` in `main.py`, `tests/test_ws_auth.py`); Proxmox VM import (§4.12: `services/pve_import.py`, `routers/pve.py`, `tests/test_pve_import.py`,
   `main.py`, `index.html` card), `launch.sh` trimmed, this file + `docs/unraid-reference.md`.
 - **Machines:**
-  - `192.168.50.142` (hostname `Tower`) — real server: kernel 6.1.0-50, 28 GB, 2× RTX 3050, TrueNAS raidz1 pool `zpool`
-    (4×10 TB), array disk1 `…CXYY4` / disk2 `…BJ9JN` / disk3 1 TB SSD (still needs Erase→Format). Runs the 3.3.4 image
-    plus hot-pushed code; much of its state is **RAM-only** (hot-installed ZFS, NVIDIA, lvm2/libvirt, imported Proxmox
-    VMs 102/103). UI login account `helix_admin` exists, so 3.3.5 will demand that password on first load.
-    Site-specific `helix-gpu-guard` (Plex GPU watchdog) lives in `/boot/config/plex-gpu/`, run from `/boot/config/go`.
+  - `192.168.50.142` (hostname `Tower`, SSH `helix@` with `~/.ssh/helix_ed25519`) — real server: kernel 6.1.0-50,
+    28 GB, 2× RTX 3050. Array disk1 `…CXYY4`, disk2 `…BJ9JN`, cache1 = 1 TB SSD (ext4); `array.cfg autostart=no`, so
+    start the array by hand after a reboot. The 4×10 TB TrueNAS pool `zpool` was used by a TrueNAS VM (disks passed by-id).
+    That VM and the imported PlexMediaServer VM were **removed from VM Manager 2026-11-20 at the user's request**
+    (definitions only; their LVM disks `pve/vm-101-disk-0` / `pve/vm-102-disk-0` and the pool disks untouched; XML in
+    the backup folder below). VM Manager is now empty. The pool's host auto-import is
+    still disabled (`/boot/config/zfs/pools.json.disabled-20261120`) — ask before re-enabling it. **Updated to 3.3.5 + rebooted 2026-11-20**; the live backend also has the
+    WebSocket-login fix (§7) hot-patched in. VM definitions (TrueNAS, PlexMediaServer) are
+    backed up in `/boot/config/vm-backup-20261120/`. UI login `helix_admin` is enforced. `dollartree_worker` set to
+    `restart=no`. Site-specific `helix-gpu-guard` (Plex GPU watchdog) and an SSH-host-key restore snippet run from
+    `/boot/config/go`.
   - `192.168.50.12` — QEMU test VM (3 GB, root SSH), was on 3.3.2. Disks: 2×14 TB (`QM00005`, `QM00007`), 32 GB, boot disk.
 - **Public URL in use:** `https://helixos.arc-it.uk/` (= WebAuthn RP ID).
 
@@ -164,6 +171,9 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
 - TOTP checked inside `POST /api/login`; recovery codes typed in the same field. WebAuthn (py_webauthn) RP ID
   `helixos.arc-it.uk` (`webauthn.json`); unavailable on bare IP / `.local` / non-HTTPS, with a reason. Changing RP ID
   with keys registered needs confirm.
+- WebSockets (terminal = shell with sudo, VM console) are **not** seen by the HTTP middleware: `_WebSocketLogin` (ASGI)
+  applies `authz.ws_problem` — same session rule + Origin hostname must match Host. `vmsh.py` (web terminal over the
+  LAN) therefore needs a session once login is enforced; use SSH instead.
 - Frontend: `fetch` wrapper (before `vms.js`) adds credentials + CSRF and raises `#login-gate` (z 240, outside `<main>`).
 
 ### 4.9 Add-ins
@@ -200,8 +210,14 @@ mapping, hostpci re-attach.
 ## 5. Build, test, release
 
 ### Build
+**All builds (amd64 and arm64) run on `192.168.50.142`, never on this dev machine (`192.168.50.88`)** — user rule,
+2026-11-20. On `.142`: checkout `/mnt/user/docker-projects/HelixOS/UnraidProject` (bring it up to date with the
+commits made here before building), scratch `/mnt/disk1/helix-work`. Its root is RAM, so build tools must not be
+apt-installed on the host (they vanish at reboot): build inside a privileged bookworm **builder container** (repo +
+scratch mounted; to be created), and register arm64 emulation per boot with
+`docker run --privileged --rm tonistiigi/binfmt --install arm64`. The commands below run inside that container.
 ```bash
-# per-arch scratch: /tmp is a small tmpfs — point /tmp/helix-build at /home/pi/helix-work/build-<arch>
+# per-arch scratch: point /tmp/helix-build at /mnt/disk1/helix-work/build-<arch>
 # (never share one rootfs between architectures; a reused rootfs keeps packages added earlier)
 sudo build/build.sh --arch amd64 > build-amd64.log 2>&1     # never pipe into tail (SIGPIPE kills it)
 sudo build/make-iso.sh                                      # helix-os-<VERSION>.iso
@@ -216,7 +232,7 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 
 ### Release (OTA)
 1. Bump `build/config/VERSION` (patch on every shipped update). Commit and **push** first.
-2. Build both arches; keep each arch's `output/boot` separate (`/home/pi/helix-work/out-<arch>-final`).
+2. Build both arches on `.142`; keep each arch's `output/boot` separate (`/mnt/disk1/helix-work/out-<arch>-final`).
 3. `sudo build/make-update-bundle.sh --arch <a> --from <out>/boot --version X.Y.Z` per arch.
 4. **Verify every manifest sha256 against `sha256sum dist/update/*`** (v3.3.4 shipped with wrong hashes twice).
 5. `build/publish-update.sh --repo yo-repo87/helix-os` (tags `--target HEAD`, refuses unpushed commits).
@@ -248,7 +264,8 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 - App form can't express `runtime: nvidia` → add an "NVIDIA GPU" container option. gpu-guard golden compose still maps
   the deleted `/tv` folder.
 - nouveau binds before the NVIDIA add-in restore (needs early blacklist). Checkmk doesn't retry if started before Docker.
-- `plymouthd` sometimes never exits after boot, wedging PID 1 on the console (kill -KILL it; not fixed).
+- `plymouthd` sometimes never exits after boot, wedging PID 1 on the console (kill -KILL it; not fixed — seen
+  again on `.142` after the 3.3.5 boot: Docker/containers only came up after the kill).
 - ZFS page "Available drives" lists array disks as free. `helix-parity-check` doesn't itself check the parity mount.
 - Per-share cache policy (yes/no/only/prefer), mover schedule, split level; Samba from `ident.cfg`; notifications not
   wired to real events beyond monitoring; global Apply/Reset; dated backups of boot config.
@@ -256,6 +273,35 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 - arm64 images lag; UEFI GRUB menu has no background; systemd "Ordering cycle … paths.target" from `helix-root-password-*`.
 - Secrets (API keys, PIA, app env) are plain text on FAT `/boot`; PIA has DNS leak + no kill-switch.
 - `array/test/test-partitioned-disks.sh` was lost and never rewritten.
+- SSH host keys: images ≤3.3.5 ship build-time keys (same private key on every install, new key every OTA). Fixed in
+  the repo (`helix-ssh-hostkeys.service`, keys kept in `/boot/config/ssh-host/`); needs the next image.
+
+## 6a. Plan for 3.3.6 (agreed 2026-11-20)
+
+**Done in repo, needs commit + image:** SSH host keys per machine (`helix-ssh-hostkeys`), WebSocket login check
+(terminal/VM console), `helix-addin` restore via `apt-get --no-download` (Pre-Depends), Proxmox VM import.
+
+**To fix:** plymouthd never exits (force-quit at multi-user); ship `lvm2` + `thin-provisioning-tools`; array start
+must merge `daemon.json` (keeps `nvidia` runtime); blacklist nouveau early when the NVIDIA add-in is installed;
+"NVIDIA GPU" container option in the app form; GPU→vfio rebind must check the GPU is idle and use libvirt with a
+timeout; Checkmk retry after Docker starts; ZFS "Available drives" excludes array disks; `helix-parity-check` checks
+the parity mount; `vmsh.py` needs a session (or use SSH) once login is enforced.
+
+**New: firewall** (user request). `.142` today: iptables all ACCEPT, no `nft`, ~50 services on 0.0.0.0, most of them
+Docker-published ports (which bypass a host INPUT firewall).
+- nftables (add `nftables` package), one Helix-owned table `inet helix` (input + forward hooks; never edit Docker's/PIA's
+  rules; filter container traffic by `ct original` dport after DNAT). Config `HELIX_CONFIG/firewall.json`, applied at
+  boot and on change by a root helper; IPv6 parity.
+- Core: default-deny inbound with allow rules (service/port × LAN|VPN|subnet|IP|any) and presets from what is listening
+  + app ports; Docker-aware; zones (LAN, VPN wg*/tailscale0, containers, other) with UI/SSH/API LAN+VPN-only by
+  default; apply = confirm-or-revert in 90 s, current client's LAN address always allowed, console `helix-firewall off`;
+  brute-force bans via `fail2ban` (nftables action) for web UI (new login rate limit + failure log), SSH, SMB, FTP;
+  exposure audit (port, process, who can reach it, warnings); blocked-traffic log + dashboard tile.
+- **Also in 3.3.6 (user chose "everything"):** blocklists (FireHOL level1 / Spamhaus DROP, auto-update, kept as nft sets),
+  GeoIP country blocking (free country CIDR lists, cached on persistent storage), connection rate limits + SYN-flood
+  protection, per-container egress rules (e.g. "only via the VPN" / "LAN only" / "no internet").
+- **First run = learn, then enforce (user decision):** monitor mode creates LAN-scoped allow rules for everything currently
+  listening, logs would-be drops, and the user reviews and switches to enforce. Nothing breaks on upgrade.
 
 ## 7. Rules & traps (learned the hard way)
 
@@ -306,3 +352,8 @@ Before a release also run `git log --all --oneline --not main` and `git worktree
 - `pkill -f pattern` can kill your own shell. Long builds/boots: run in the background and wait once.
 - Diagnose "container up but nothing answers" with `docker stats`, `/proc/pressure/memory`, `vmstat 1 3`, OOMKilled.
 - Never test Format/Erase against a real device.
+- Every WebSocket route needs auth too — HTTP middleware doesn't cover them. Test with an unauthenticated client.
+- Never ship generated host keys/secrets in the image; generate per machine at first boot and persist to the flash.
+- Never unbind a GPU from `nvidia` while it's in use (Plex, containers, nvidia-persistenced) — the unbind deadlocks
+  holding the device lock, and anything reading that device's sysfs hangs until reboot. Stop users first, use libvirt
+  `managed='yes'`/`virsh nodedev-detach`, and wrap manual rebinds in `timeout`.

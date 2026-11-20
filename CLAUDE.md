@@ -13,6 +13,8 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 ## 1. Current state (2026-11-20) — read first
 
+- **3.3.6 locks out every box with a login account** (login route bug, fixed in `f9d4273` → 3.3.7). `.142` runs 3.3.6
+  with the fixed `login.py` hot-patched into RAM (lost at reboot until 3.3.7).
 - **Version 3.3.6 published 2026-11-20** (tag `v3.3.6` → `dd2a450`, GitHub "Latest"): firewall, per-machine SSH host
   keys, WebSocket login, 3.3.6 fixes (§6a), 4 GiB boot partitions. Assets: OTA files for amd64 + arm64,
   `helix-os-3.3.6.img.xz` (PC USB, BIOS + UEFI, no Secure Boot), `helix-os-pi-3.3.6.img.xz`; no ISO. Built on `.142`
@@ -405,6 +407,13 @@ Docker-published ports (which bypass a host INPUT firewall).
 - `ip rule` priorities < 32766; tunnel bridges need the tunnel MTU; a container on two networks keeps its first route.
 - Never silently dedupe across sources; check each source's count, not the total.
 - Mover: never rsync-delete a cache tree onto `/mnt/user`.
+
+- **Never insert code between a decorator and its function.** 3.3.6 shipped with `@router.post("")` on a helper instead
+  of `do_login`: login returned 200 with the client's IP and never made a session (nobody could log in). Unit tests of
+  helpers miss this; `webui/tests/test_login_route.py` drives the real route over HTTP. A release boot test must also
+  create a login account and log in (a fresh image has none, so login is not even enforced).
+- Python bytecode caches can hide a source change of identical size (moving one line): run regression checks with
+  `PYTHONDONTWRITEBYTECODE=1` and no `__pycache__`.
 
 **Frontend (`index.html`)**
 - Global `[hidden]{display:none!important}`; reveal by removing `hidden`, not by setting `style.display`.

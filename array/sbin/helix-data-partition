@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""helix-data-partition — the HELIXDATA (ext4) partition on the boot drive. Root only.
+
+    helix-data-partition status     JSON: boot drive, whether HELIXDATA exists / is mounted, free space, can_create
+    helix-data-partition create     add HELIXDATA in the unused space after the last partition of the boot drive
+
+Sticks made before the data partition existed (or with the old 512 MiB / 2 GiB layouts) have a FAT32 HELIXBOOT and
+nothing else, often with most of the drive unused. Settings, the reverse proxy (certificates, database) and the
+Cloudflare tunnel need an ext4 data partition. `create` only ever adds a partition in free space after the last one:
+nothing existing is moved, resized or reformatted. helix-firstboot mounts it at /mnt/data at the next boot and copies
+/boot/config into it once.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+BOOT_MNT = os.environ.get("HELIX_BOOT_MNT", "/boot")
+DATA_MNT = os.environ.get("HELIX_DATA", "/mnt/data")
+LABEL = os.environ.get("HELIX_DATA_LABEL", "HELIXDATA")             # tests use another label
+MIN_FREE = 2 * 1024 ** 3
+MIB = 1024 ** 2
+
+
+def sh(cmd, **kw):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    except OSError as e:
+        return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
+def findmnt(target, field):
+    r = sh(["findmnt", "-n", "-o", field, "--target", target])
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def parent_disk(part):
+    r = sh(["lsblk", "-no", "PKNAME", part])
+    pk = r.stdout.strip().splitlines()[0].strip() if r.returncode == 0 and r.stdout.strip() else ""
+    return f"/dev/{pk}" if pk else ""
+
+
+def layout(disk):
+    """(table, partitions [(num, start, end)], free_after_last (start, end) or None) in bytes, from parted -m."""
+    r = sh(["parted", "-m", "-s", disk, "unit", "B", "print", "free"])
+    if r.returncode != 0:
+        return "", [], None
+    table, parts, frees = "", [], []
+    for line in r.stdout.splitlines():
+        f = line.rstrip(";").split(":")
+        if len(f) >= 6 and f[0] == disk:
+            table = f[5]
+        elif len(f) >= 4 and f[0].isdigit():
+            parts.append((int(f[0]), int(f[1].rstrip("B")), int(f[2].rstrip("B"))))
+        elif len(f) >= 5 and f[4] == "free":
+            frees.append((int(f[1].rstrip("B")), int(f[2].rstrip("B"))))
+    last_end = max((p[2] for p in parts), default=0)
+    tail = [fr for fr in frees if fr[0] > last_end]
+    return table, parts, (max(tail, key=lambda fr: fr[1] - fr[0]) if tail else None)
+
+
+def status() -> dict:
+    src = findmnt(BOOT_MNT, "SOURCE")
+    fstype = findmnt(BOOT_MNT, "FSTYPE")
+    opts = findmnt(BOOT_MNT, "OPTIONS").split(",")
+    r = sh(["blkid", "-L", LABEL])
+    existing = r.stdout.strip() if r.returncode == 0 else ""
+    mounted = sh(["mountpoint", "-q", DATA_MNT]).returncode == 0
+    st = {"boot_source": src, "boot_fstype": fstype, "boot_writable": "rw" in opts and fstype != "iso9660",
+          "data_partition": existing, "data_mounted": mounted, "disk": "", "table": "", "free_bytes": 0,
+          "can_create": False, "reason": ""}
+    if existing:
+        st["reason"] = "A data partition exists." + ("" if mounted else " It is mounted at the next boot.")
+        return st
+    if not src.startswith("/dev/") or fstype == "iso9660" or not st["boot_writable"]:
+        st["reason"] = ("Helix was booted from read-only media (an ISO or CD). Write helix-os-<version>.img.xz to a "
+                        "USB drive instead; it includes a data partition.")
+        return st
+    disk = parent_disk(src)
+    if not disk:
+        st["reason"] = f"Could not tell which drive {src} is on."
+        return st
+    table, parts, tail = layout(disk)
+    st.update(disk=disk, table=table)
+    free = (tail[1] - tail[0] + 1) if tail else 0
+    st["free_bytes"] = free
+    if table not in ("gpt", "msdos"):
+        st["reason"] = f"The boot drive's partition table ({table or 'unknown'}) is not supported."
+    elif table == "msdos" and len(parts) >= 4:
+        st["reason"] = "The boot drive already has 4 partitions (the most an MBR drive can have)."
+    elif free < MIN_FREE:
+        st["reason"] = "The boot drive has no unused space for a data partition (use a bigger USB drive)."
+    else:
+        st["can_create"] = True
+        st["reason"] = (f"This boot drive has no data partition (it was made with an older layout). "
+                        f"{free / 1e9:.0f} GB of it is unused.")
+    return st
+
+
+def create() -> dict:
+    st = status()
+    if not st["can_create"]:
+        raise SystemExit(st["reason"])
+    disk = st["disk"]
+    table, parts, tail = layout(disk)
+    start = -(-max(tail[0], max((p[2] for p in parts), default=0) + 1) // MIB) * MIB      # round up to 1 MiB
+    before = {p[0] for p in parts}
+    name = [LABEL] if table == "gpt" else ["primary"]
+    r = sh(["parted", "-s", disk, "mkpart", *name, "ext4", f"{start}B", "100%"])
+    if r.returncode != 0:
+        raise SystemExit("parted could not add the partition: " + (r.stderr.strip() or r.stdout.strip()))
+    _, parts2, _ = layout(disk)
+    new = [p for p in parts2 if p[0] not in before]
+    if len(new) != 1:
+        raise SystemExit("the new partition did not appear in the partition table")
+    num = new[0][0]
+    # Tell the kernel about the new partition only (a full re-read is refused while /boot is mounted).
+    sh(["partx", "-a", "--nr", str(num), disk])
+    node = ""
+    for _ in range(20):
+        r = sh(["lsblk", "-nr", "-o", "PATH,PARTN", disk])
+        for line in r.stdout.splitlines():
+            f = line.split()
+            if len(f) == 2 and f[1] == str(num):
+                node = f[0]
+        if node and os.path.exists(node):
+            break
+        time.sleep(0.5)
+    if not node:
+        raise SystemExit(f"partition {num} was added but the kernel does not show it yet; reboot, then try again")
+    r = sh(["mkfs.ext4", "-q", "-F", "-L", LABEL, node])
+    if r.returncode != 0:
+        raise SystemExit(f"could not format {node}: {r.stderr.strip()}")
+    rec = sh(["parted", "-s", disk, "unit", "s", "print"]).stdout
+    try:
+        with open(os.path.join(BOOT_MNT, "config", f"partitions-{time.strftime('%Y%m%d-%H%M%S')}.txt"), "w") as f:
+            f.write(rec)
+    except OSError:
+        pass
+    return {"ok": True, "partition": node, "size_bytes": new[0][2] - new[0][1] + 1,
+            "message": "Data partition created. Reboot to start using it (your settings are copied over then)."}
+
+
+def main():
+    a = sys.argv[1:]
+    if os.geteuid() != 0:
+        raise SystemExit("must run as root")
+    if a == ["status"]:
+        print(json.dumps(status()))
+    elif a == ["create"]:
+        print(json.dumps(create()))
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

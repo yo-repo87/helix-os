@@ -99,7 +99,7 @@ mkdir -p /tmp/fakebin
 cat > /tmp/fakebin/docker <<'D'
 #!/bin/sh
 # stand-in docker: "inspect" of container "app" -> 172.30.0.2; "events" -> nothing
-case "$1" in inspect) [ "$5" = app ] && echo "172.30.0.2 " && exit 0; exit 1 ;; *) sleep 3600 ;; esac
+case "$1" in inspect) [ "$4" = app ] && echo "172.30.0.2 " && exit 0; exit 1 ;; *) sleep 3600 ;; esac
 D
 chmod 755 /tmp/fakebin/docker; export PATH=/tmp/fakebin:$PATH
 BASE='"rules":[{"name":"Web","ports":"8080","source":"any"},{"name":"App","ports":"9090","source":"any"}]'

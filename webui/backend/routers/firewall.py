@@ -84,14 +84,22 @@ def status():
 
 # ── what is listening ─────────────────────────────────────────────────────────
 
-def _listeners() -> list[dict]:
+def _ephemeral() -> tuple[int, int]:
+    try:
+        lo, hi = open("/proc/sys/net/ipv4/ip_local_port_range").read().split()
+        return int(lo), int(hi)
+    except (OSError, ValueError):
+        return 32768, 60999
+
+
+def _listeners(containers: dict | None = None) -> list[dict]:
     try:
         r = subprocess.run(["sudo", "-n", "ss", "-Htulnp"], capture_output=True, text=True, timeout=15)
         text = r.stdout if r.returncode == 0 else subprocess.run(["ss", "-Htuln"], capture_output=True,
                                                                   text=True, timeout=15).stdout
     except (OSError, subprocess.TimeoutExpired):
         return []
-    return fw.parse_ss(text)
+    return fw.parse_ss(text, _ephemeral(), frozenset(containers or {}))
 
 
 def _containers() -> dict:
@@ -106,7 +114,8 @@ def _containers() -> dict:
 @router.get("/audit")
 def audit():
     cfg = _pending() or _saved()
-    listeners, containers = _listeners(), _containers()
+    containers = _containers()
+    listeners = _listeners(containers)
     rows = fw.audit(cfg, listeners, containers)
     return {"mode": cfg["mode"], "rows": rows, "suggested": fw.learn_rules(cfg, listeners, containers),
             "uncovered": sum(1 for x in rows if not x["covered"])}

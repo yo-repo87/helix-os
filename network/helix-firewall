@@ -114,8 +114,12 @@ def cmd_apply(revert_after):
     cancel_revert()
     nft_apply(cfg)
     if revert_after:
+        # The undo runs this same helper with the same settings (not a fixed path: dev installs and tests differ).
+        env = [f"--setenv={k}={os.environ[k]}" for k in ("HELIX_CONFIG", "STATE_DIR", "HELIX_BACKEND", "HELIX_NFT")
+               if os.environ.get(k)]
         r = sh(["systemd-run", f"--unit={REVERT_UNIT}", f"--on-active={int(revert_after)}",
-                            "--timer-property=AccuracySec=1s", "/usr/local/sbin/helix-firewall", "revert", "--from-timer"])
+                "--timer-property=AccuracySec=1s", *env,
+                sys.executable, os.path.abspath(__file__), "revert", "--from-timer"])
         if r.returncode != 0:
             nft_apply(saved_config() or fw.default_config())       # no safety net -> do not keep it
             raise SystemExit("could not schedule the automatic undo, so the change was not kept: " + r.stderr.strip())

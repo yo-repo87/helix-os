@@ -95,6 +95,23 @@ check("enforce: unruled port is blocked", rows[("tcp", 6379)]["reach"] == "nobod
 check("enforce: SSH always LAN and VPN", rows[("tcp", 22)]["reach"] == "LAN and VPN")
 check("learn skips already covered ports", all(x["name"] != "plex" for x in fw.learn_rules(ecfg, li, ctrs)))
 
+SS2 = """udp UNCONN 0 0 0.0.0.0:41234 0.0.0.0:* users:(("Plex Media Serv",pid=9,fd=1))
+udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:*
+tcp LISTEN 0 64 0.0.0.0:2049 0.0.0.0:*
+tcp LISTEN 0 64 0.0.0.0:6556 0.0.0.0:* users:(("systemd",pid=1,fd=50))
+tcp LISTEN 0 64 0.0.0.0:39875 0.0.0.0:* users:(("rpc.mountd",pid=7,fd=9))
+udp UNCONN 0 0 0.0.0.0:45000 0.0.0.0:* users:(("docker-proxy",pid=8,fd=4))"""
+li2 = fw.parse_ss(SS2, (32768, 60999), frozenset({("udp", 45000)}))
+ports2 = {(x["proto"], x["port"]) for x in li2}
+check("ephemeral UDP client socket skipped", ("udp", 41234) not in ports2)
+check("UDP 51820 (WireGuard, inside 32768-60999) skipped: it is not in ss as a process socket either", ("udp", 51820) not in ports2)
+check("published UDP in the ephemeral range kept", ("udp", 45000) in ports2)
+check("TCP listener in the ephemeral range kept", ("tcp", 39875) in ports2)
+names2 = {x["name"] for x in fw.learn_rules({"mode": "learn"}, li2, {("udp", 45000): "game"})}
+check("kernel/systemd sockets get service names", {"NFS", "Checkmk agent"} <= names2, str(names2))
+rows2 = {x["port"]: x for x in fw.audit({"mode": "learn"}, li2, {})}
+check("audit shows the service name for a systemd socket", rows2[6556]["process"] == "Checkmk agent")
+
 # ── log ──
 L = ["1795200000.123 Tower kernel: helix-fw-drop: IN=eno1 OUT= MAC=x SRC=203.0.113.9 DST=192.168.50.142 LEN=60 PROTO=TCP SPT=5555 DPT=6379",
      "1795200001.5 Tower kernel: helix-fw-learn: IN=eno1 SRC=192.168.50.20 DST=192.168.50.142 PROTO=UDP SPT=1 DPT=161",

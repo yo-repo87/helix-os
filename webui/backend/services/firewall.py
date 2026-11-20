@@ -43,6 +43,15 @@ SENSITIVE = {
     3781: "Nginx Proxy Manager API", 81: "Nginx Proxy Manager admin",
 }
 
+# Names for ports whose socket belongs to the kernel or to systemd socket activation (ss shows no useful process).
+WELL_KNOWN = {
+    21: "FTP", 22: "SSH", 53: "DNS", 67: "DHCP", 80: "Web UI (HTTP)", 81: "Nginx Proxy Manager admin", 111: "rpcbind (NFS)",
+    137: "NetBIOS (SMB)", 138: "NetBIOS (SMB)", 139: "SMB", 443: "Web UI (HTTPS)", 445: "SMB", 1900: "SSDP discovery",
+    2049: "NFS", 3702: "WS-Discovery (SMB)", 5353: "mDNS (Avahi)", 5355: "LLMNR", 6556: "Checkmk agent",
+    8443: "Web UI (fallback HTTPS)", 41641: "Tailscale", 51820: "WireGuard",
+}
+SOCKET_OWNERS = ("systemd", "")                   # process names that say nothing about the service
+
 NAME_RE = re.compile(r"^[\w .:/()+@&'-]{1,60}$")
 
 
@@ -246,8 +255,11 @@ def generate(cfg: dict) -> str:
 
 # ── listening sockets, learn mode, exposure audit ────────────────────────────
 
-def parse_ss(text: str) -> list[dict]:
-    """`ss -Htulnp` -> [{proto, addr, port, process}] (loopback-only ones included, flagged)."""
+def parse_ss(text: str, ephemeral=(32768, 60999), published=frozenset()) -> list[dict]:
+    """`ss -Htulnp` -> [{proto, addr, port, process}] (loopback-only ones included, flagged).
+
+    `ss -u` lists every unconnected UDP socket, including client sockets that happen to sit on a random port in the
+    kernel's ephemeral range; those are not services and are skipped (unless Docker publishes that port)."""
     out, seen = [], set()
     for line in text.splitlines():
         parts = line.split()
@@ -261,6 +273,8 @@ def parse_ss(text: str) -> list[dict]:
         if not m or m.group(2) == "*":
             continue
         addr, port = m.group(1), int(m.group(2))
+        if proto == "udp" and ephemeral[0] <= port <= ephemeral[1] and (proto, port) not in published:
+            continue
         proc = ""
         pm = re.search(r'users:\(\("([^"]+)"', line)
         if pm:
@@ -336,6 +350,8 @@ def audit(cfg: dict, listeners: list[dict], containers: dict) -> list[dict]:
         elif sens and who not in ("this machine", "nobody") and li["port"] in (2375, 8082, 3781):
             warn = f"{sens} should not be reachable from other machines."
         covered = bool(_covered(cfg, li["proto"], li["port"])) or (li["proto"] == "tcp" and li["port"] in MGMT_TCP)
+        if li["process"] in SOCKET_OWNERS and li["port"] in WELL_KNOWN:
+            li = {**li, "process": WELL_KNOWN[li["port"]]}
         rows.append({**li, "container": owner, "reach": who, "warn": warn, "covered": covered or li["loopback"],
                      "sensitive": sens or ""})
     return rows
@@ -351,7 +367,8 @@ def learn_rules(cfg: dict, listeners: list[dict], containers: dict) -> list[dict
         if _covered(cfg, li["proto"], li["port"]):
             continue
         owner = containers.get((li["proto"], li["port"]))
-        name = owner or li["process"] or f"Port {li['port']}"
+        proc = li["process"] if li["process"] not in SOCKET_OWNERS else ""
+        name = owner or WELL_KNOWN.get(li["port"]) or proc or f"Port {li['port']}"
         if li["process"] in ("docker-proxy",) and not owner:
             name = f"Container port {li['port']}"
         by_name.setdefault((name, li["proto"]), []).append(li["port"])

@@ -8,4 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         parted fdisk e2fsprogs xz-utils zstd cpio kmod busybox-static binutils file \
         curl wget ca-certificates gnupg python3 rsync git util-linux procps qemu-utils udev \
     && rm -rf /var/lib/apt/lists/*
+# GitHub CLI (publish-update.sh), from GitHub's own apt repository.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

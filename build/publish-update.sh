@@ -40,10 +40,13 @@ done
 command -v gh >/dev/null || { echo "ERROR: gh CLI not found"; exit 1; }
 [ -f "$MANIFEST" ] || { echo "ERROR: $MANIFEST not found — run make-update-bundle.sh first"; exit 1; }
 
-# Token: env first, then repo-root gitkey.
+# Token: env first, then repo-root gitkey. gitkey may hold labels and several tokens: the first fine-grained
+# (github_pat_) token wins, else the first classic (ghp_) one.
 if [ -z "${GH_TOKEN:-}" ]; then
     if [ -f "$PROJECT_DIR/gitkey" ]; then
-        GH_TOKEN="$(cat "$PROJECT_DIR/gitkey")"
+        GH_TOKEN="$(grep -oE '^[[:space:]]*github_pat_[A-Za-z0-9_]+' "$PROJECT_DIR/gitkey" | head -1 | tr -d '[:space:]')"
+        [ -n "$GH_TOKEN" ] || GH_TOKEN="$(grep -oE '^[[:space:]]*ghp_[A-Za-z0-9]+' "$PROJECT_DIR/gitkey" | head -1 | tr -d '[:space:]')"
+        [ -n "$GH_TOKEN" ] || { echo "ERROR: no github_pat_/ghp_ token found in ./gitkey"; exit 1; }
     else
         echo "ERROR: set GH_TOKEN or provide ./gitkey"; exit 1
     fi

@@ -15,7 +15,10 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 - **Version** `build/config/VERSION` = **3.3.5**, tagged `v3.3.5`. Releases on GitHub `yo-repo87/helix-os` (public):
   v3.3.0, v3.3.1, v3.3.2, v3.3.4, v3.3.5. Only `main` + `feature/npm` remain as branches.
-- **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH). (Older notes refer to `/home/pi/Claude/UnraidProject`,
+- **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).
+  `./gitkey` (ignored by git, chmod 600) holds labelled lines with a fine-grained `github_pat_` and a classic `ghp_`
+  token, both with push to `yo-repo87/helix-os`. Scripts take the first `github_pat_` line. Never print it. Neither
+  machine has `gh`: publish with `build/builder/publish.sh` on `.142` (gh is in the builder image). (Older notes refer to `/home/pi/Claude/UnraidProject`,
   remote `helix-os`, and a PAT in `./gitkey`; that file is not in this checkout — GitHub ops need a token from the user.)
 - **Uncommitted:** SSH host-key persistence (`network/helix-ssh-hostkeys` + hook 03) and WebSocket login check
   (`authz.ws_problem`, `_WebSocketLogin` in `main.py`, `tests/test_ws_auth.py`); Proxmox VM import (§4.12: `services/pve_import.py`, `routers/pve.py`, `tests/test_pve_import.py`,
@@ -299,7 +302,8 @@ BIOS GRUB on a loop device needs a `device.map` (`(hd0) /dev/loopN`); the old im
 2. Build both arches on `.142`; keep each arch's `output/boot` separate (`/mnt/disk1/helix-work/out-<arch>-final`).
 3. `sudo build/make-update-bundle.sh --arch <a> --from <out>/boot --version X.Y.Z` per arch.
 4. **Verify every manifest sha256 against `sha256sum dist/update/*`** (v3.3.4 shipped with wrong hashes twice).
-5. `build/publish-update.sh --repo yo-repo87/helix-os`: tags `--target HEAD` (refuses unpushed commits), verifies every
+5. Push `main` to GitHub, copy `gitkey` into the build checkout on `.142`, run `build/builder/publish.sh` there
+   (= `build/publish-update.sh` in the builder container). It tags `--target HEAD` (refuses unpushed commits), verifies every
    manifest file's sha256, requires the flash images (`.img.xz` for amd64, `-pi-…img.xz` for arm64), uploads,
    then re-checks the release's asset list/sizes and re-uploads anything missing.
 7. Boot-test in QEMU before publishing, from the flash image as a USB stick (both BIOS and UEFI/OVMF):

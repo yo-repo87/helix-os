@@ -37,6 +37,7 @@ if not os.path.exists(HELPER):
 def _helper(*args, timeout=60) -> subprocess.CompletedProcess:
     cmd = ["sudo", "-n", "env", f"HELIX_CONFIG={HELIX_CONFIG}", f"STATE_DIR={STATE_DIR}",
            f"HELIX_BACKEND={os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))}",
+           *([f"HELIX_NFT={os.environ['HELIX_NFT']}"] if os.environ.get("HELIX_NFT") else []),   # tests: stand-in nft
            "python3", HELPER, *args]
     if os.environ.get("HELIX_FW_DIRECT"):                 # tests: no sudo
         cmd = cmd[cmd.index("python3"):]
@@ -65,7 +66,7 @@ def _pending():
 
 
 def _available() -> dict:
-    nft = shutil.which("nft") or os.path.exists("/usr/sbin/nft")
+    nft = os.environ.get("HELIX_NFT") or shutil.which("nft") or os.path.exists("/usr/sbin/nft")
     return {"available": bool(nft) and os.path.exists(HELPER),
             "reason": "" if nft else "nftables is not installed on this system (update Helix OS)."}
 

@@ -988,6 +988,7 @@ main { padding-bottom: 44px; }
   <div class="nav-section">Network</div>
   <a href="#network" class="nav-item">Network</a>
   <a href="#vpn" class="nav-item">VPN</a>
+  <a href="#firewall" class="nav-item" id="nav-firewall">Firewall</a>
   <div class="nav-section">Admin</div>
   <a href="#users" class="nav-item" id="nav-users">Users</a>
   <a href="#config" class="nav-item" id="nav-settings">Settings</a>
@@ -1213,6 +1214,14 @@ main { padding-bottom: 44px; }
     <div class="dash-head"><div class="section-title" style="margin:0">Monitoring</div></div>
     <div class="mon-tabs"><a class="mon-tab" data-tab="overview" href="#monitoring">Overview</a><a class="mon-tab" data-tab="alerts" href="#monitoring/alerts">Alerts</a><a class="mon-tab" data-tab="checkmk" href="#monitoring/checkmk">Checkmk</a></div>
     <div id="mon-pane-overview"></div><div id="mon-pane-alerts" hidden></div><div id="mon-pane-checkmk" hidden></div>
+  </div>
+
+  <!-- Firewall (#firewall, #firewall/rules, #firewall/exposure, #firewall/blocked) -->
+  <div id="firewall-section" hidden>
+    <div class="dash-head"><div class="section-title" style="margin:0">Firewall</div></div>
+    <div id="fw-pending" class="fm-warn" hidden style="display:flex;align-items:center;gap:8px;margin-bottom:12px"></div>
+    <div class="mon-tabs"><a class="mon-tab fw-tab" data-tab="overview" href="#firewall">Overview</a><a class="mon-tab fw-tab" data-tab="rules" href="#firewall/rules">Rules</a><a class="mon-tab fw-tab" data-tab="exposure" href="#firewall/exposure">Exposure</a><a class="mon-tab fw-tab" data-tab="blocked" href="#firewall/blocked">Blocked</a></div>
+    <div id="fw-pane-overview"></div><div id="fw-pane-rules" hidden></div><div id="fw-pane-exposure" hidden></div><div id="fw-pane-blocked" hidden></div>
   </div>
 
   <!-- VMs page (hidden until #vms) -->
@@ -2310,6 +2319,7 @@ window._onAuthRequired = function () {
 <script src="/static/vms.js"></script>
 <script src="/static/vmform.js"></script>
 <script src="/static/monitor.js"></script>
+<script src="/static/firewall.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 
@@ -3494,7 +3504,8 @@ const TOOL_HASHES = new Set(['#tools', '#diagnostics', '#hardware', '#scheduler'
 const SETTINGS_HASHES = new Set(['#config', '#notif-config']);
 function routeHash() {
   const h = (location.hash || '#dashboard').split('?')[0];
-  return h.startsWith('#disk/') ? '#disk' : h.startsWith('#vm/') ? '#vmform' : h.startsWith('#monitoring/') ? '#monitoring' : h;
+  return h.startsWith('#disk/') ? '#disk' : h.startsWith('#vm/') ? '#vmform' : h.startsWith('#monitoring/') ? '#monitoring'
+       : h.startsWith('#firewall/') ? '#firewall' : h;
 }
 function handleHash() {
   const raw = (location.hash || '#dashboard').split('?')[0];
@@ -3505,6 +3516,7 @@ function handleHash() {
     el.classList.toggle('active', href === raw
       || (el.id === 'nav-vms' && inVms)
       || (el.id === 'nav-monitoring' && raw.startsWith('#monitoring'))
+      || (el.id === 'nav-firewall' && raw.startsWith('#firewall'))
       || (el.id === 'nav-main' && (raw === '#main' || hash === '#disk'))
       || (el.id === 'nav-tools' && TOOL_HASHES.has(raw))
       || (el.id === 'nav-settings' && SETTINGS_HASHES.has(raw)));
@@ -5026,6 +5038,7 @@ const PAGE_INDEX = [
   ['GPU', '#gpu-mgmt', 'graphics'],
   ['Network', '#network', 'dhcp'],
   ['VPN', '#vpn', 'wireguard tailscale'],
+  ['Firewall', '#firewall', 'ports block nftables security'],
   ['Users', '#users', 'accounts'],
   ['Settings', '#config', 'identity samba appearance'],
   ['Notifications', '#notif-config', 'alerts'],
@@ -5155,6 +5168,7 @@ const SECTION_IDS = {
   '#apps':         'apps-section',
   '#vpn':          'vpn-section',
   '#monitoring':   'monitoring-section',
+  '#firewall':     'firewall-section',
   '#vms':          'vms-section',
   '#vmform':       'vmform-section',
   '#vm-settings':  'vmsettings-section',
@@ -5177,6 +5191,7 @@ const SECTION_LOADERS = {
   '#apps':         loadApps,
   '#vpn':          () => { loadVPN(); loadTunnel(); loadWol(); loadVnstat(); },
   '#monitoring':   loadMonitoring,
+  '#firewall':     loadFirewall,
   '#vms':          loadVMs,
   '#vmform':       loadVmForm,
   '#vm-settings':  loadVmSettings,

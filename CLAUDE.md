@@ -207,9 +207,20 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
 - Drops logged (`helix-fw-drop:` / `helix-fw-learn:`, 10/s) → `journalctl -k`.
 - Traps: never use protocol names in rules (`ipv6-icmp` needs /etc/protocols → whole ruleset rejected); `ss -u` lists
   client sockets too — ephemeral-range UDP owned by a process is skipped, kernel listeners (WireGuard, NFS) kept.
-- Tests: `webui/tests/test_firewall.py` (offline), `network/test/test-firewall-live.sh` (real packets in a privileged
-  container's own netns on `.142`: 25 checks), Playwright run of the page (21 checks, against a throwaway backend with a
-  stand-in `nft`). **Not yet tested:** the 90 s undo timer on real systemd, a booted image, the dashboard tile (not built).
+- **Extras (enforce only):** bans (`firewall-bans.json` in HELIX_CONFIG, timed nft sets, re-applied with their remaining
+  time; `helix-firewall watch` = `helix-firewall-watch.service` follows sshd + helix-backend journal, `/var/log/vsftpd.log`,
+  `/var/log/samba/auth.log` (`helix-samba-apply` sets `log level = 1 auth_audit:3@/var/log/samba/auth.log`); LAN/VPN never
+  banned unless allowed); web UI failed logins are printed as `helix-auth: login failed user= ip=` with the nginx peer
+  (X-Real-IP / last X-Forwarded-For, never the client-supplied first entry). Blocklists (FireHOL 1, Spamhaus DROP/v6,
+  custom https) and countries (ipdeny.com aggregated zones) downloaded by `helix-firewall update-lists`
+  (`helix-firewall-lists.timer` daily, or the page) into `HELIX_CONFIG/firewall-lists|firewall-geo`; LAN/VPN ranges are
+  removed from every list (FireHOL 1 contains RFC1918). Country block / allow-only (LAN/VPN exempt). SYN-flood and ping
+  limits; per-rule new-connection limit per source. Per-container outbound (lan / none / vpn = only via `pia0`, a kill
+  switch) by container IPv4 (docker inspect at apply; the watcher re-applies on container start/die).
+- Tests: `webui/tests/test_firewall.py` (offline, ~100 checks), `network/test/test-firewall-live.sh` (real packets in a
+  privileged container's own netns on `.142`: 45 checks incl. bans, watcher, blocklist, countries, rate limit, outbound),
+  Playwright runs of the page (21 + 16 checks against a throwaway backend with a stand-in `nft`; real list downloads).
+  **Not yet tested:** the 90 s undo timer on real systemd, a booted image, IPv6 container outbound (sets are IPv4 only).
 
 ### 4.11 Other features (brief)
 File manager (server-side jobs, chunked upload, rules in `services/fileutil.py`), FTP (vsftpd, chrooted to
@@ -320,7 +331,7 @@ Docker-published ports (which bypass a host INPUT firewall).
   default; apply = confirm-or-revert in 90 s, current client's LAN address always allowed, console `helix-firewall off`;
   brute-force bans via `fail2ban` (nftables action) for web UI (new login rate limit + failure log), SSH, SMB, FTP;
   exposure audit (port, process, who can reach it, warnings); blocked-traffic log + dashboard tile.
-- **Also in 3.3.6 (user chose "everything"):** blocklists (FireHOL level1 / Spamhaus DROP, auto-update, kept as nft sets),
+- **Built 2026-11-20 (see §4.11a). Also in 3.3.6 (user chose "everything"):** blocklists (FireHOL level1 / Spamhaus DROP, auto-update, kept as nft sets),
   GeoIP country blocking (free country CIDR lists, cached on persistent storage), connection rate limits + SYN-flood
   protection, per-container egress rules (e.g. "only via the VPN" / "LAN only" / "no internet").
 - **First run = learn, then enforce (user decision):** monitor mode creates LAN-scoped allow rules for everything currently

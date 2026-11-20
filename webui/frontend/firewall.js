@@ -236,8 +236,8 @@ async function fwProtection() {
   const num = (val, js, min, max) => `<input class="settings-input" type="number" style="max-width:110px" min="${min}" max="${max}" value="${val}" onchange="${js}">`;
   const SRC = {ssh: 'SSH', webui: 'Web UI', ftp: 'FTP', smb: 'SMB file shares'};
   const lstat = id => { const x = (ls.lists || {})[id]; if (!x) return '<span class="vm-dim">not downloaded yet</span>';
-    return x.ok ? `<span class="vm-dim">${x.count.toLocaleString()} networks · ${fwFmtTime(x.at)}</span>` : `<span style="color:var(--err)">${_esc(x.error)}</span>${x.count ? ` <span class="vm-dim">(using the last copy: ${x.count})</span>` : ''}`; };
-  const gstat = cc => { const x = (ls.geo || {})[cc]; return !x ? 'not downloaded' : x.ok ? `${x.count.toLocaleString()} networks` : (x.error || 'failed'); };
+    return x.ok ? `<span class="vm-dim">${x.count.toLocaleString()} network${x.count === 1 ? '' : 's'} · ${fwFmtTime(x.at)}</span>` : `<span style="color:var(--err)">${_esc(x.error)}</span>${x.count ? ` <span class="vm-dim">(using the last copy: ${x.count})</span>` : ''}`; };
+  const gstat = cc => { const x = (ls.geo || {})[cc]; return !x ? 'not downloaded' : x.ok ? `${x.count.toLocaleString()} network${x.count === 1 ? '' : 's'}` : (x.error || 'failed'); };
   fwPane().innerHTML = `
     ${enforcing ? '' : `<div class="vm-note warn">These protections work once the firewall is <b>Protecting</b> (they are off while ${cfg.mode === 'off' ? 'the firewall is off' : 'learning'}). You can set them up now.</div>`}
     <div class="vf-card"><div class="vm-h">Ban repeated failed logins</div>

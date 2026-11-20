@@ -33,8 +33,16 @@ for ns in lanc wanc ctr; do ip -n $ns link set eth0 up; ip -n $ns link set lo up
 ip -n lanc route add default via 192.168.77.1; ip -n wanc route add default via 203.0.113.1; ip -n ctr route add default via 172.30.0.1
 # "Docker": its own tables, a DNAT for the published port 9090 -> container:80, and a filter chain we must not touch.
 nft -f - <<'EOF'
-table ip nat { chain prerouting { type nat hook prerouting priority dstnat; tcp dport 9090 dnat to 172.30.0.2:80; } }
-table ip filter { chain DOCKER { } }
+table ip nat {
+  chain prerouting {
+    type nat hook prerouting priority dstnat;
+    tcp dport 9090 dnat to 172.30.0.2:80
+  }
+}
+table ip filter {
+  chain DOCKER {
+  }
+}
 EOF
 
 # ── servers ──

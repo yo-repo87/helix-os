@@ -7,6 +7,10 @@ PUT  /api/firewall/config      apply a new config. Enforcing changes are undone 
 POST /api/firewall/confirm     keep the pending change
 POST /api/firewall/revert      undo the pending change now
 POST /api/firewall/off         turn the firewall off
+GET  /api/firewall/bans        banned addresses;  POST /bans/ban {ip, minutes}  ·  POST /bans/unban {ip}
+POST /api/firewall/lists/update   download blocklists + country lists now (background);  GET /lists/status
+GET  /api/firewall/containers  containers for per-container outbound rules
+GET  /api/firewall/summary     small status for the dashboard tile
 """
 import ipaddress
 import json
@@ -232,3 +236,122 @@ def turn_off():
     if r.returncode != 0:
         raise HTTPException(500, _err(r))
     return {"ok": True}
+
+
+# ── bans ──────────────────────────────────────────────────────────────────────
+
+BANS = os.path.join(HELIX_CONFIG, "firewall-bans.json")
+
+
+@router.get("/bans")
+def bans():
+    try:
+        b = json.load(open(BANS))
+    except (OSError, ValueError):
+        b = {}
+    now = time.time()
+    rows = [{"ip": ip, "until": int(v.get("until", 0)), "since": int(v.get("since", 0)), "reason": v.get("reason", "")}
+            for ip, v in b.items() if isinstance(v, dict) and v.get("until", 0) > now]
+    return {"bans": sorted(rows, key=lambda r: -r["since"])}
+
+
+class BanReq(BaseModel):
+    ip: str
+    minutes: int = 60
+
+
+@router.post("/bans/ban")
+def ban(req: BanReq):
+    try:
+        ipaddress.ip_address(req.ip)
+    except ValueError:
+        raise HTTPException(400, f"'{req.ip}' is not an IP address.")
+    if not 1 <= req.minutes <= 525600:
+        raise HTTPException(400, "Ban length must be 1 minute to 1 year.")
+    r = _helper("ban", req.ip, str(req.minutes), "banned by hand")
+    if r.returncode != 0:
+        raise HTTPException(400, _err(r))
+    return {"ok": True}
+
+
+class UnbanReq(BaseModel):
+    ip: str
+
+
+@router.post("/bans/unban")
+def unban(req: UnbanReq):
+    try:
+        ipaddress.ip_address(req.ip)
+    except ValueError:
+        raise HTTPException(400, f"'{req.ip}' is not an IP address.")
+    r = _helper("unban", req.ip)
+    if r.returncode != 0:
+        raise HTTPException(500, _err(r))
+    return {"ok": True}
+
+
+# ── blocklists / countries ────────────────────────────────────────────────────
+
+LISTS_STATUS = os.path.join(STATE_DIR, "firewall-lists-status.json")
+
+
+@router.post("/lists/update")
+def lists_update():
+    """Downloads can take a while: run the helper in its own unit (a backend restart must not kill it)."""
+    env = [f"--setenv={k}={v}" for k, v in (("HELIX_CONFIG", HELIX_CONFIG), ("STATE_DIR", STATE_DIR),
+                                             ("HELIX_BACKEND", os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))),
+                                             ("HELIX_NFT", os.environ.get("HELIX_NFT", ""))) if v]
+    subprocess.run(["sudo", "-n", "systemctl", "reset-failed", "helix-firewall-lists-now.service"], capture_output=True)
+    try:
+        r = subprocess.run(["sudo", "-n", "systemd-run", "--unit=helix-firewall-lists-now", "--collect", *env,
+                            "python3", HELPER, "update-lists"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise HTTPException(500, str(e))
+    if r.returncode != 0:
+        raise HTTPException(409, "An update is already running." if "already" in r.stderr else _err(r))
+    return {"ok": True}
+
+
+@router.get("/lists/status")
+def lists_status():
+    try:
+        st = json.load(open(LISTS_STATUS))
+    except (OSError, ValueError):
+        st = {}
+    running = subprocess.run(["systemctl", "is-active", "--quiet", "helix-firewall-lists-now.service"]).returncode == 0
+    return {**st, "running": running}
+
+
+# ── containers (per-container outbound rules) ────────────────────────────────
+
+@router.get("/containers")
+def containers():
+    try:
+        r = subprocess.run(["sudo", "-n", "docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}\t{{.Networks}}"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": False, "containers": []}
+    if r.returncode != 0:
+        return {"available": False, "containers": []}
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            nets = parts[2].split(",")
+            out.append({"name": parts[0], "state": parts[1], "networks": nets,
+                        "supported": not any(n in ("host", "none") for n in nets)})
+    return {"available": True, "containers": sorted(out, key=lambda c: c["name"].lower())}
+
+
+@router.get("/summary")
+def summary():
+    """Dashboard tile: mode, rules, blocked today, active bans."""
+    cfg = _pending() or _saved()
+    try:
+        r = subprocess.run(["sudo", "-n", "journalctl", "-k", "--no-pager", "-o", "cat", "--since", "today",
+                            "-g", "helix-fw-drop: "], capture_output=True, text=True, timeout=15)
+        blocked = len([x for x in r.stdout.splitlines() if "helix-fw-drop:" in x])
+    except (OSError, subprocess.TimeoutExpired):
+        blocked = None
+    return {"mode": cfg["mode"], "rules": len([x for x in cfg["rules"] if x["enabled"]]),
+            "blocked_today": blocked, "bans": len(bans()["bans"]), "available": _available()["available"]}

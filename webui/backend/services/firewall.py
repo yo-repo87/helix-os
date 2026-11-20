@@ -52,12 +52,45 @@ WELL_KNOWN = {
 }
 SOCKET_OWNERS = ("systemd", "")                   # process names that say nothing about the service
 
+# ── extras (all applied only in enforce mode) ──
+DEFAULT_BLOCKLISTS = [
+    {"id": "firehol1", "name": "FireHOL level 1 (attackers, botnets, bogons)",
+     "url": "https://iplists.firehol.org/files/firehol_level1.netset", "enabled": False},
+    {"id": "spamhaus_drop", "name": "Spamhaus DROP (hijacked networks)",
+     "url": "https://www.spamhaus.org/drop/drop.txt", "enabled": False},
+    {"id": "spamhaus_dropv6", "name": "Spamhaus DROPv6",
+     "url": "https://www.spamhaus.org/drop/dropv6.txt", "enabled": False},
+]
+# Free per-country address lists (aggregated). {cc} is the lower-case ISO 3166 code.
+GEO_URLS = ["https://www.ipdeny.com/ipblocks/data/aggregated/{cc}-aggregated.zone",
+            "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/{cc}-aggregated.zone"]
+LIST_HOSTS = ("iplists.firehol.org", "www.spamhaus.org", "www.ipdeny.com")
+LIST_CAP = 300_000                                # entries per list (FireHOL level 1 is ~4-5k after merging)
+EGRESS = {"internet": "Internet (normal)", "lan": "LAN only, no internet", "none": "Nothing outside Docker",
+          "vpn": "Only through the PIA VPN (kill switch)"}
+PIA_IFACE = "pia0"
+BAN_SOURCES = ("ssh", "webui", "ftp", "smb")
+CC_RE = re.compile(r"^[A-Z]{2}$")
+CONTAINER_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+
+
+def default_bans() -> dict:
+    return {"enabled": True, "max_retries": 5, "window_min": 10, "ban_min": 60, "ban_lan": False,
+            "never": [], "sources": list(BAN_SOURCES)}
+
+
+def default_limits() -> dict:
+    return {"syn_flood": True, "syn_per_sec": 50, "ping_per_sec": 10}
+
+
 NAME_RE = re.compile(r"^[\w .:/()+@&'-]{1,60}$")
 
 
 def default_config() -> dict:
     return {"version": VERSION, "mode": "off", "lan_networks": list(DEFAULT_LAN), "rules": [],
-            "log_blocked": True, "learn_since": None}
+            "log_blocked": True, "learn_since": None, "bans": default_bans(),
+            "blocklists": [dict(b) for b in DEFAULT_BLOCKLISTS], "geo": {"mode": "off", "countries": []},
+            "limits": default_limits(), "egress": {}}
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -122,12 +155,18 @@ def clean_rule(r: dict, idx: int = 0) -> dict:
     cidrs = _networks(r.get("cidrs"), name) if source == "custom" else []
     if source == "custom" and not cidrs:
         raise ValueError(f"{name}: add at least one address or network for 'specific addresses'.")
+    try:
+        rate = int(r.get("rate_per_min") or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}: the connection limit must be a whole number per minute.")
+    if not 0 <= rate <= 10000:
+        raise ValueError(f"{name}: the connection limit must be 0 (none) to 10000 per minute.")
     rid = str(r.get("id") or f"r{idx + 1}")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", rid):
         rid = f"r{idx + 1}"
     return {"id": rid, "name": name, "enabled": bool(r.get("enabled", True)), "proto": proto,
             "ports": ports_text(ranges), "source": source, "cidrs": cidrs,
-            "note": str(r.get("note") or "")[:200], "learned": bool(r.get("learned"))}
+            "note": str(r.get("note") or "")[:200], "learned": bool(r.get("learned")), "rate_per_min": rate}
 
 
 def clean_config(cfg: dict) -> dict:
@@ -152,7 +191,102 @@ def clean_config(cfg: dict) -> dict:
     ls = cfg.get("learn_since")
     return {"version": VERSION, "mode": mode, "lan_networks": lan, "rules": rules,
             "log_blocked": bool(cfg.get("log_blocked", True)),
-            "learn_since": int(ls) if isinstance(ls, (int, float)) else None}
+            "learn_since": int(ls) if isinstance(ls, (int, float)) else None,
+            "bans": _clean_bans(cfg.get("bans")), "blocklists": _clean_blocklists(cfg.get("blocklists")),
+            "geo": _clean_geo(cfg.get("geo")), "limits": _clean_limits(cfg.get("limits")),
+            "egress": _clean_egress(cfg.get("egress"))}
+
+
+def _int(v, lo, hi, label):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a whole number.")
+    if not lo <= n <= hi:
+        raise ValueError(f"{label} must be between {lo} and {hi}.")
+    return n
+
+
+def _clean_bans(b) -> dict:
+    d = default_bans()
+    if b is None:
+        return d
+    if not isinstance(b, dict):
+        raise ValueError("Ban settings must be an object.")
+    src = [x for x in (b.get("sources") if b.get("sources") is not None else d["sources"]) if x in BAN_SOURCES]
+    return {"enabled": bool(b.get("enabled", d["enabled"])),
+            "max_retries": _int(b.get("max_retries", d["max_retries"]), 2, 100, "Failed logins before a ban"),
+            "window_min": _int(b.get("window_min", d["window_min"]), 1, 1440, "Counting window (minutes)"),
+            "ban_min": _int(b.get("ban_min", d["ban_min"]), 1, 525600, "Ban length (minutes)"),
+            "ban_lan": bool(b.get("ban_lan", False)),
+            "never": _networks(b.get("never"), "Never ban"), "sources": src}
+
+
+def _clean_blocklists(lists) -> list[dict]:
+    if lists is None:
+        return [dict(b) for b in DEFAULT_BLOCKLISTS]
+    if not isinstance(lists, list) or len(lists) > 20:
+        raise ValueError("At most 20 blocklists.")
+    out, seen = [], set()
+    for b in lists:
+        if not isinstance(b, dict):
+            raise ValueError("Each blocklist must be an object.")
+        bid = str(b.get("id") or "")
+        if not re.fullmatch(r"[a-z0-9_]{1,32}", bid) or bid in seen:
+            raise ValueError(f"Blocklist id '{bid[:32]}' is not valid or used twice.")
+        url = str(b.get("url") or "").strip()
+        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~%/+-]*)?", url):
+            raise ValueError(f"Blocklist '{bid}': the address must be a plain https:// URL.")
+        name = str(b.get("name") or bid)[:80]
+        seen.add(bid)
+        out.append({"id": bid, "name": name, "url": url, "enabled": bool(b.get("enabled"))})
+    return out
+
+
+def _clean_geo(g) -> dict:
+    if g is None:
+        return {"mode": "off", "countries": []}
+    if not isinstance(g, dict):
+        raise ValueError("Country settings must be an object.")
+    mode = str(g.get("mode") or "off")
+    if mode not in ("off", "block", "allow"):
+        raise ValueError("Country mode must be off, block or allow.")
+    cc = sorted({str(c).strip().upper() for c in (g.get("countries") or []) if str(c).strip()})
+    bad = [c for c in cc if not CC_RE.match(c)]
+    if bad:
+        raise ValueError(f"Not a two-letter country code: {', '.join(bad[:5])}.")
+    if len(cc) > 250:
+        raise ValueError("Too many countries.")
+    if mode != "off" and not cc:
+        raise ValueError("Pick at least one country, or turn country filtering off.")
+    return {"mode": mode, "countries": cc}
+
+
+def _clean_limits(l) -> dict:
+    d = default_limits()
+    if l is None:
+        return d
+    if not isinstance(l, dict):
+        raise ValueError("Limit settings must be an object.")
+    return {"syn_flood": bool(l.get("syn_flood", d["syn_flood"])),
+            "syn_per_sec": _int(l.get("syn_per_sec", d["syn_per_sec"]), 5, 100000, "New connections per second per address"),
+            "ping_per_sec": _int(l.get("ping_per_sec", d["ping_per_sec"]), 0, 10000, "Pings per second")}
+
+
+def _clean_egress(e) -> dict:
+    if not e:
+        return {}
+    if not isinstance(e, dict) or len(e) > 500:
+        raise ValueError("Outbound rules must be an object of at most 500 containers.")
+    out = {}
+    for name, pol in e.items():
+        if not CONTAINER_RE.match(str(name)):
+            raise ValueError(f"'{str(name)[:40]}' is not a container name.")
+        if pol not in EGRESS:
+            raise ValueError(f"{name}: outbound must be one of {', '.join(EGRESS)}.")
+        if pol != "internet":
+            out[str(name)] = pol
+    return out
 
 
 # ── ruleset ───────────────────────────────────────────────────────────────────
@@ -190,41 +324,122 @@ def _source_matches(rule: dict) -> list[str]:
     return out
 
 
-def _rule_lines(rule: dict, port_expr: str) -> list[str]:
+def _rule_lines(rule: dict, port_expr: str, idx: int = 0) -> list[str]:
     ports = _set([p.replace(" ", "") for p in rule["ports"].split(",")])
     comment = re.sub(r'["\\]', "", rule["name"])[:60]
-    return [f'{src} {_l4(rule["proto"])} {port_expr} {ports} accept comment "{comment}"'.replace("  ", " ").strip()
+    out = []
+    if rule.get("rate_per_min"):
+        # Per source address: more new connections than this per minute to these ports are dropped.
+        n = rule["rate_per_min"]
+        for fam, key in (("ipv4", "ip"), ("ipv6", "ip6")):
+            out.append(f"meta nfproto {fam} {_l4(rule['proto'])} {port_expr} {ports} ct state new "
+                       f"add @rl{idx}_{key} {{ {key} saddr limit rate over {n}/minute burst {n} packets }} drop")
+    out += [f'{src} {_l4(rule["proto"])} {port_expr} {ports} accept comment "{comment}"'.replace("  ", " ").strip()
             for src in _source_matches(rule)]
+    return out
 
 
-def generate(cfg: dict) -> str:
-    """The full nft script (atomic: create, delete, recreate). Empty string for mode off."""
+def _elements(items) -> str:
+    return ("elements = " + _set(items) + "; ") if items else ""
+
+
+def generate(cfg: dict, data: dict | None = None) -> str:
+    """The full nft script (atomic: create, delete, recreate). Empty string for mode off.
+
+    `data` (gathered by the root helper; all optional): bans {ip: seconds_left}, lists {id: [cidr]},
+    geo {cc: [cidr]}, egress_ips {policy: [container ipv4]}. Extras are applied in enforce mode only."""
     cfg = clean_config(cfg)
+    data = data or {}
     if cfg["mode"] == "off":
         return ""
     lan4, lan6 = _split(cfg["lan_networks"])
     mode = cfg["mode"]
-    final = "drop" if mode == "enforce" else "accept"
+    enforce = mode == "enforce"
+    final = "drop" if enforce else "accept"
     log = ""
     if cfg["log_blocked"]:
         log = f'limit rate 10/second burst 30 packets log prefix "{LOG_PREFIX[mode]}" level info'
     mgmt = _set(str(p) for p in MGMT_TCP)
     rules = [r for r in cfg["rules"] if r["enabled"]]
+    lim = cfg["limits"]
+
+    # extras (enforce only)
+    bans = {}
+    if enforce and cfg["bans"]["enabled"]:
+        bans = {ip: int(left) for ip, left in (data.get("bans") or {}).items() if int(left) > 0 and _is_ip(ip)}
+    ban4 = [f"{ip} timeout {t}s" for ip, t in sorted(bans.items()) if ipaddress.ip_address(ip).version == 4]
+    ban6 = [f"{ip} timeout {t}s" for ip, t in sorted(bans.items()) if ipaddress.ip_address(ip).version == 6]
+    blk = []
+    if enforce:
+        for b in cfg["blocklists"]:
+            if b["enabled"]:
+                blk += (data.get("lists") or {}).get(b["id"]) or []
+    blk4, blk6 = _split(sorted(set(blk)))
+    geo_on = enforce and cfg["geo"]["mode"] != "off"
+    geo = []
+    if geo_on:
+        for cc in cfg["geo"]["countries"]:
+            geo += (data.get("geo") or {}).get(cc) or []
+    geo4, geo6 = _split(sorted(set(geo)))
+    eg = {k: [ip for ip in v if _is_ip(ip) and ipaddress.ip_address(ip).version == 4]
+          for k, v in (data.get("egress_ips") or {}).items()} if enforce else {}
 
     L = ["table inet helix {}", "delete table inet helix", "table inet helix {"]
-    L.append(f"  set lan4 {{ type ipv4_addr; flags interval; {('elements = ' + _set(lan4) + '; ') if lan4 else ''}}}")
-    L.append(f"  set lan6 {{ type ipv6_addr; flags interval; {('elements = ' + _set(lan6) + '; ') if lan6 else ''}}}")
+    L.append(f"  set lan4 {{ type ipv4_addr; flags interval; {_elements(lan4)}}}")
+    L.append(f"  set lan6 {{ type ipv6_addr; flags interval; {_elements(lan6)}}}")
     L.append(f"  set vpn4 {{ type ipv4_addr; flags interval; elements = {_set(VPN_NETS)}; }}")
+    # bans: elements carry their own timeout; the watcher adds more at run time
+    L.append(f"  set banned4 {{ type ipv4_addr; flags timeout; {_elements(ban4)}}}")
+    L.append(f"  set banned6 {{ type ipv6_addr; flags timeout; {_elements(ban6)}}}")
+    L.append(f"  set block4 {{ type ipv4_addr; flags interval; auto-merge; {_elements(blk4)}}}")
+    L.append(f"  set block6 {{ type ipv6_addr; flags interval; auto-merge; {_elements(blk6)}}}")
+    L.append(f"  set geo4 {{ type ipv4_addr; flags interval; auto-merge; {_elements(geo4)}}}")
+    L.append(f"  set geo6 {{ type ipv6_addr; flags interval; auto-merge; {_elements(geo6)}}}")
+    for pol in ("lan", "none", "vpn"):
+        L.append(f"  set eg_{pol}4 {{ type ipv4_addr; {_elements(eg.get(pol, []))}}}")
+    L.append("  set syn4 { type ipv4_addr; flags dynamic, timeout; timeout 10s; }")
+    L.append("  set syn6 { type ipv6_addr; flags dynamic, timeout; timeout 10s; }")
+    for i, r in enumerate(rules):
+        if r.get("rate_per_min"):
+            L.append(f"  set rl{i}_ip {{ type ipv4_addr; flags dynamic, timeout; timeout 2m; }}")
+            L.append(f"  set rl{i}_ip6 {{ type ipv6_addr; flags dynamic, timeout; timeout 2m; }}")
+
+    def threats(indent="    "):
+        """Inbound from outside: bans, blocklists, countries, SYN flood. LAN/VPN are exempt from lists/countries."""
+        out = []
+        if not enforce:
+            return out
+        out += [f"{indent}ip saddr @banned4 drop", f"{indent}ip6 saddr @banned6 drop"]
+        out += [f"{indent}ip saddr @block4 drop", f"{indent}ip6 saddr @block6 drop"]
+        if geo_on and cfg["geo"]["mode"] == "block":
+            out += [f"{indent}ip saddr @geo4 ip saddr != @lan4 ip saddr != @vpn4 drop",
+                    f"{indent}ip6 saddr @geo6 ip6 saddr != @lan6 drop"]
+        if geo_on and cfg["geo"]["mode"] == "allow":
+            out += [f"{indent}ip saddr != @geo4 ip saddr != @lan4 ip saddr != @vpn4 drop",
+                    f"{indent}ip6 saddr != @geo6 ip6 saddr != @lan6 drop"]
+        if lim["syn_flood"]:
+            n = lim["syn_per_sec"]
+            out += [f"{indent}tcp flags & (fin|syn|rst|ack) == syn ip saddr != @lan4 "
+                    f"add @syn4 {{ ip saddr limit rate over {n}/second burst {n * 2} packets }} drop",
+                    f"{indent}tcp flags & (fin|syn|rst|ack) == syn ip6 saddr != @lan6 "
+                    f"add @syn6 {{ ip6 saddr limit rate over {n}/second burst {n * 2} packets }} drop"]
+        return out
 
     # ── input: this machine ──
     L += ["  chain input {", "    type filter hook input priority filter - 10; policy accept;",
-          '    iif "lo" accept',
-          "    ct state established,related accept",
-          "    ct state invalid drop",
-          # Numbers / built-in keywords only: protocol *names* come from /etc/protocols, which a minimal system
-          # may not have, and then nft rejects the whole ruleset.
-          "    meta l4proto 58 accept",                                 # ICMPv6: neighbour discovery, router adverts
-          "    icmp type { echo-request, destination-unreachable, time-exceeded } accept",
+          '    iif "lo" accept']
+    if enforce:                                      # banned addresses lose their open connections too
+        L += ["    ip saddr @banned4 drop", "    ip6 saddr @banned6 drop"]
+    L += ["    ct state established,related accept",
+          "    ct state invalid drop"]
+    L += [x for x in threats() if "banned" not in x]
+    # Numbers / built-in keywords only: protocol *names* come from /etc/protocols, which a minimal system
+    # may not have, and then nft rejects the whole ruleset.
+    L.append("    meta l4proto 58 accept")                                 # ICMPv6: neighbour discovery, router adverts
+    if enforce and lim["ping_per_sec"]:
+        p = lim["ping_per_sec"]
+        L.append(f"    icmp type echo-request limit rate over {p}/second burst {p * 2} packets drop")
+    L += ["    icmp type { echo-request, destination-unreachable, time-exceeded } accept",
           "    udp sport 67 udp dport 68 accept",                       # DHCPv4 replies
           "    udp sport 547 udp dport 546 accept",                     # DHCPv6 replies
           "    ip saddr @lan4 fib daddr type { broadcast, multicast } accept",   # discovery (mDNS, NetBIOS, SSDP, WSD)
@@ -232,25 +447,41 @@ def generate(cfg: dict) -> str:
           "    # SSH and the web UI: always from LAN and VPN (lockout protection)"]
     for src in ["ip saddr @lan4", "ip6 saddr @lan6", "ip saddr @vpn4"] + [f'iifname "{i}"' for i in VPN_IFACES]:
         L.append(f'    {src} tcp dport {mgmt} accept comment "Helix management"')
-    for r in rules:
-        L += ["    " + x for x in _rule_lines(r, "th dport")]
+    for i, r in enumerate(rules):
+        L += ["    " + x for x in _rule_lines(r, "th dport", i)]
     if log:
         L.append(f"    {log}")
     L += [f"    {final}", "  }"]
 
-    # ── forward: only new connections from outside into Docker bridges (published container ports) ──
+    # ── forward ──
     L += ["  chain forward {", "    type filter hook forward priority filter - 10; policy accept;",
           "    ct state established,related accept"]
+    L += [f'    iifname "{i}" jump from_containers' for i in DOCKER_IFACES]
     L += [f'    oifname "{i}" jump to_containers' for i in DOCKER_IFACES]
-    L += ["  }", "  chain to_containers {"]
+    L += ["  }", "  chain from_containers {"]
+    L += [f'    oifname "{i}" return' for i in DOCKER_IFACES]         # container to container: not outbound
+    L += ["    ip saddr @eg_none4 drop",
+          "    ip saddr @eg_lan4 ip daddr @lan4 return", "    ip saddr @eg_lan4 drop",
+          f'    ip saddr @eg_vpn4 oifname "{PIA_IFACE}" return', "    ip saddr @eg_vpn4 ip daddr @lan4 return",
+          "    ip saddr @eg_vpn4 drop",
+          "  }", "  chain to_containers {"]
     L += [f'    iifname "{i}" accept' for i in DOCKER_IFACES]        # container to container
     L += ["    ct status dnat jump published", "  }", "  chain published {"]
-    for r in rules:
-        L += ["    " + x for x in _rule_lines(r, "ct original proto-dst")]
+    L += threats()
+    for i, r in enumerate(rules):
+        L += ["    " + x for x in _rule_lines(r, "ct original proto-dst", i)]
     if log:
         L.append(f"    {log}")
     L += [f"    {final}", "  }", "}"]
     return "\n".join(L) + "\n"
+
+
+def _is_ip(x: str) -> bool:
+    try:
+        ipaddress.ip_address(x)
+        return True
+    except ValueError:
+        return False
 
 
 # ── listening sockets, learn mode, exposure audit ────────────────────────────
@@ -408,6 +639,65 @@ def parse_log(lines: list[str]) -> list[dict]:
                     "proto": f.get("PROTO", "").lower(), "dport": int(f["DPT"]) if f.get("DPT", "").isdigit() else None,
                     "iface": f.get("IN", "")})
     return out
+
+
+def parse_cidr_list(text: str, exclude: list[str], cap: int = LIST_CAP) -> list[str]:
+    """A downloaded list (one address/network per line, `;`/`#` comments) -> networks, minus anything that
+    overlaps `exclude` (your LAN and VPN: FireHOL level 1 lists private ranges, which would block your own LAN)."""
+    ex = [ipaddress.ip_network(n) for n in exclude]
+    out = []
+    for line in text.splitlines():
+        tok = re.split(r"[\s;#]", line.strip(), maxsplit=1)[0]
+        if not tok:
+            continue
+        try:
+            net = ipaddress.ip_network(tok, strict=False)
+        except ValueError:
+            continue
+        if net.prefixlen == 0 or any(net.version == e.version and net.overlaps(e) for e in ex):
+            continue
+        out.append(str(net))
+        if len(out) >= cap:
+            break
+    return sorted(set(out))
+
+
+AUTH_PATTERNS = {
+    "ssh": [re.compile(r"Failed (?:password|keyboard-interactive/pam) for (?:invalid user )?\S* ?from (\S+) port"),
+            re.compile(r"Invalid user \S* ?from (\S+) port"),
+            re.compile(r"maximum authentication attempts exceeded for .* from (\S+) port")],
+    "webui": [re.compile(r"helix-auth: login failed user=\S* ip=(\S+)")],
+    "ftp": [re.compile(r'FAIL LOGIN: Client "(?:::ffff:)?([^"]+)"')],
+    "smb": [re.compile(r"status \[NT_STATUS_(?:WRONG_PASSWORD|NO_SUCH_USER|LOGON_FAILURE|ACCOUNT_LOCKED_OUT)\]"
+                       r".*remote host \[ipv[46]:(.+):\d+\]")],
+}
+
+
+def parse_auth(source: str, line: str) -> str | None:
+    """The client address of a failed login in a log line from `source`, or None."""
+    for rx in AUTH_PATTERNS.get(source, []):
+        m = rx.search(line)
+        if m:
+            ip = m.group(1).strip("[]")
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
+            return ip if _is_ip(ip) else None
+    return None
+
+
+def bannable(cfg: dict, ip: str) -> bool:
+    """Never ban this machine, the never-ban list, or (unless allowed) LAN/VPN addresses."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if a.is_loopback or a.is_unspecified:
+        return False
+    b = cfg["bans"]
+    nets = [ipaddress.ip_network(n) for n in b["never"]]
+    if not b["ban_lan"]:
+        nets += [ipaddress.ip_network(n) for n in cfg["lan_networks"] + VPN_NETS]
+    return not any(a in n for n in nets if n.version == a.version)
 
 
 def dumps(cfg: dict) -> str:

@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -152,11 +153,28 @@ def login_status(request: Request):
 
 
 @router.post("")
+def _peer_ip(request: Request) -> str:
+    """The address nginx saw (X-Real-IP, else the last X-Forwarded-For entry, which nginx appends). Earlier
+    X-Forwarded-For entries come from the client and can be forged, so they are never used for bans."""
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    fwd = [x.strip() for x in (request.headers.get("x-forwarded-for") or "").split(",") if x.strip()]
+    return fwd[-1] if fwd else (request.client.host if request.client else "")
+
+
+def _log_failure(request: Request, user: str, why: str) -> None:
+    # Read by the firewall's ban watcher (helix-firewall watch) from the helix-backend journal.
+    safe = re.sub(r"[^\w.@-]", "?", (user or "")[:40])
+    print(f"helix-auth: login failed user={safe} ip={_peer_ip(request)} reason={why}", flush=True)
+
+
 def do_login(req: LoginReq, request: Request, response: Response):
     users = _load_users()
     if users:
         u = users.get(req.username)
         if not u or not _verify_pw(req.password, u["hash"], u["salt"]):
+            _log_failure(request, req.username, "password")
             raise HTTPException(401, "Invalid username or password")
         username, role = req.username, u.get("role", "admin")
     else:
@@ -175,6 +193,7 @@ def do_login(req: LoginReq, request: Request, response: Response):
         if not code:
             raise HTTPException(401, "totp_required")
         if not totp_ok and not passkeys.consume_recovery(username, code):
+            _log_failure(request, req.username, "totp")
             raise HTTPException(401, "Invalid TOTP code")
 
     token = _new_session(username, role, request.headers.get("user-agent", ""))

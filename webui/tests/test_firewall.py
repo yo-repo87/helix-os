@@ -132,5 +132,81 @@ e2 = fw.clean_config({"mode": "enforce", "rules": [{"name": "me", "ports": "443"
 check("public client allowed by a custom rule keeps access", fr._client_keeps_access(e2, "203.0.113.9"))
 check("learn mode never locks out", fr._client_keeps_access(fw.clean_config({"mode": "learn"}), "203.0.113.9"))
 
+
+# ── extras: config ──
+d = fw.clean_config({})
+check("defaults: bans on, lists offered but off, geo off, SYN protection on",
+      d["bans"]["enabled"] and d["blocklists"] and not any(b["enabled"] for b in d["blocklists"])
+      and d["geo"]["mode"] == "off" and d["limits"]["syn_flood"] and d["egress"] == {})
+check("ban retries out of range rejected", raises(fw.clean_config, {"bans": {"max_retries": 1}}))
+check("blocklist must be https", raises(fw.clean_config, {"blocklists": [{"id": "x", "url": "http://a.b/c"}]}))
+check("blocklist url with shell characters rejected", raises(fw.clean_config, {"blocklists": [{"id": "x", "url": "https://a.b/c;rm"}]}))
+check("bad country code rejected", raises(fw.clean_config, {"geo": {"mode": "block", "countries": ["CHN"]}}))
+check("country mode without countries rejected", raises(fw.clean_config, {"geo": {"mode": "allow", "countries": []}}))
+check("country codes upper-cased", fw.clean_config({"geo": {"mode": "block", "countries": ["cn", "ru"]}})["geo"]["countries"] == ["CN", "RU"])
+check("bad container name rejected", raises(fw.clean_config, {"egress": {"a b;c": "lan"}}))
+check("bad outbound policy rejected", raises(fw.clean_config, {"egress": {"plex": "moon"}}))
+check("'internet' outbound is the default and not stored", fw.clean_config({"egress": {"plex": "internet"}})["egress"] == {})
+check("rate limit out of range rejected", raises(fw.clean_rule, {"name": "a", "ports": "1", "rate_per_min": 99999}))
+
+# ── extras: ruleset ──
+X = {"mode": "enforce", "rules": [{"name": "SSH alt", "ports": "2222", "source": "any", "rate_per_min": 6}],
+     "blocklists": [{"id": "fh", "name": "fh", "url": "https://x.y/z", "enabled": True}],
+     "geo": {"mode": "block", "countries": ["ZZ"]}, "egress": {"plex": "vpn", "db": "none"}}
+data = {"bans": {"203.0.113.9": 600, "2001:db8::9": 60, "198.51.100.1": -5},
+        "lists": {"fh": ["198.51.100.0/24", "2001:db8:dead::/48"]}, "geo": {"ZZ": ["192.0.2.0/24"]},
+        "egress_ips": {"vpn": ["172.17.0.5"], "none": ["172.18.0.2", "fe80::1"]}}
+g = fw.generate(X, data)
+check("bans carry their remaining time", "elements = { 203.0.113.9 timeout 600s }" in g and "2001:db8::9 timeout 60s" in g)
+check("expired ban left out", "198.51.100.1 timeout" not in g)
+check("banned addresses dropped before 'established' (cuts open sessions)",
+      g.index("ip saddr @banned4 drop") < g.index("ct state established,related accept"))
+check("blocklist set filled (both families)", "198.51.100.0/24" in g and "2001:db8:dead::/48" in g)
+check("country block exempts LAN and VPN", "ip saddr @geo4 ip saddr != @lan4 ip saddr != @vpn4 drop" in g)
+check("SYN-flood limit per source", "add @syn4 { ip saddr limit rate over 50/second" in g)
+check("per-rule rate limit per source, both families",
+      "add @rl0_ip { ip saddr limit rate over 6/minute burst 6 packets } drop" in g and "add @rl0_ip6 { ip6 saddr" in g)
+check("container ports get the same protections", g.split("chain published {")[1].count("@banned4") == 1
+      and "@block4" in g.split("chain published {")[1])
+check("egress: VPN-only container may only leave through pia0", 'ip saddr @eg_vpn4 oifname "pia0" return' in g
+      and "eg_vpn4 { type ipv4_addr; elements = { 172.17.0.5 }" in g)
+check("egress: IPv6 container addresses ignored (sets are IPv4)", "fe80::1" not in g)
+check("egress: container to container is not outbound", 'chain from_containers {\n    oifname "docker0" return' in g)
+ga = fw.generate({**X, "geo": {"mode": "allow", "countries": ["ZZ"]}}, data)
+check("country allow-list mode", "ip saddr != @geo4 ip saddr != @lan4 ip saddr != @vpn4 drop" in ga)
+gl = fw.generate({**X, "mode": "learn"}, data)
+check("learn mode applies none of the extras", "203.0.113.9" not in gl and "198.51.100.0/24" not in gl
+      and "add @syn4" not in gl and "@geo4 drop" not in gl and "172.17.0.5" not in gl)
+gb = fw.generate({**X, "bans": {"enabled": False}}, data)
+check("bans off: no ban elements", "203.0.113.9" not in gb)
+
+# ── lists ──
+txt = "; Spamhaus\n1.2.3.0/24 ; SBL1\n10.0.0.0/8\n192.168.0.0/16\n0.0.0.0/0\nnot-an-ip\n# c\n100.64.0.0/10\n2001:db8::/32\n5.6.7.8\n"
+nets = fw.parse_cidr_list(txt, fw.DEFAULT_LAN + fw.VPN_NETS)
+check("list parsed; LAN, VPN, default route and junk removed", nets == ["1.2.3.0/24", "2001:db8::/32", "5.6.7.8/32"], str(nets))
+check("list size capped", len(fw.parse_cidr_list("\n".join(f"1.1.{i}.0/24" for i in range(200)), [], cap=50)) == 50)
+
+# ── failed-login parsing ──
+A = [("ssh", "Failed password for root from 203.0.113.5 port 4242 ssh2", "203.0.113.5"),
+     ("ssh", "Failed password for invalid user admin from 2001:db8::7 port 22 ssh2", "2001:db8::7"),
+     ("ssh", "Invalid user oracle from 198.51.100.3 port 5555", "198.51.100.3"),
+     ("ssh", "Accepted publickey for helix from 192.168.1.5 port 1 ssh2", None),
+     ("ssh", "Failed publickey for helix from 192.168.1.5 port 1 ssh2", None),
+     ("webui", "helix-auth: login failed user=bob ip=203.0.113.8 reason=password", "203.0.113.8"),
+     ("ftp", 'Fri Nov 20 10:00:00 2026 [pid 3] [bob] FAIL LOGIN: Client "::ffff:203.0.113.4"', "203.0.113.4"),
+     ("smb", "Auth: [SMB2,(null)] user [W]\\[x] at [..] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD] workstation [W] remote host [ipv4:203.0.113.6:51234] mapped", "203.0.113.6"),
+     ("smb", "Auth: [SMB2,(null)] user [W]\\[x] at [..] status [NT_STATUS_OK] remote host [ipv4:203.0.113.6:51234]", None),
+     ("smb", "status [NT_STATUS_NO_SUCH_USER] workstation [W] remote host [ipv6:2001:db8::5:445] mapped", "2001:db8::5"),
+     ("webui", "helix-auth: login failed user=x ip=not-an-ip reason=password", None)]
+for src, line, want in A:
+    check(f"{src}: {line[:48]!r} -> {want}", fw.parse_auth(src, line) == want, str(fw.parse_auth(src, line)))
+bc = fw.clean_config({"bans": {"never": ["198.51.100.0/24"]}})
+check("never ban LAN by default", not fw.bannable(bc, "192.168.1.20"))
+check("never ban Tailscale (VPN)", not fw.bannable(bc, "100.100.1.1"))
+check("never ban loopback", not fw.bannable(bc, "127.0.0.1"))
+check("never-ban list respected", not fw.bannable(bc, "198.51.100.77"))
+check("internet address bannable", fw.bannable(bc, "203.0.113.5"))
+check("LAN bannable when allowed", fw.bannable(fw.clean_config({"bans": {"ban_lan": True}}), "192.168.1.20"))
+
 print("FAILED" if fails else "all passed")
 sys.exit(1 if fails else 0)

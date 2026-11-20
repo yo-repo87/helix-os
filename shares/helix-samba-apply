@@ -60,7 +60,8 @@ cat <<EOF
    vfs objects = fruit streams_xattr
 
    # Logging
-   log level = 1
+   # auth_audit: every login attempt with the remote address, one file (read by the firewall ban watcher)
+   log level = 1 auth_audit:3@/var/log/samba/auth.log
    log file = /var/log/samba/log.%m
    max log size = 1000
 

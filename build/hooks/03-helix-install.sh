@@ -856,6 +856,49 @@ WantedBy=multi-user.target
 FWSVC
 systemctl enable helix-firewall 2>/dev/null \
     || ln -sf /etc/systemd/system/helix-firewall.service /etc/systemd/system/multi-user.target.wants/
+# Ban watcher: failed logins (SSH/web UI/FTP/SMB) -> timed bans; Docker events -> per-container outbound rules.
+cat > /etc/systemd/system/helix-firewall-watch.service <<'FWWSVC'
+[Unit]
+Description=Helix OS — firewall ban watcher and container tracker
+After=helix-firewall.service systemd-journald.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/helix-firewall watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+FWWSVC
+# Blocklists and country lists: refreshed daily (the last good copy on the boot device is used offline).
+cat > /etc/systemd/system/helix-firewall-lists.service <<'FWLSVC'
+[Unit]
+Description=Helix OS — refresh firewall blocklists and country lists
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/helix-firewall update-lists
+FWLSVC
+cat > /etc/systemd/system/helix-firewall-lists.timer <<'FWLTMR'
+[Unit]
+Description=Helix OS — daily firewall list refresh
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+FWLTMR
+for u in helix-firewall-watch.service helix-firewall-lists.timer; do
+    systemctl enable "$u" 2>/dev/null || {
+        case $u in *.timer) w=timers.target.wants ;; *) w=multi-user.target.wants ;; esac
+        mkdir -p /etc/systemd/system/$w; ln -sf /etc/systemd/system/$u /etc/systemd/system/$w/; }
+done
 
 # ── LVM: never activate volume groups by themselves ─────────────────────────
 # A disk from a former Proxmox host carries VG "pve" with its VM disks. Debian's udev rule would

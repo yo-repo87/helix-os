@@ -288,8 +288,9 @@ existing working build. Changing any NPM/certbot pin in `npm.env` (or the script
   The user flashes with balenaEtcher / Rufus (both take `.img.xz` directly).
 - Boot partitions must hold three system images (current, `.new`, `.prev`, ~1 GB each) → 4 GiB everywhere. The old
   512 MiB x86 image and 2/2.5 GiB layouts silently broke as the image grew; v3.3.1–3.3.5 shipped no x86 `.img.xz`.
-- **v3.3.5's release lists arm64 in its manifest but lacks the arm64 squashfs and the Pi image** — Pis cannot update
-  to it. 3.3.6 supersedes it; fixing 3.3.5 itself needs a GitHub token. `publish-update.sh` now refuses such a release.
+- v3.3.5 shipped an arm64 manifest entry without the arm64 squashfs or Pi image. **Tidied 2026-11-20:** its manifest is
+  now amd64-only (notes say so) and the orphaned arm64 kernel/initrd were deleted, so Pis see no 3.3.5 update and go
+  straight to 3.3.6. `publish-update.sh` now refuses such a release.
 
 ### Boot test of 3.3.6 (2026-11-20) — `.img.xz` as a USB stick, QEMU/KVM on `.142`
 BIOS and UEFI (OVMF) both up in ~25 s. Plymouth exited (no `plymouthd`), each fresh machine made its own SSH host key

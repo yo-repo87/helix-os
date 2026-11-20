@@ -196,8 +196,11 @@ def put_config(req: ConfigReq, request: Request):
     prev = _saved()
     if cfg["mode"] == "learn" and prev["mode"] != "learn" and not cfg.get("learn_since"):
         cfg["learn_since"] = int(time.time())
-    # Only a change that can block anything needs the safety net; learn/off never block.
-    risky = cfg["mode"] == "enforce"
+    # Only a change that can block anything needs the safety net; learn/off never block, and a change of the
+    # notification switches alone changes nothing that is filtered.
+    current = _pending() or prev
+    only_notify = {k: v for k, v in cfg.items() if k != "notify"} == {k: v for k, v in current.items() if k != "notify"}
+    risky = cfg["mode"] == "enforce" and not only_notify
     try:
         with open(PENDING + ".tmp", "w") as f:
             f.write(fw.dumps(cfg))

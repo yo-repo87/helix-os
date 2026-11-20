@@ -79,6 +79,15 @@ def default_bans() -> dict:
             "never": [], "sources": list(BAN_SOURCES)}
 
 
+NOTIFY_EVENTS = {"bans": "An address was banned", "reverted": "Protection was undone (Keep not pressed)",
+                 "lists": "A blocklist or country list failed to update",
+                 "new_service": "A new service is listening without a rule"}
+
+
+def default_notify() -> dict:
+    return {k: True for k in NOTIFY_EVENTS}
+
+
 def default_limits() -> dict:
     return {"syn_flood": True, "syn_per_sec": 50, "ping_per_sec": 10}
 
@@ -90,7 +99,7 @@ def default_config() -> dict:
     return {"version": VERSION, "mode": "off", "lan_networks": list(DEFAULT_LAN), "rules": [],
             "log_blocked": True, "learn_since": None, "bans": default_bans(),
             "blocklists": [dict(b) for b in DEFAULT_BLOCKLISTS], "geo": {"mode": "off", "countries": []},
-            "limits": default_limits(), "egress": {}}
+            "limits": default_limits(), "egress": {}, "notify": default_notify()}
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -194,7 +203,16 @@ def clean_config(cfg: dict) -> dict:
             "learn_since": int(ls) if isinstance(ls, (int, float)) else None,
             "bans": _clean_bans(cfg.get("bans")), "blocklists": _clean_blocklists(cfg.get("blocklists")),
             "geo": _clean_geo(cfg.get("geo")), "limits": _clean_limits(cfg.get("limits")),
-            "egress": _clean_egress(cfg.get("egress"))}
+            "egress": _clean_egress(cfg.get("egress")), "notify": _clean_notify(cfg.get("notify"))}
+
+
+def _clean_notify(n) -> dict:
+    d = default_notify()
+    if n is None:
+        return d
+    if not isinstance(n, dict):
+        raise ValueError("Notification settings must be an object.")
+    return {k: bool(n.get(k, d[k])) for k in NOTIFY_EVENTS}
 
 
 def _int(v, lo, hi, label):
@@ -698,6 +716,24 @@ def bannable(cfg: dict, ip: str) -> bool:
     if not b["ban_lan"]:
         nets += [ipaddress.ip_network(n) for n in cfg["lan_networks"] + VPN_NETS]
     return not any(a in n for n in nets if n.version == a.version)
+
+
+def new_uncovered(rows: list[dict], seen: dict, now: float) -> tuple[list[dict], dict]:
+    """New-service detection for notifications. `rows` = audit(); `seen` = {"proto/port": {"first": t, "count": n,
+    "told": bool}} from the last check. A port is reported once, after it has been seen uncovered in two checks in a
+    row (a service restarting is not a new service). Returns (rows to report, new seen state)."""
+    out, state = [], {}
+    for r in rows:
+        if r["loopback"] or r["covered"]:
+            continue
+        key = f"{r['proto']}/{r['port']}"
+        prev = seen.get(key) or {"first": now, "count": 0, "told": False}
+        cur = {"first": prev["first"], "count": prev["count"] + 1, "told": prev["told"]}
+        if cur["count"] >= 2 and not cur["told"]:
+            cur["told"] = True
+            out.append(r)
+        state[key] = cur
+    return out, state
 
 
 def dumps(cfg: dict) -> str:

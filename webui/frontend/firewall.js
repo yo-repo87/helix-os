@@ -96,10 +96,18 @@ async function fwOverview() {
         ${logd && mode !== 'off' ? `${logd.total} connection${logd.total === 1 ? '' : 's'} ${mode === 'learn' ? 'would have been' : ''} blocked in the last 24 h — <a href="#firewall/blocked">details</a>` : ''}
       </div>
       <div class="vf-foot" style="gap:8px">${actions}</div></div>
+    <div class="vf-card"><div class="vm-h">Notifications</div>
+      <p class="vm-dim" style="margin:0 0 6px">Sent to the bell and to the channels set up in Settings &gt; Notifications.</p>
+      ${Object.entries(FW_NOTIFY).map(([k, l]) => `<div class="settings-toggle-row"><span class="settings-label">${l}</span>
+        <label class="toggle-switch"><input type="checkbox" ${(cfg.notify || {})[k] !== false ? 'checked' : ''} onchange="fwSetNotify('${k}', this.checked)"><span class="toggle-track"></span></label></div>`).join('')}
+    </div>
     <div class="vf-card"><div class="vm-h">If you ever lock yourself out</div>
       <p style="font-size:12.5px;margin:0">SSH and the web UI cannot be blocked from your LAN or VPN, and every change that switches protection on is undone after ${st.confirm_secs} s unless you press Keep.
       As a last resort, run <code>sudo helix-firewall off</code> on the server's console.</p></div>`;
 }
+const FW_NOTIFY = {bans: 'An address was banned', reverted: 'A change was undone because Keep was not pressed',
+                   lists: 'A blocklist or country list failed to update', new_service: 'A new service is listening without a rule'};
+async function fwSetNotify(key, on) { const c = fwCfg(); c.notify = {...(c.notify || {}), [key]: on}; await fwApply(c, 'Notification setting saved'); }
 async function fwSetMode(mode) { const c = fwCfg(); c.mode = mode; await fwApply(c, mode === 'learn' ? 'Learn mode on' : 'Firewall on'); }
 function fwOff() {
   openModal('Turn the firewall off?', '<p style="font-size:13px">Every service on this server becomes reachable by anyone who can reach it. Your rules are kept.</p>',

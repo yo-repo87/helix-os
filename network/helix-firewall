@@ -37,6 +37,7 @@ BANS = os.path.join(HELIX_CONFIG, "firewall-bans.json")
 LISTS_DIR = os.path.join(HELIX_CONFIG, "firewall-lists")
 GEO_DIR = os.path.join(HELIX_CONFIG, "firewall-geo")
 LISTS_STATUS = os.path.join(STATE_DIR, "firewall-lists-status.json")
+EVENTS = os.path.join(STATE_DIR, "firewall-events.jsonl")   # queue: the backend turns these into notifications
 NFT = os.environ.get("HELIX_NFT", "nft")
 
 
@@ -46,6 +47,18 @@ def sh(cmd, **kw):
         return subprocess.run(cmd, capture_output=True, text=True, **kw)
     except OSError as e:
         return subprocess.CompletedProcess(cmd, 127, "", str(e))
+
+
+def event(kind, level, title, message):
+    """Queue a notification. This helper runs as root; the backend (user helix) owns the notification store, so it
+    sends them (services/firewall_events.py) instead of this process writing root-owned files into it."""
+    try:
+        with open(EVENTS, "a") as f:
+            f.write(json.dumps({"kind": kind, "level": level, "title": title, "message": message,
+                                "ts": int(time.time())}) + "\n")
+        os.chmod(EVENTS, 0o644)
+    except OSError:
+        pass
 
 
 def log(msg):
@@ -221,6 +234,10 @@ def cmd_revert(from_timer=False):
         except OSError:
             pass
     log(f"reverted to the saved config ({cfg['mode']})")
+    if from_timer:
+        event("reverted", "warning", "Firewall change undone",
+              f"A firewall change was not kept within the time limit, so it was undone. The firewall is back to "
+              f"'{cfg['mode']}'. If you lost access while the change was active, check its rules before trying again.")
 
 
 def cmd_off():
@@ -269,6 +286,8 @@ def cmd_ban(ip, minutes, why):
     if cfg["mode"] == "enforce" and cfg["bans"]["enabled"]:
         sh([NFT, "add", "element", "inet", "helix", _set_for(ip), "{", f"{ip} timeout {secs}s", "}"])
     log(f"banned {ip} for {secs // 60} min: {why}")
+    event("bans", "warning", f"Firewall banned {ip}",
+          f"{ip} is blocked from this server for {secs // 60} minutes: {why}. Unban it on Firewall > Protection.")
 
 
 def cmd_unban(ip):
@@ -321,6 +340,11 @@ def cmd_update_lists():
         status["geo"][cc] = {"ok": bool(nets), "count": len(set(nets)) or len(_read_lines(os.path.join(GEO_DIR, cc + ".txt"))),
                              "error": "; ".join(errs) if not nets else "", "at": int(time.time())}
     status["finished"] = int(time.time())
+    failed = [f"blocklist {k}: {v['error']}" for k, v in status["lists"].items() if not v["ok"]]
+    failed += [f"country {k}: {v['error'] or 'no data'}" for k, v in status["geo"].items() if not v["ok"]]
+    if failed:
+        event("lists", "warning", "Firewall lists could not be updated",
+              "; ".join(failed)[:600] + ". The last downloaded copy stays in use.")
     with open(LISTS_STATUS, "w") as f:
         json.dump(status, f)
     if cfg["mode"] != "off":

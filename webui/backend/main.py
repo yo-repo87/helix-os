@@ -60,6 +60,26 @@ async def _require_login(request: _Request, call_next):
     return response
 
 
+class _WebSocketLogin:
+    """`@app.middleware("http")` never runs for WebSockets, so without this the terminal
+    (a shell with sudo) and the VM console were open to anyone on the LAN even with login on.
+    Refuses the handshake (HTTP 403 to the client) before any route accepts it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            from starlette.websockets import WebSocket as _WS
+            problem = authz.ws_problem(_WS(scope, receive, send))
+            if problem:
+                await send({"type": "websocket.close", "code": 4401, "reason": problem})
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_WebSocketLogin)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

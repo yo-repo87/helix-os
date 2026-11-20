@@ -109,6 +109,32 @@ def allowed(request) -> bool:
     return valid_session(request)
 
 
+def ws_problem(ws) -> str | None:
+    """Why a WebSocket handshake must be refused, or None to let it through.
+
+    The HTTP middleware never sees WebSockets, and these sockets are a shell (terminal) and a VM
+    screen (console). Same rules as `allowed()`, plus an Origin check: a cookie alone is not
+    proof the page is ours, because browsers send cookies on cross-site WebSocket handshakes.
+    """
+    if not login_enforced():
+        return None
+    if not ws.headers.get("x-forwarded-for"):
+        client = ws.client.host if ws.client else ""
+        if client in ("127.0.0.1", "::1", "localhost"):
+            return None
+    if not valid_session(ws):
+        return "Authentication required"
+    origin = ws.headers.get("origin") or ""
+    if origin:
+        # Compare host names only: nginx forwards `Host: $host`, which drops the port (:8443).
+        from urllib.parse import urlsplit
+        host = (ws.headers.get("x-forwarded-host") or ws.headers.get("host") or "").split(",")[0].strip()
+        want = urlsplit("//" + host).hostname or ""
+        if (urlsplit(origin).hostname or "") != want.lower():
+            return "Cross-site WebSocket refused"
+    return None
+
+
 def csrf_problem(request) -> str | None:
     """Reject a logged-in browser POST that did not echo the CSRF cookie.
 

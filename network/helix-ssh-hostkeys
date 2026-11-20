@@ -1,0 +1,30 @@
+#!/bin/sh
+# Give this machine its own SSH host keys and keep them across reboots and OS updates.
+#
+# The root filesystem is rebuilt from the image at every boot, so keys made at image build time
+# would (a) be identical on every Helix install (the image is public) and (b) change with every
+# OS update, breaking known_hosts for every client. Instead the image ships with no host keys;
+# this runs before ssh.service, restores the saved keys from the flash, or makes new ones once
+# and saves them there (Unraid keeps its host keys in config/ssh the same way).
+SAVE=/boot/config/ssh-host
+log() { echo "[helix-ssh-hostkeys] $*"; }
+
+if ls "$SAVE"/ssh_host_*_key >/dev/null 2>&1; then
+    rm -f /etc/ssh/ssh_host_*
+    for k in "$SAVE"/ssh_host_*_key; do
+        install -m 600 -o root -g root "$k" "/etc/ssh/$(basename "$k")"
+        [ -f "$k.pub" ] && install -m 644 -o root -g root "$k.pub" "/etc/ssh/$(basename "$k").pub"
+    done
+    log "restored host keys from $SAVE"
+    exit 0
+fi
+
+# Nothing saved yet: make fresh keys for this machine (never reuse ones from the image).
+rm -f /etc/ssh/ssh_host_*
+ssh-keygen -A >/dev/null 2>&1 || { log "ssh-keygen -A failed"; exit 0; }
+if mkdir -p "$SAVE" 2>/dev/null && cp /etc/ssh/ssh_host_* "$SAVE/" 2>/dev/null; then
+    log "generated new host keys and saved them to $SAVE"
+else
+    log "generated new host keys (boot medium is read-only: they will change at the next boot)"
+fi
+exit 0

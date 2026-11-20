@@ -723,4 +723,32 @@ fi
 mkdir -p /var/local/helix/config
 chown -R helix:helix /var/local/helix
 
+# ── SSH host keys: one set per machine, kept on the flash ────────────────────
+# openssh-server's postinst made host keys inside the build chroot. Shipping them would give every
+# Helix install the same private key (the image is public) and new keys at every OS update.
+# helix-ssh-hostkeys restores this machine's saved keys before sshd starts, or makes them once.
+rm -f /etc/ssh/ssh_host_*
+if [ -f /build/network/helix-ssh-hostkeys ]; then
+    install -m 0755 /build/network/helix-ssh-hostkeys /usr/local/sbin/helix-ssh-hostkeys
+    cat > /etc/systemd/system/helix-ssh-hostkeys.service <<'SSHKSVC'
+[Unit]
+Description=Helix OS — restore or create this machine's SSH host keys
+After=local-fs.target
+Before=ssh.service ssh.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-ssh-hostkeys
+
+[Install]
+WantedBy=multi-user.target ssh.service
+SSHKSVC
+    systemctl enable helix-ssh-hostkeys 2>/dev/null \
+        || { mkdir -p /etc/systemd/system/multi-user.target.wants /etc/systemd/system/ssh.service.wants
+             ln -sf /etc/systemd/system/helix-ssh-hostkeys.service /etc/systemd/system/multi-user.target.wants/
+             ln -sf /etc/systemd/system/helix-ssh-hostkeys.service /etc/systemd/system/ssh.service.wants/; }
+    echo "  installed helix-ssh-hostkeys.service (image ships without host keys)"
+fi
+
 echo "==> [hook 03] Helix OS backend installed at $HIVE_DIR"

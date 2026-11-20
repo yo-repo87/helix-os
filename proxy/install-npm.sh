@@ -102,7 +102,7 @@ log "building the admin UI"
 # Same steps as upstream's scripts/ci/frontend-build (locale-compile generates src/locale/lang,
 # which the build imports), minus lint and tests.
 ( cd "$S/frontend" && export CI=true NODE_OPTIONS=--openssl-legacy-provider \
-    && yarn install --frozen-lockfile --non-interactive && yarn locale-compile && yarn build ) > "$WORK/frontend.log" 2>&1 \
+    && yarn install --frozen-lockfile --non-interactive --network-timeout 600000 && yarn locale-compile && yarn build ) > "$WORK/frontend.log" 2>&1 \
     || { tail -40 "$WORK/frontend.log" >&2; echo "install-npm: frontend build failed" >&2; exit 1; }
 [ -s "$S/frontend/dist/index.html" ] || { echo "install-npm: frontend build produced no index.html" >&2; exit 1; }
 cp -r "$S/frontend/dist" "$PREFIX/frontend"
@@ -114,7 +114,7 @@ rm -rf "$PREFIX/backend/test"
 # sqlite3's prebuilt binary needs glibc 2.38 (bookworm has 2.36): compile that one module here,
 # against this Node's own headers (no header download).
 ( cd "$PREFIX/backend" && export npm_config_build_from_source=sqlite3 npm_config_nodedir="$PREFIX/node" \
-    && yarn install --production --frozen-lockfile --non-interactive ) > "$WORK/backend.log" 2>&1 \
+    && yarn install --production --frozen-lockfile --non-interactive --network-timeout 600000 ) > "$WORK/backend.log" 2>&1 \
     || { tail -40 "$WORK/backend.log" >&2; echo "install-npm: backend dependency install failed" >&2; exit 1; }
 # The native modules must load with this Node (catches a missing prebuilt + failed compile).
 ( cd "$PREFIX/backend" && node -e '

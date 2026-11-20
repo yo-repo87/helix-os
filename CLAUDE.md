@@ -239,7 +239,9 @@ sudo build/build.sh --arch arm64 && sudo build/make-pi-image.sh   # arm64 via qe
 6. After any `gh release upload --clobber`, list assets — a GitHub 500 mid-upload leaves the asset deleted.
 7. Boot-test in QEMU before publishing:
    `sudo qemu-system-x86_64 -enable-kvm -m 2048 -cdrom helix-os-X.iso -boot d -display none -net nic,model=virtio -net user,hostfwd=tcp:127.0.0.1:8094-:80`
-   then wait for `/api/health` = ok (502 for ~10 s first).
+   then wait for `/api/health` = ok (502 for ~10 s first). The qemu `-pidfile` is root-owned 600: read it with `sudo` to
+   kill qemu, and confirm no `qemu-system-x86_64` is left afterwards.
+   `make-iso.sh` needs `xorriso isolinux syslinux-common syslinux-utils grub-efi-amd64-bin dosfstools mtools` (builder container).
 8. Apply on a test box: `/api/osupdate/{check,apply,status,reboot}`, compare staged checksums, re-test with real data.
 
 Before a release also run `git log --all --oneline --not main` and `git worktree list` — unmerged work was lost once.

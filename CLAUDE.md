@@ -13,31 +13,16 @@ Test-box logins, API keys and PIA creds are given in chat only. Never paste Unra
 
 ## 1. Current state (2026-11-20) — read first
 
-- **Version 3.3.8 published 2026-11-20** (tag `v3.3.8` → `5aa8b1f`, GitHub "Latest"; all 9 assets verified): the
-  login fix + the data-partition offer on top of 3.3.6 (firewall, per-machine SSH host keys, WebSocket login, §6a
-  fixes, 4 GiB boot partitions). Boot-tested in QEMU (BIOS + UEFI) **with a login account and a real login**. Both arches
-  used the NPM build cache (whole build ~1 h). Assets: OTA files amd64 + arm64, `helix-os-3.3.8.img.xz` (PC USB, BIOS +
-  UEFI, no Secure Boot), `helix-os-pi-3.3.8.img.xz`; no ISO.
-- **3.3.6 is withdrawn** (marked pre-release, notes say why): its login never created a session. 3.3.7 was built but
-  never published. v3.3.5 is amd64-only (tidied).
-- `.142`: the user's update to 3.3.8 **staged but never committed** (the updater's 120 s limit killed the stage call on
-  a stick that writes ~3.4 MB/s; the copy finished, the switch-in never ran), so it rebooted into 3.3.6 again. Fixed by
-  hand 2026-11-20: staged files checked against the v3.3.8 manifest, `helix-osupdate commit 3.3.8` run (took 264 s).
-  **The flash drive now boots 3.3.8 at the next reboot** (3.3.6 kept as `.prev`). Until then it runs 3.3.6 with the
-  login fix hot-patched into RAM. HELIXDATA (`/dev/sdj3`) is mounted and holds the config. Array: start by hand.
-- `.142` **is on 3.3.8 since 2026-11-20 23:20** (array started by hand, 36 containers, Plex with both GPUs). Two more
-  fixes are hot-patched into its RAM and lost at reboot until the next release: `routers/proxy.py` (reads root-only NPM
-  files via sudo) and `addins/helix-addin` (dpkg passes until done).
-- **3.3.9 (building 2026-11-20):** firewall notifications + the fixes below.
-- **Unreleased fixes (ship in 3.3.9):**
-  - NVIDIA add-in restore: `apt-get` on local .debs fails ("Pathname to install is not absolute"), and two dpkg passes
-    were not enough; `install_debs` now repeats `dpkg -i` + `dpkg --configure -a` until done or no progress (8 max).
-  - Reverse proxy page said "not running yet" while NPM ran: `/run/npm`, `/run/helix`, `/data` are root-only and the
-    backend (user `helix`) saw them as missing. `proxy.py` falls back to `services/privileged` for those reads.
-    Test NPM/proxy paths with the backend as `helix`, never as root.
-  - OTA: `routers/osupdate.py` — no time limit on stage/commit/rollback;
-  `helix-osupdate commit` renames instead of copying (seconds instead of minutes). A stuck "error" after staging must
-  not lead to a reboot into the old system again.
+- **Version 3.3.9 published 2026-11-21** (tag `v3.3.9` → `34db8e3`, GitHub "Latest", all 9 assets verified): firewall
+  notifications + NVIDIA restore (dpkg passes), proxy page (root-only NPM files via sudo), OTA without time limits and
+  rename-commit, on top of 3.3.8 (login fix, data-partition offer) and 3.3.6 (firewall, SSH host keys, WebSocket login).
+  Boot-tested (QEMU, USB stick, BIOS + UEFI): login with a real account, a ban reached the bell. Both arches used the
+  NPM cache. Assets: OTA amd64 + arm64, `helix-os-3.3.9.img.xz`, `helix-os-pi-3.3.9.img.xz`; no ISO.
+- 3.3.6 withdrawn (pre-release; login never made a session), 3.3.7 never published, v3.3.5 amd64-only (tidied).
+- `.142` runs **3.3.8** (since 2026-11-20 23:20) with `proxy.py` + `helix-addin` hot-patched into RAM; its updater
+  offers 3.3.9. Its 3.3.8 updater still has the 120 s limit: on that stick (~3.4 MB/s) staging/commit take ~4–5 min,
+  so after an update from the UI check `/boot/boot` for leftover `*.new` / `.helix-update-inflight` and finish with
+  `helix-osupdate commit <v>` (after a checksum check) before rebooting. Array: start by hand (autostart off).
 - **This checkout:** `/home/pi/Downloads/helix-os` on `.88`, remotes `origin` (GitHub) and `build` (`.142`, SSH).
   `./gitkey` (ignored by git, chmod 600) holds labelled lines with a fine-grained `github_pat_` and a classic `ghp_`
   token, both with push to `yo-repo87/helix-os`. Scripts take the first `github_pat_` line. Never print it. Neither

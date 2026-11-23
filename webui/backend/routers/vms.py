@@ -284,8 +284,12 @@ def _graphics_live(name: str) -> list[dict]:
         root = ET.fromstring(_dumpxml(name, inactive=False))
     except (HTTPException, ET.ParseError):
         return []
-    return [{"type": g.get("type"), "port": int(g.get("port")) if (g.get("port") or "-1").lstrip("-").isdigit() and g.get("port") != "-1" else None,
-             "listen": g.get("listen", "")} for g in root.findall("devices/graphics")]
+    out = []
+    for g in root.findall("devices/graphics"):
+        port = g.get("port") or ""            # egl-headless and other display-less types have no port
+        out.append({"type": g.get("type"), "port": int(port) if port.isdigit() else None,
+                    "listen": g.get("listen", "")})
+    return out
 
 
 def _snapshot_list(name: str) -> list[dict]:
@@ -312,6 +316,7 @@ def _summary(name: str, with_ip: bool = False) -> dict:
     state = _state(info)
     spec = vmxml.parse_xml(_dumpxml(name))
     live = _graphics_live(name) if state in ("running", "paused") else []
+    live = [g for g in live if g["type"] in ("vnc", "spice")]   # parse_xml lists only these
     gfx = []
     for i, g in enumerate(spec["graphics"]):
         port = live[i]["port"] if i < len(live) else (g["port"] if g["port"] != -1 else None)

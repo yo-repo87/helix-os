@@ -20,4 +20,11 @@ bad(lambda e: e["apt"]["sources"].append({"name": "x", "line": "deb http://evil.
 bad(lambda e: e["apt"]["sources"].append({"name": "x", "line": "deb https://nvidia.github.io/x /", "key_url": "http://nvidia.github.io/k"}), "http key")
 bad(lambda e: e.update(post=["rm -rf /"]), "unknown post action")
 bad(lambda e: e["apt"].update(packages=[]), "no packages")
+
+# every bundled catalog entry passes the helper's own gate (an entry the helper rejects can never install or restore)
+catalog = json.load(open(os.path.join(os.path.dirname(__file__), "..", "backend", "data", "addins", "index.json")))["addins"]
+for e in catalog:
+    m.validate(e)
+amd = next(e for e in catalog if e["id"] == "amd-vm-graphics")
+assert m.validate(amd)["post"] == ["amdgpu-bind"] and not m.validate(amd)["reboot"]
 print("addins validation: all checks passed")

@@ -22,6 +22,24 @@
       },
       "post": ["depmod", "swap-nouveau", "docker-nvidia-runtime"],
       "reboot": true
+    },
+    {
+      "id": "amd-vm-graphics",
+      "title": "AMD graphics for virtual machines",
+      "page": "gpu",
+      "version": "1",
+      "description": "Lets VMs use this machine's AMD graphics (including Ryzen integrated graphics) for 3D through a virtual GPU (virtio-gpu with virgl), while the picture still shows in the browser console. Installs AMD's graphics firmware and QEMU's 3D module, then starts the AMD driver. Kept on your array and re-installed automatically at every boot. In the VM's XML, add <acceleration accel3d='yes'/> to the virtio video model and an egl-headless graphics device using the render node.",
+      "size_mb": 35,
+      "requires": { "arch": ["amd64"], "pci_vendor": "1002", "pci_class_prefix": "03" },
+      "apt": {
+        "sources": [
+          { "name": "nonfree-firmware", "line": "deb http://deb.debian.org/debian bookworm non-free-firmware" }
+        ],
+        "packages": ["firmware-amd-graphics", "qemu-system-gui"],
+        "packages_note": "qemu-system-gui carries hw-display-virtio-gpu-gl.so and pulls in libvirglrenderer1 (bookworm has no separate opengl module package)"
+      },
+      "post": ["amdgpu-bind"],
+      "reboot": false
     }
   ]
 }

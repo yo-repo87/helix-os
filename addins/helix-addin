@@ -10,7 +10,7 @@ and `restore` re-installs them from that folder at every array start, with no ne
                               install that stopped early); cache exactly what is installed and record it,
                               without reinstalling anything (CLAUDE.md §56)
   helix-addin remove  <id>
-  helix-addin restore         (called by helix-array-start; runs in the background)
+  helix-addin restore [id]    (called by helix-array-start; runs in the background; one add-in with an id)
   helix-addin status          JSON: what is installed, where its cache is
 
 A manifest entry is data only: apt sources, package names and a short list of named post-install
@@ -28,7 +28,7 @@ import urllib.parse
 HELIX_CONFIG = os.environ.get("HELIX_CONFIG", "/boot/config")
 STATE_FILE = os.path.join(HELIX_CONFIG, "addins.json")
 ALLOWED_HOSTS = {"deb.debian.org", "security.debian.org", "nvidia.github.io", "developer.download.nvidia.com"}
-ALLOWED_POST = {"depmod", "swap-nouveau", "docker-nvidia-runtime"}
+ALLOWED_POST = {"depmod", "swap-nouveau", "docker-nvidia-runtime", "amdgpu-bind"}
 # Kernel-module options that must exist before udev loads drivers at boot (read by helix-modprobe-restore).
 BOOT_MODPROBE = os.environ.get("HELIX_BOOT_MODPROBE", "/boot/config/modprobe.d")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -120,9 +120,42 @@ def write_sources(e):
         open(f"/etc/apt/sources.list.d/helix-{e['id']}-{s['name']}.list", "w").write(line + "\n")
 
 
+def bind_amd_gpus():
+    """Attach amdgpu to every AMD display device that has no driver. The image has no AMD firmware, so
+    amdgpu's probe fails at boot and the kernel never retries; once the firmware is installed, a bind
+    brings the GPU (and its /dev/dri render node) up. GPUs held by vfio-pci (passthrough) are left alone."""
+    run(["modprobe", "amdgpu"], check=False)
+    for dev in sorted(glob.glob("/sys/bus/pci/devices/*")):
+        try:
+            vendor = open(os.path.join(dev, "vendor")).read().strip()
+            cls = open(os.path.join(dev, "class")).read().strip()
+        except OSError:
+            continue
+        if vendor != "0x1002" or not cls.startswith("0x03"):
+            continue
+        addr = os.path.basename(dev)
+        drv = os.path.basename(os.path.realpath(os.path.join(dev, "driver"))) if os.path.exists(os.path.join(dev, "driver")) else ""
+        if drv:
+            log(f"  {addr}: already driven by {drv}")
+            continue
+        try:
+            open("/sys/bus/pci/drivers/amdgpu/bind", "w").write(addr)
+        except OSError as ex:
+            log(f"  {addr}: amdgpu did not bind: {ex}")
+            continue
+        node = f"/dev/dri/by-path/pci-{addr}-render"
+        for _ in range(30):
+            if os.path.exists(node):
+                break
+            time.sleep(0.5)
+        log(f"  {addr}: amdgpu bound" + (f", render node {os.path.realpath(node)}" if os.path.exists(node) else ", no render node yet"))
+
+
 def post_actions(e):
     for p in e["post"]:
-        if p == "depmod":
+        if p == "amdgpu-bind":
+            bind_amd_gpus()
+        elif p == "depmod":
             run(["depmod", "-a"], check=False)
         elif p == "swap-nouveau":
             # nouveau is loaded by udev before this runs; the NVIDIA driver cannot bind while it is.
@@ -309,9 +342,11 @@ def cmd_adopt(aid):
     log(f"DONE - {n} packages kept; they are re-installed at every array start")
 
 
-def cmd_restore():
+def cmd_restore(only=None):
     st = load_state()
     for aid, rec in st.items():
+        if only and aid != only:
+            continue
         try:
             e = json.load(open(os.path.join(rec["cache"], "entry.json")))
         except (OSError, ValueError):
@@ -362,6 +397,8 @@ def main():
         cmd_remove(a[1])
     elif a == ["restore"]:
         cmd_restore()
+    elif a[:1] == ["restore"] and len(a) == 2 and ID_RE.match(a[1]):
+        cmd_restore(a[1])
     elif a == ["status"]:
         print(json.dumps(load_state()))
     else:

@@ -1,4 +1,14 @@
 <meta charset="utf-8">
+<script>
+// Phones and tablets get the mobile dashboard (/m). "Open full site" there sets helix_view for this tab.
+(function () {
+  var ua = navigator.userAgent || '';
+  var mobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var v = null; try { v = sessionStorage.getItem('helix_view'); } catch (e) {}
+  if (mobile && v !== 'desktop') location.replace('/m');
+})();
+</script>
 <title>Helix OS</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -298,10 +308,35 @@ main {
   user-select: none; z-index: 2;
 }
 .tile-drag-handle:active { cursor: grabbing; }
-.customize-mode .stat-tile { cursor: default; border-color: var(--accent); }
+.stats-row.dg { grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-rows: 24px; gap: 12px; }
+.stats-row.dg-measure > .stat-tile { align-self: start; }
+.stats-row:not(.dg) > .stat-tile.cpu-cores { grid-column: 1 / -1; }
+.customize-mode .stat-tile { cursor: grab; border-color: var(--accent); touch-action: none; user-select: none; }
 .customize-mode .tile-drag-handle { display: block; }
-.customize-mode .stat-tile.drag-over { border-color: var(--accent); background: var(--accent-dim); }
-.customize-mode .stat-tile.dragging { opacity: .4; }
+.customize-mode .stat-tile::after {
+  content: ''; position: absolute; right: 7px; bottom: 4px; width: 12px; height: 12px; cursor: nwse-resize;
+  border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent); border-radius: 0 0 4px 0;
+}
+.stat-tile.dragging { cursor: grabbing; opacity: .85; box-shadow: 0 10px 30px rgba(0,0,0,.35); pointer-events: none; }
+.stat-tile.resizing { box-shadow: 0 0 0 2px var(--accent); }
+.dg-ph { border: 2px dashed var(--accent); border-radius: 8px; background: var(--accent-dim); }
+/* Processor tile: one row per physical core, each thread with its own bar (Unraid's "CPU n - HT m") */
+.cc-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.cc-head .stat-value { font-size: 22px; }
+.cc-model { font-size: 11px; color: var(--fg-muted); flex-basis: 100%; order: 5; min-width: 0; }
+.cc-toggle { margin-left: auto; }
+.cc-toggle { font-size: 11px; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; }
+.cc-grid { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 4px; }
+.cc-row { display: grid; grid-template-columns: 96px 1fr 1fr; gap: 8px; align-items: center; font-size: 11px; }
+.cc-row.single { grid-template-columns: 96px 1fr; }
+.cc-label { color: var(--fg-muted); font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+.cc-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cc-bar { flex: 1; height: 6px; background: var(--border-str); border-radius: 3px; overflow: hidden; }
+.cc-bar > div { height: 100%; border-radius: 3px; background: var(--ok); transition: width .4s; }
+.cc-bar > div.warn { background: var(--warn); }
+.cc-bar > div.err  { background: var(--err); }
+.cc-pct { width: 34px; text-align: right; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; color: var(--fg); }
+@media (max-width: 480px) { .cc-row { grid-template-columns: 96px 1fr 1fr; gap: 6px; } .cc-row.single { grid-template-columns: 96px 1fr; } .cc-pct { width: 30px; } }
 
 /* ── Array state tile ──────────────────────────────────────────── */
 .array-tile {
@@ -1012,6 +1047,8 @@ main { padding-bottom: 44px; }
   <!-- Stat tiles -->
   <div class="dash-head">
     <div class="section-title" style="margin:0">System</div>
+    <span id="dg-hint" class="stat-sub" style="margin-left:auto;margin-right:8px" hidden>Drag a card to move it. Drag its bottom-right corner to resize.</span>
+    <button id="dg-reset" class="ctr-btn" onclick="dgReset()" style="font-size:11px;padding:3px 10px;margin-right:6px" hidden>Reset layout</button>
     <button id="customize-btn" class="ctr-btn" onclick="toggleCustomize()" style="font-size:11px;padding:3px 10px">Customize</button>
   </div>
   <div class="stats-row" id="stats-row">
@@ -1022,6 +1059,18 @@ main { padding-bottom: 44px; }
       <div class="stat-sub" id="cpu-sub">4 cores · load 0.42</div>
       <div class="stat-bar"><div class="stat-bar-fill ok" id="cpu-bar" style="width:12%"></div></div>
       <div class="accent-corner" style="background:var(--ok)"></div>
+    </div>
+    <div class="stat-tile cpu-cores" id="cores-tile" data-tile-id="cores">
+      <div class="tile-drag-handle" title="Drag to reorder">⠿</div>
+      <div class="cc-head">
+        <div class="stat-label">Processor</div>
+        <div class="stat-value mono" id="cc-total">—</div>
+        <div class="cc-model" id="cc-model"></div>
+        <button class="cc-toggle" id="cc-toggle" onclick="toggleCoreDetails()">Hide details</button>
+      </div>
+      <div class="stat-bar"><div class="stat-bar-fill ok" id="cc-bar" style="width:0%"></div></div>
+      <div class="cc-grid" id="cc-grid"></div>
+      <div class="accent-corner" style="background:var(--accent)"></div>
     </div>
     <div class="stat-tile" data-tile-id="ram">
       <div class="tile-drag-handle" title="Drag to reorder">⠿</div>
@@ -3373,6 +3422,77 @@ async function pollCtrLive() {
   _ctrLiveBusy = false;
 }
 setInterval(pollCtrLive, 3000);
+
+// ── Processor tile: per-core load ─────────────────────────────────
+let _ccBusy = false, _ccBuilt = '';
+const _ccMock = () => {
+  const cores = [[0,4],[1,5],[2,6],[3,7]];
+  const threads = Array.from({length: 8}, () => Math.round(Math.random() * 60 * 10) / 10);
+  return {model: 'Demo CPU', cores, threads, mhz: [], temp_c: 48,
+          total_pct: Math.round(threads.reduce((a, b) => a + b, 0) / threads.length * 10) / 10};
+};
+function _ccClass(p) { return p >= 90 ? 'err' : p >= 70 ? 'warn' : 'ok'; }
+function _ccDetailsOn() { try { return localStorage.getItem('helix_cc_details') !== 'off'; } catch { return true; } }
+function toggleCoreDetails() {
+  const on = !_ccDetailsOn();
+  try { localStorage.setItem('helix_cc_details', on ? 'on' : 'off'); } catch {}
+  _ccApplyDetails();
+}
+function _ccApplyDetails() {
+  const on = _ccDetailsOn();
+  document.getElementById('cc-grid').hidden = !on;
+  document.getElementById('cc-toggle').textContent = on ? 'Hide details' : 'Show details';
+}
+function renderCores(d) {
+  const grid = document.getElementById('cc-grid');
+  if (!grid) return;
+  const t = d.threads || [];
+  document.getElementById('cc-total').innerHTML =
+    `${d.total_pct}<span style="font-size:13px;color:var(--fg-muted)">%</span>`;
+  const bar = document.getElementById('cc-bar');
+  bar.style.width = Math.min(100, d.total_pct) + '%';
+  bar.className = 'stat-bar-fill ' + _ccClass(d.total_pct);
+  const avgMhz = (d.mhz || []).length ? Math.round(d.mhz.reduce((a, b) => a + b, 0) / d.mhz.length) : null;
+  const bits = [d.model, `${(d.cores || []).length} cores / ${t.length} threads`];
+  if (avgMhz) bits.push(avgMhz >= 1000 ? (avgMhz / 1000).toFixed(2) + ' GHz' : avgMhz + ' MHz');
+  if (d.temp_c != null) bits.push(d.temp_c + ' °C');
+  const model = document.getElementById('cc-model');
+  model.textContent = bits.filter(Boolean).join(' · ');
+  model.title = model.textContent;
+  // Rebuild rows only when the topology changes; otherwise just move the bars.
+  const key = JSON.stringify(d.cores);
+  if (key !== _ccBuilt) {
+    _ccBuilt = key;
+    grid.innerHTML = (d.cores || []).map(c => {
+      const label = c.length > 1 ? `CPU ${c[0]} - HT ${c[1]}` : `CPU ${c[0]}`;
+      const cells = c.slice(0, 2).map(i =>
+        `<div class="cc-cell" title="Thread ${i}"><div class="cc-bar"><div data-cc="${i}"></div></div><span class="cc-pct" data-ccp="${i}"></span></div>`).join('');
+      return `<div class="cc-row${c.length > 1 ? '' : ' single'}"><span class="cc-label">${label}</span>${cells}</div>`;
+    }).join('');
+  }
+  grid.querySelectorAll('[data-cc]').forEach(el => {
+    const p = t[+el.dataset.cc] ?? 0;
+    el.style.width = Math.min(100, p) + '%';
+    el.className = _ccClass(p);
+  });
+  grid.querySelectorAll('[data-ccp]').forEach(el => {
+    el.textContent = Math.round(t[+el.dataset.ccp] ?? 0) + '%';
+  });
+}
+async function pollCores() {
+  if (document.hidden || _ccBusy) return;
+  const h = location.hash || '#dashboard';
+  if (h !== '#dashboard' && h !== '') return;
+  const tile = document.getElementById('cores-tile');
+  if (!tile || tile.hidden) return;
+  _ccBusy = true;
+  try {
+    renderCores(liveMode ? await apiFetch('/api/system/cpu') : _ccMock());
+  } catch (e) { console.warn('pollCores', e); }
+  finally { _ccBusy = false; }
+}
+document.addEventListener('DOMContentLoaded', () => { _ccApplyDetails(); pollCores(); });
+setInterval(pollCores, 2000);
 
 // Action buttons for one container (compact on the dashboard, labelled in the Manage dialog).
 function ctrButtons(c, compact) {
@@ -6389,8 +6509,7 @@ async function pollZfsTiles() {
     pools = d.available ? d.pools : [];
   } catch { return; }                      // keep what is shown on a failed poll
   const want = new Set(pools.map(p => 'zfs-' + p.name));
-  row.querySelectorAll('.zfs-tile').forEach(t => { if (!want.has(t.dataset.tileId)) t.remove(); });   // exported pools
-  let added = false;
+  row.querySelectorAll('.zfs-tile').forEach(t => { if (t.dataset.tileId.startsWith('zfs-') && !want.has(t.dataset.tileId)) t.remove(); });   // exported pools (the firewall card shares the class)
   for (const p of pools) {
     const id = 'zfs-' + p.name;
     let tile = row.querySelector(`[data-tile-id="${CSS.escape(id)}"]`);
@@ -6401,22 +6520,9 @@ async function pollZfsTiles() {
       tile.onclick = () => { if (!_customizeActive) location.hash = '#zfs'; };
       const after = [...row.querySelectorAll('.zfs-tile')].pop() || row.querySelector('[data-tile-id="array"]');
       after ? after.after(tile) : row.appendChild(tile);
-      added = true;
     }
     tile.title = `Open the ZFS page for ${p.name}`;
     tile.innerHTML = _zfsTileHtml(p);
-  }
-  if (added) {
-    // Apply a saved tile order; a pool tile it does not know stays next to the array tile.
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem('helix_tile_order') || '[]') || []; } catch {}
-    _restoreTileOrder();
-    const arrayTile = row.querySelector('[data-tile-id="array"]');
-    pools.forEach(p => {
-      const t = row.querySelector(`[data-tile-id="${CSS.escape('zfs-' + p.name)}"]`);
-      if (t && !saved.includes('zfs-' + p.name) && arrayTile) arrayTile.after(t);
-    });
-    if (_customizeActive) _attachDragListeners();
   }
 }
 
@@ -7427,81 +7533,208 @@ async function pollCheckmk() {
   } catch { /* checkmk not set up */ }
 }
 
-// ── Dashboard tile drag/drop customization ───────────────────────
+// ── Dashboard grid: Customize = drag + resize cards freely (like Homarr) ──
+// 12 columns x 24 px rows. Positions are saved on the server (/api/settings/dashboard-layout)
+// keyed by data-tile-id, so the arrangement follows the box. Cards nobody has placed yet,
+// and cards that appear later (a new ZFS pool, the GPU card), fill the first free spot.
+// Everything packs upward, so a gap closes when a card moves away. Below DG.minW px
+// the free layout is off and cards flow in the saved order.
+const DG = {cols: 12, rowH: 24, gap: 12, minW: 900, saved: {}, live: {}, drag: null, raf: 0, dirty: false};
+const DG_DEFAULT = {cores: {w: 4, h: 9}};
 let _customizeActive = false;
-let _dragSrc = null;
 
+function dgRow() { return document.getElementById('stats-row'); }
+function dgTiles() { return [...dgRow().children].filter(t => t.classList.contains('stat-tile') && !t.hidden && t.dataset.tileId); }
+function dgOn() { const r = dgRow(); return !!r && r.clientWidth >= DG.minW; }
+function dgHit(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
+
+// Place items without overlaps. fixedId keeps its spot (the card being dragged).
+function dgPack(items, fixedId) {
+  const placed = [];
+  const fits = it => !placed.some(p => p !== it && dgHit(it, p));
+  const fixed = items.find(i => i.id === fixedId);
+  if (fixed) placed.push(fixed);
+  const pos = items.filter(i => i !== fixed && !i.auto).sort((a, b) => a.y - b.y || a.x - b.x);
+  for (const it of pos) {
+    it.w = Math.min(it.w, DG.cols);
+    it.x = Math.max(0, Math.min(it.x, DG.cols - it.w));
+    while (!fits(it)) it.y++;                                   // pushed down by whatever is there
+    while (it.y > 0 && fits({...it, y: it.y - 1})) it.y--;      // then float up into free space
+    placed.push(it);
+  }
+  for (const it of items.filter(i => i !== fixed && i.auto)) {
+    it.w = Math.min(it.w, DG.cols);
+    let found = false;
+    for (let y = 0; !found; y++) for (let x = 0; x + it.w <= DG.cols; x++) {
+      it.x = x; it.y = y;
+      if (fits(it)) { found = true; break; }
+    }
+    placed.push(it);
+  }
+  return placed;
+}
+
+function dgItems(source) {
+  return dgTiles().map(el => {
+    const id = el.dataset.tileId, s = source[id];
+    if (s) return {id, el, x: s.x, y: s.y, w: s.w, h: s.h, auto: false};
+    const d = DG_DEFAULT[id] || {};
+    return {id, el, x: 0, y: 0, w: d.w || 2, h: d.h || 0, auto: true};
+  });
+}
+
+// Cards nobody sized yet get the height their content needs.
+function dgMeasure(items) {
+  const todo = items.filter(i => !i.h);
+  if (!todo.length) return;
+  const row = dgRow();
+  todo.forEach(i => { i.el.style.gridColumn = `span ${i.w}`; i.el.style.gridRow = 'auto'; });
+  row.classList.add('dg-measure');
+  todo.forEach(i => { i.h = Math.max(2, Math.ceil((i.el.offsetHeight + DG.gap) / (DG.rowH + DG.gap))); });
+  row.classList.remove('dg-measure');
+}
+
+function dgApply(placed) {
+  for (const it of placed) {
+    it.el.style.gridColumn = `${it.x + 1} / span ${it.w}`;
+    it.el.style.gridRow = `${it.y + 1} / span ${it.h}`;
+    it.el.style.order = '';
+  }
+  DG.live = Object.fromEntries(placed.map(p => [p.id, {x: p.x, y: p.y, w: p.w, h: p.h}]));
+}
+
+function dgLayout() {
+  DG.raf = 0;
+  const row = dgRow();
+  if (!row || !row.clientWidth || DG.drag) return;
+  const on = dgOn();
+  row.classList.toggle('dg', on);
+  if (!on) {
+    if (_customizeActive) toggleCustomize();
+    const ord = id => { const s = DG.saved[id]; return s ? s.y * 100 + s.x : 99999; };
+    dgTiles().forEach(t => { t.style.gridColumn = t.style.gridRow = ''; t.style.order = ord(t.dataset.tileId); });
+    return;
+  }
+  const items = dgItems(DG.saved);
+  dgMeasure(items);
+  dgApply(dgPack(items));
+}
+function dgSchedule() { if (!DG.raf) DG.raf = requestAnimationFrame(dgLayout); }
+
+// ── Drag and resize ──
+function dgStep() {
+  const r = dgRow().getBoundingClientRect();
+  return {r, sx: (r.width - DG.gap * (DG.cols - 1)) / DG.cols + DG.gap, sy: DG.rowH + DG.gap};
+}
+function dgOnDown(e) {
+  if (!_customizeActive || e.button !== 0 || !dgRow().classList.contains('dg')) return;
+  const tile = e.target.closest('.stat-tile');
+  if (!tile || tile.parentElement !== dgRow() || !DG.live[tile.dataset.tileId]) return;
+  e.preventDefault();
+  const id = tile.dataset.tileId, rect = tile.getBoundingClientRect();
+  const resize = e.clientX > rect.right - 18 && e.clientY > rect.bottom - 18;   // bottom-right grip
+  DG.drag = {id, tile, resize, rect, base: JSON.parse(JSON.stringify(DG.live)),
+             cur: {...DG.live[id]}, px: e.clientX, py: e.clientY,
+             offX: e.clientX - rect.left, offY: e.clientY - rect.top};
+  tile.setPointerCapture(e.pointerId);
+  if (resize) { tile.classList.add('resizing'); return; }
+  const ph = document.createElement('div');
+  ph.className = 'dg-ph';
+  ph.style.gridColumn = tile.style.gridColumn; ph.style.gridRow = tile.style.gridRow;
+  dgRow().appendChild(ph);
+  DG.drag.ph = ph;
+  tile.classList.add('dragging');
+  Object.assign(tile.style, {position: 'fixed', left: rect.left + 'px', top: rect.top + 'px',
+                             width: rect.width + 'px', height: rect.height + 'px', zIndex: 50});
+}
+function dgOnMove(e) {
+  const d = DG.drag;
+  if (!d) return;
+  const {r, sx, sy} = dgStep();
+  const c = {...d.cur};
+  if (d.resize) {
+    c.w = Math.max(1, Math.min(DG.cols - c.x, Math.round(d.base[d.id].w + (e.clientX - d.px) / sx)));
+    c.h = Math.max(2, Math.min(60, Math.round(d.base[d.id].h + (e.clientY - d.py) / sy)));
+  } else {
+    d.tile.style.left = (e.clientX - d.offX) + 'px';
+    d.tile.style.top = (e.clientY - d.offY) + 'px';
+    c.x = Math.max(0, Math.min(DG.cols - c.w, Math.round((e.clientX - d.offX - r.left) / sx)));
+    c.y = Math.max(0, Math.round((e.clientY - d.offY - r.top) / sy));
+  }
+  if (c.x === d.cur.x && c.y === d.cur.y && c.w === d.cur.w && c.h === d.cur.h) return;
+  d.cur = c;
+  const base = {...d.base, [d.id]: c};
+  const items = dgItems(base);
+  const placed = dgPack(items, d.id);
+  const me = placed.find(p => p.id === d.id);
+  while (me.y > 0 && !placed.some(p => p !== me && dgHit({...me, y: me.y - 1}, p))) me.y--;
+  d.cur = {x: me.x, y: me.y, w: me.w, h: me.h};
+  dgApply(placed);
+  if (d.ph) { d.ph.style.gridColumn = d.tile.style.gridColumn; d.ph.style.gridRow = d.tile.style.gridRow; }
+}
+function dgOnUp() {
+  const d = DG.drag;
+  if (!d) return;
+  if (d.ph) d.ph.remove();
+  d.tile.classList.remove('dragging', 'resizing');
+  ['position', 'left', 'top', 'width', 'height', 'zIndex'].forEach(k => d.tile.style[k] = '');
+  DG.drag = null;
+  const items = dgItems({...DG.live, [d.id]: d.cur});
+  dgApply(dgPack(items));
+  DG.saved = {...DG.saved, ...DG.live};
+  DG.dirty = true;
+}
+
+// ── Customize / Done / Reset ──
 function toggleCustomize() {
-  _customizeActive = !_customizeActive;
-  const row = document.getElementById('stats-row');
-  const btn = document.getElementById('customize-btn');
+  const row = dgRow(), btn = document.getElementById('customize-btn');
   if (!row || !btn) return;
+  if (!_customizeActive && !dgOn()) { alert('Make the window wider to arrange the cards.'); return; }
+  _customizeActive = !_customizeActive;
   row.classList.toggle('customize-mode', _customizeActive);
   btn.textContent = _customizeActive ? 'Done' : 'Customize';
   btn.style.color = _customizeActive ? 'var(--accent)' : '';
-  if (_customizeActive) _attachDragListeners();
+  document.getElementById('dg-reset').hidden = !_customizeActive;
+  document.getElementById('dg-hint').hidden = !_customizeActive;
+  if (!_customizeActive && DG.dirty) dgSave();
 }
-
-function _attachDragListeners() {
-  document.querySelectorAll('#stats-row .stat-tile').forEach(tile => {
-    tile.setAttribute('draggable', 'true');
-    tile.addEventListener('dragstart', _onDragStart, {once: false});
-    tile.addEventListener('dragover',  _onDragOver,  {once: false});
-    tile.addEventListener('dragleave', _onDragLeave, {once: false});
-    tile.addEventListener('drop',      _onDrop,      {once: false});
-    tile.addEventListener('dragend',   _onDragEnd,   {once: false});
-  });
+async function dgSave() {
+  DG.dirty = false;
+  try { localStorage.setItem('helix_dash_layout', JSON.stringify(DG.saved)); } catch {}
+  try {
+    await fetchJSON('/api/settings/dashboard-layout', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cols: DG.cols, tiles: DG.saved})});
+  } catch (e) { if (liveMode) alert('Could not save the layout: ' + e.message); }
 }
-
-function _onDragStart(e) {
-  _dragSrc = this;
-  this.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', this.dataset.tileId || '');
+async function dgReset() {
+  if (!confirm('Put every card back in its default place and size?')) return;
+  DG.saved = {}; DG.dirty = false;
+  try { localStorage.removeItem('helix_dash_layout'); } catch {}
+  try { await fetchJSON('/api/settings/dashboard-layout', {method: 'DELETE'}); } catch {}
+  dgSchedule();
 }
-function _onDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  if (this !== _dragSrc) this.classList.add('drag-over');
-}
-function _onDragLeave() { this.classList.remove('drag-over'); }
-function _onDrop(e) {
-  e.preventDefault();
-  this.classList.remove('drag-over');
-  if (!_dragSrc || _dragSrc === this) return;
-  const row = document.getElementById('stats-row');
-  const tiles = [...row.querySelectorAll('.stat-tile')];
-  const srcIdx  = tiles.indexOf(_dragSrc);
-  const destIdx = tiles.indexOf(this);
-  if (srcIdx < destIdx) row.insertBefore(_dragSrc, this.nextSibling);
-  else                   row.insertBefore(_dragSrc, this);
-  _saveTileOrder();
-}
-function _onDragEnd() {
-  document.querySelectorAll('#stats-row .stat-tile').forEach(t => {
-    t.classList.remove('dragging', 'drag-over');
-  });
-  _dragSrc = null;
-}
-
-function _saveTileOrder() {
-  const ids = [...document.querySelectorAll('#stats-row .stat-tile')]
-    .map(t => t.dataset.tileId).filter(Boolean);
-  try { localStorage.setItem('helix_tile_order', JSON.stringify(ids)); } catch {}
-}
-
-function _restoreTileOrder() {
-  let ids;
-  try { ids = JSON.parse(localStorage.getItem('helix_tile_order') || 'null'); } catch {}
-  if (!Array.isArray(ids) || !ids.length) return;
-  const row = document.getElementById('stats-row');
+async function dgInit() {
+  const row = dgRow();
   if (!row) return;
-  ids.forEach(id => {
-    const tile = row.querySelector(`[data-tile-id="${id}"]`);
-    if (tile) row.appendChild(tile);
-  });
+  try { DG.saved = JSON.parse(localStorage.getItem('helix_dash_layout') || '{}') || {}; } catch {}
+  new MutationObserver(dgSchedule).observe(row, {childList: true, subtree: true, attributes: true, attributeFilter: ['hidden']});
+  row.addEventListener('pointerdown', dgOnDown);
+  window.addEventListener('pointermove', dgOnMove);
+  window.addEventListener('pointerup', dgOnUp);
+  window.addEventListener('pointercancel', dgOnUp);
+  window.addEventListener('resize', dgSchedule);
+  window.addEventListener('hashchange', dgSchedule);
+  dgSchedule();
+  try {
+    const d = await fetchJSON('/api/settings/dashboard-layout');
+    if (d && d.tiles && !DG.dirty) {
+      DG.saved = d.tiles;
+      try { localStorage.setItem('helix_dash_layout', JSON.stringify(DG.saved)); } catch {}
+      dgSchedule();
+    }
+  } catch {}
 }
-_restoreTileOrder();
+document.addEventListener('DOMContentLoaded', dgInit);
 
 // ── File Browser ────────────────────────────────────────────────
 

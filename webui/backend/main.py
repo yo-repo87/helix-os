@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import system, array, docker, shares, drives, network, apps, notifications, settings, users, wireguard, tailscale, pia, vms, terminal, ups, gpu, diagnostics, scheduler, checkmk, files, mover, hardware, apikeys, ddns, ftp, updates, vfio, ssl, auth, vmconsole, addins
-from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp, passkeys, tunnel, pve, firewall, datapart
+from routers import backup, zfs, vnstat, proxy, audit, login, wol, scanner, cpu_oc, osupdate, pi_oc, mcp, passkeys, tunnel, pve, firewall, datapart, mobile
 import threading
 from services import monitor_alerts
 from services.drive_health import poll_loop
@@ -138,6 +138,7 @@ app.include_router(cpu_oc.router)
 app.include_router(osupdate.router)
 app.include_router(pi_oc.router)
 app.include_router(mcp.router)
+app.include_router(mobile.router)
 
 # Serve frontend
 FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
@@ -145,6 +146,13 @@ if os.path.isdir(FRONTEND):
     app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
     if os.path.isdir("/usr/share/novnc"):          # browser VM console client (Debian package novnc)
         app.mount("/novnc", StaticFiles(directory="/usr/share/novnc"), name="novnc")
+
+    @app.get("/m", include_in_schema=False)
+    def mobile_index():
+        # Phone/tablet dashboard. index.html sends mobile browsers here and mobile.html
+        # sends desktop browsers back to /.
+        return FileResponse(os.path.join(FRONTEND, "mobile.html"),
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/", include_in_schema=False)
     def index():

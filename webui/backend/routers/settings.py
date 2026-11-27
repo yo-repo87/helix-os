@@ -210,3 +210,61 @@ def list_timezones():
             "Asia/Tokyo", "Asia/Shanghai", "Asia/Singapore", "Asia/Dubai",
             "Australia/Sydney", "Australia/Melbourne", "Pacific/Auckland",
         ]
+
+
+# ── Dashboard card layout (Customize) ─────────────────────────────
+# Stored on the server so the arrangement follows the box, not the browser.
+# {"cols": 12, "tiles": {"<tile id>": {"x":0,"y":0,"w":2,"h":4}, ...}}
+import json as _json
+import re as _re
+
+LAYOUT_FILE = os.path.join(HELIX_CONFIG, "dashboard_layout.json")
+_TILE_ID = _re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+
+
+class DashboardLayout(BaseModel):
+    cols: int = 12
+    tiles: dict[str, dict[str, int]] = {}
+
+
+@router.get("/dashboard-layout")
+def get_dashboard_layout():
+    try:
+        with open(LAYOUT_FILE) as f:
+            return _json.load(f)
+    except (OSError, ValueError):
+        return {"cols": 12, "tiles": {}}
+
+
+@router.put("/dashboard-layout")
+def put_dashboard_layout(layout: DashboardLayout):
+    if layout.cols != 12:
+        raise HTTPException(400, "Layout must use 12 columns.")
+    if len(layout.tiles) > 200:
+        raise HTTPException(400, "Too many cards.")
+    clean = {}
+    for tid, pos in layout.tiles.items():
+        if not _TILE_ID.match(tid):
+            raise HTTPException(400, f"Bad card id: {tid!r}")
+        try:
+            x, y, w, h = (int(pos[k]) for k in ("x", "y", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, f"Card {tid} needs x, y, w and h.")
+        if not (0 <= x < 12 and 1 <= w <= 12 and x + w <= 12 and 0 <= y <= 500 and 1 <= h <= 60):
+            raise HTTPException(400, f"Card {tid} is outside the grid.")
+        clean[tid] = {"x": x, "y": y, "w": w, "h": h}
+    data = {"cols": 12, "tiles": clean}
+    tmp = LAYOUT_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        _json.dump(data, f)
+    os.replace(tmp, LAYOUT_FILE)
+    return data
+
+
+@router.delete("/dashboard-layout")
+def reset_dashboard_layout():
+    try:
+        os.remove(LAYOUT_FILE)
+    except FileNotFoundError:
+        pass
+    return {"cols": 12, "tiles": {}}

@@ -350,7 +350,6 @@ async function pollFirewallTile() {
     tile.dataset.tileId = 'firewall';
     tile.onclick = () => { if (!(typeof _customizeActive !== 'undefined' && _customizeActive)) location.hash = '#firewall'; };
     row.appendChild(tile);
-    try { _restoreTileOrder(); if (typeof _customizeActive !== 'undefined' && _customizeActive) _attachDragListeners(); } catch (_) {}
   }
   const [label, colour] = FW_MODE[d.mode] || FW_MODE.off;
   const tone = d.mode === 'enforce' ? 'ok' : d.mode === 'learn' ? 'warn' : 'err';

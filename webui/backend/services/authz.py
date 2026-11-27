@@ -87,7 +87,7 @@ def valid_session(request) -> bool:
 
 
 def _open(path: str, method: str) -> bool:
-    if path == "/" or path.startswith(("/static/", "/static", "/novnc", "/mcp")):
+    if path in ("/", "/m") or path.startswith(("/static/", "/static", "/novnc", "/mcp")):
         return True
     if method == "GET" and path in _OPEN_GET:
         return True

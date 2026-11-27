@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json">
+<title>Helix OS</title>
+<script>
+// Phones and tablets only. iPadOS reports itself as a Mac, so check for touch too.
+(function () {
+  const ua = navigator.userAgent || '';
+  const mobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua) ||
+                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (!mobile) location.replace('/' + location.hash);
+  let t = null; try { t = localStorage.getItem('helix_theme'); } catch (e) {}
+  const light = t === 'white' || t === 'light' || t === 'azure' ||
+                (!t && window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches);
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+  try { const a = localStorage.getItem('helix_accent'); if (a) document.documentElement.style.setProperty('--accent', a); } catch (e) {}
+})();
+</script>
+<style>
+:root {
+  --bg: #0f0f10; --surface: #1a1a1c; --surface2: #232326; --border: #2c2c30;
+  --fg: #f2f2f2; --muted: #9a9aa0; --dim: #66666c; --accent: #3b82f6;
+  --ok: #22c55e; --warn: #f59e0b; --err: #ef4444; --track: #2f2f34;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f1f1f4; --surface: #ffffff; --surface2: #f6f6f8; --border: #e1e1e6;
+  --fg: #18181b; --muted: #5d5d66; --dim: #a3a3ab; --track: #e4e4ea;
+  --ok: #16a34a; --warn: #d97706; --err: #dc2626;
+  color-scheme: light;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 15px/1.4 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       padding-bottom: calc(24px + env(safe-area-inset-bottom)); overscroll-behavior-y: contain; }
+button { font: inherit; color: inherit; }
+.mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+/* Top bar */
+header { position: sticky; top: 0; z-index: 20; background: var(--bg);
+         padding: calc(10px + env(safe-area-inset-top)) 16px 10px; display: flex; align-items: center; gap: 10px;
+         border-bottom: 1px solid var(--border); }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); display: grid; place-items: center;
+        color: #fff; font-weight: 700; font-size: 14px; flex: none; }
+.host { flex: 1; min-width: 0; }
+.host b { display: block; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.host span { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+.icon-btn { position: relative; width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--border);
+            background: var(--surface); display: grid; place-items: center; cursor: pointer; flex: none; }
+.icon-btn svg { width: 20px; height: 20px; }
+.badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+         background: var(--err); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+
+main { padding: 14px 12px 0; max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+/* Cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.card-h { display: flex; align-items: center; gap: 10px; padding: 13px 14px; }
+.card-t { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); flex: 1; min-width: 0; }
+.card-s { font-size: 13px; color: var(--muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.card-b { padding: 0 14px 14px; }
+.big { font-size: 28px; font-weight: 600; line-height: 1.1; }
+.big small { font-size: 14px; color: var(--muted); font-weight: 400; }
+.sub { font-size: 13px; color: var(--muted); }
+.row { display: flex; align-items: center; gap: 10px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin-top: 6px; }
+.bar > i { display: block; height: 100%; border-radius: 3px; background: var(--ok); transition: width .4s; }
+.bar > i.warn { background: var(--warn); } .bar > i.err { background: var(--err); }
+.list { display: flex; flex-direction: column; }
+.item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); min-height: 48px; }
+.item:first-child { border-top: 0; }
+.item .grow { flex: 1; min-width: 0; }
+.item .name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn { border: 1px solid var(--border); background: var(--surface2); border-radius: 10px; padding: 0 14px; height: 38px;
+       font-size: 14px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.btn.sm { height: 34px; padding: 0 11px; font-size: 13px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { color: var(--err); }
+.btn.danger.solid { background: var(--err); border-color: var(--err); color: #fff; }
+.btn:disabled { opacity: .45; }
+.btn.wide { width: 100%; }
+.chips { display: flex; gap: 6px; margin-bottom: 8px; overflow-x: auto; }
+.chip { border: 1px solid var(--border); background: var(--surface2); border-radius: 16px; padding: 5px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: var(--surface2); color: var(--muted); white-space: nowrap; }
+.tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.err { color: var(--err); }
+.note { font-size: 13px; color: var(--muted); padding: 4px 0; }
+.more { display: block; text-align: center; padding: 10px; color: var(--accent); font-size: 14px; cursor: pointer; background: none; border: 0; width: 100%; }
+.core { display: grid; grid-template-columns: 84px 1fr 1fr; gap: 8px; align-items: center; font-size: 12px; margin-top: 6px; }
+.core .bar { margin: 0; }
+.alert-i { display: flex; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.alert-i:first-child { border-top: 0; }
+.input { width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2);
+         color: var(--fg); padding: 0 12px; font-size: 15px; margin-bottom: 8px; }
+
+/* Customize mode */
+.edit-bar { display: none; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+.edit-bar .edit-name { flex: 1 1 calc(100% - 100px); }
+.edit-bar .hide-btn { order: 2; }
+.edit-bar .seg { order: 3; margin-left: 44px; }
+.edit-bar .up-btn { order: 4; margin-left: auto; }
+.edit-bar .down-btn { order: 5; }
+body.editing .card-h, body.editing .card-b { display: none; }
+body.editing .edit-bar { display: flex; }
+body.editing .card { border-style: dashed; }
+.handle { width: 36px; height: 36px; display: grid; place-items: center; color: var(--muted); cursor: grab; touch-action: none; flex: none; }
+.edit-name { flex: 1; font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; flex: none; }
+.seg button { border: 0; background: var(--surface2); padding: 0 9px; height: 32px; font-size: 12px; cursor: pointer; }
+.seg button.on { background: var(--accent); color: #fff; }
+.mini { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); cursor: pointer; flex: none; font-size: 14px; }
+.card.lifted { box-shadow: 0 12px 30px rgba(0,0,0,.35); position: relative; z-index: 5; opacity: .95; }
+.edit-tools { display: none !important; }
+body.editing .edit-tools { display: block !important; }
+body.editing .editbar-bottom.edit-tools { display: flex !important; }
+.hidden-list .item { padding: 8px 2px; }
+.editbar-bottom { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+                  background: var(--bg); border-top: 1px solid var(--border); margin-top: 12px; }
+.editbar-bottom .btn { flex: 1; height: 44px; }
+
+/* Sheets, menu, toast */
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
+.sheet { background: var(--surface); width: 100%; max-width: 560px; border-radius: 18px 18px 0 0;
+         padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); max-height: 85vh; overflow-y: auto; }
+.sheet h3 { margin: 0 0 6px; font-size: 18px; }
+.sheet p { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+.sheet .acts { display: flex; gap: 10px; }
+.sheet .acts .btn { flex: 1; height: 46px; }
+.menu-i { display: flex; align-items: center; width: 100%; text-align: left; padding: 14px 4px; border: 0; background: none;
+          border-top: 1px solid var(--border); font-size: 16px; cursor: pointer; color: var(--fg); text-decoration: none; }
+.menu-i:first-of-type { border-top: 0; }
+#toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+         background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 60;
+         max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+
+/* Sign-in */
+#login { max-width: 420px; margin: 0 auto; padding: calc(60px + env(safe-area-inset-top)) 20px 20px; }
+#login h1 { font-size: 24px; margin: 18px 0 4px; }
+#login label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+#login .input { height: 46px; margin: 0; }
+#login .btn { height: 48px; margin-top: 20px; }
+.err-t { color: var(--err); font-size: 14px; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<div id="login" hidden>
+  <div class="logo" style="width:44px;height:44px;font-size:22px;border-radius:12px">H</div>
+  <h1>Sign in to Helix OS</h1>
+  <div class="sub" id="login-host"></div>
+  <form id="login-form" autocomplete="on">
+    <label for="lg-user">User name</label>
+    <input class="input" id="lg-user" autocomplete="username" autocapitalize="none" autocorrect="off" required>
+    <label for="lg-pass">Password</label>
+    <input class="input" id="lg-pass" type="password" autocomplete="current-password" required>
+    <div id="lg-code-wrap" hidden>
+      <label for="lg-code">Authenticator or recovery code</label>
+      <input class="input" id="lg-code" inputmode="numeric" autocomplete="one-time-code">
+    </div>
+    <button class="btn primary wide" type="submit">Sign in</button>
+    <div class="err-t" id="lg-err"></div>
+  </form>
+  <p class="sub" style="margin-top:22px">Passkeys work on the full site.</p>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="logo">H</div>
+    <div class="host"><b id="hostname">Helix OS</b><span><i class="dot" id="hdr-dot"></i><span id="hdr-state">Loading…</span></span></div>
+    <button class="icon-btn" id="bell-btn" aria-label="Notifications">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="badge" id="bell-n" hidden></span>
+    </button>
+    <button class="icon-btn" id="menu-btn" aria-label="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </header>
+  <main id="cards"></main>
+  <div class="edit-tools" style="max-width:760px;margin:0 auto;padding:0 12px">
+    <div class="card" id="hidden-card" style="margin-top:12px;border-style:solid">
+      <div class="card-h" style="display:flex"><div class="card-t">Hidden cards</div></div>
+      <div class="card-b hidden-list" id="hidden-list" style="display:block"></div>
+    </div>
+  </div>
+  <div class="editbar-bottom edit-tools" id="edit-bottom">
+    <button class="btn" data-act="reset-layout">Reset</button>
+    <button class="btn primary" data-act="done">Done</button>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>
+'use strict';
+// ── Helpers ─────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const pctClass = p => p >= 90 ? 'err' : p >= 70 ? 'warn' : '';
+const bar = (p, cls) => `<div class="bar"><i class="${cls ?? pctClass(p)}" style="width:${Math.max(0, Math.min(100, p || 0))}%"></i></div>`;
+function bytes(n) {
+  if (n == null) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']; let i = 0; n = +n;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + u[i];
+}
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+function uptime(sec) {
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return d ? `${d}d ${h}h` : `${h}h ${m}m`;
+}
+function cookie(name) {
+  const m = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
+  return m ? decodeURIComponent(m[1]) : '';
+}
+let toastT = 0;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3200);
+}
+class AuthError extends Error {}
+async function api(path, opts = {}) {
+  const o = {credentials: 'same-origin', ...opts, headers: {...(opts.headers || {})}};
+  if (o.method && o.method !== 'GET') {
+    o.headers['X-CSRF-Token'] = cookie('helix_csrf');
+    if (o.body && typeof o.body !== 'string') { o.body = JSON.stringify(o.body); o.headers['Content-Type'] = 'application/json'; }
+  }
+  const r = await fetch(path, o);
+  const txt = await r.text();
+  let body = {}; try { body = txt ? JSON.parse(txt) : {}; } catch (e) { body = {detail: txt}; }
+  if (r.status === 401) throw new AuthError(typeof body.detail === 'string' ? body.detail : 'Sign in again');
+  if (!r.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'HTTP ' + r.status);
+  return body;
+}
+function ask(title, text, ok = 'OK', danger = false) {
+  return new Promise(res => {
+    const s = document.createElement('div');
+    s.className = 'scrim';
+    s.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><h3>${esc(title)}</h3><p>${esc(text)}</p>
+      <div class="acts"><button class="btn" data-a="no">Cancel</button>
+      <button class="btn ${danger ? 'danger solid' : 'primary'}" data-a="yes">${esc(ok)}</button></div></div>`;
+    s.addEventListener('click', e => {
+      const a = e.target.closest('[data-a]')?.dataset.a;
+      if (a || e.target === s) { s.remove(); res(a === 'yes'); }
+    });
+    document.body.appendChild(s);
+  });
+}
+
+// ── Data: each endpoint is fetched only when a visible card needs it ──
+const EP = {
+  stats:   {url: '/api/system/stats', every: 5},
+  cpu:     {url: '/api/system/cpu', every: 5},
+  array:   {url: '/api/array/status', every: 10},
+  op:      {url: '/api/array/operation', every: 10},
+  docker:  {url: '/api/docker/containers', every: 10},
+  vms:     {url: '/api/vms/', every: 15},
+  notes:   {url: '/api/notifications/', every: 15},
+  shares:  {url: '/api/shares/', every: 60},
+  gpu:     {url: '/api/gpu/', every: 10},
+  ups:     {url: '/api/ups/status', every: 15},
+  zfs:     {url: '/api/zfs/pools', every: 30},
+  fw:      {url: '/api/firewall/summary', every: 30},
+  net:     {url: '/api/network/status', every: 5},
+  problems:{url: '/api/checkmk/problems', every: 30},
+};
+const D = {}, fetchedAt = {}, failed = {};
+let netPrev = null, netRate = null;
+
+// ── Cards ───────────────────────────────────────────────────────
+// render(size) returns {summary, body, level}; return null to show "not available".
+const CARDS = {
+  alerts: {title: 'Needs attention', needs: ['op', 'array', 'problems', 'ups'], render: renderAlerts},
+  system: {title: 'System', needs: ['stats', 'cpu'], render: renderSystem},
+  array:  {title: 'Array', needs: ['array', 'op'], render: renderArray},
+  pools:  {title: 'Cache & ZFS', needs: ['array', 'zfs'], render: renderPools},
+  docker: {title: 'Containers', needs: ['docker'], render: renderDocker},
+  vms:    {title: 'Virtual machines', needs: ['vms'], render: renderVMs},
+  notifications: {title: 'Notifications', needs: ['notes'], render: renderNotes},
+  gpu:    {title: 'GPUs', needs: ['gpu'], render: renderGPU},
+  network:{title: 'Network', needs: ['net'], render: renderNet},
+  shares: {title: 'Shares', needs: ['shares'], render: renderShares},
+  ups:    {title: 'UPS', needs: ['ups'], render: renderUPS},
+  firewall:{title: 'Firewall', needs: ['fw'], render: renderFW},
+};
+const DEFAULT_ORDER = ['alerts', 'system', 'array', 'docker', 'vms', 'notifications', 'pools', 'gpu', 'network', 'shares', 'ups', 'firewall'];
+const DEFAULT_DETAILED = new Set(['alerts', 'docker']);
+let layout = defaultLayout();
+let editing = false, user = null;
+const ui = {dockerFilter: 'running', dockerAll: false, vmAll: false, sharesAll: false, notesAll: false, coresOpen: false};
+
+function defaultLayout() {
+  return {cards: DEFAULT_ORDER.map(id => ({id, size: DEFAULT_DETAILED.has(id) ? 'detailed' : 'compact'})), hidden: []};
+}
+function normalize(l) {
+  if (!l || !Array.isArray(l.cards)) return defaultLayout();
+  const seen = new Set(), cards = [], hidden = [];
+  for (const c of l.cards) if (CARDS[c.id] && !seen.has(c.id)) { seen.add(c.id); cards.push({id: c.id, size: c.size === 'detailed' ? 'detailed' : 'compact'}); }
+  for (const h of (l.hidden || [])) if (CARDS[h] && !seen.has(h)) { seen.add(h); hidden.push(h); }
+  for (const id of DEFAULT_ORDER) if (!seen.has(id)) cards.push({id, size: 'compact'});   // a card added in a later version
+  return {cards, hidden};
+}
+
+function renderAlerts() {
+  const items = [];
+  for (const r of (D.op?.rows || [])) if (r.level === 'warn' || r.level === 'err') items.push({lvl: r.level, text: r.status, sub: r.explain});
+  for (const d of [...(D.array?.disks || []), ...(D.array?.cache || []), ...(D.array?.parity || [])]) {
+    const t = parseFloat(d.temp_c);
+    if (t >= 55) items.push({lvl: 'err', text: `${d.name} is hot (${t} °C)`});
+    else if (t >= 45) items.push({lvl: 'warn', text: `${d.name} is warm (${t} °C)`});
+    if (d.pct >= 95) items.push({lvl: 'err', text: `${d.name} is ${d.pct}% full`});
+    else if (d.pct >= 90) items.push({lvl: 'warn', text: `${d.name} is ${d.pct}% full`});
+    if (d.present === false) items.push({lvl: 'err', text: `${d.name} is missing`});
+  }
+  const u = D.ups;
+  if (u?.available) {
+    if (u.low_battery) items.push({lvl: 'err', text: 'UPS battery is low'});
+    else if (u.on_battery) items.push({lvl: 'err', text: 'Running on UPS battery'});
+    else if (u.status && /COMMLOST/i.test(u.status)) items.push({lvl: 'warn', text: 'UPS is not responding'});
+  }
+  for (const p of (D.problems?.problems || [])) if (p.state >= 1 && !p.ack) items.push({lvl: p.state >= 2 ? 'err' : 'warn', text: p.name, sub: p.text});
+  items.sort((a, b) => (a.lvl === 'err' ? 0 : 1) - (b.lvl === 'err' ? 0 : 1));
+  const errs = items.filter(i => i.lvl === 'err').length;
+  const level = errs ? 'err' : items.length ? 'warn' : 'ok';
+  if (!items.length) return {summary: 'All good', level, body: `<div class="row"><i class="dot ok"></i><span class="sub">Nothing needs your attention.</span></div>`};
+  const summary = `${items.length} issue${items.length === 1 ? '' : 's'}`;
+  if (cardSize('alerts') === 'compact') {
+    const i = items[0];
+    return {summary, level, body: `<div class="row"><i class="dot ${i.lvl}"></i><span>${esc(i.text)}</span></div>` +
+      (items.length > 1 ? `<div class="sub" style="margin-top:6px">and ${items.length - 1} more</div>` : '')};
+  }
+  return {summary, level, body: items.slice(0, 15).map(i =>
+    `<div class="alert-i"><i class="dot ${i.lvl}" style="margin-top:6px"></i><div><div>${esc(i.text)}</div>${i.sub ? `<div class="sub">${esc(i.sub)}</div>` : ''}</div></div>`).join('') +
+    (items.length > 15 ? `<div class="note">${items.length - 15} more on the full site.</div>` : '')};
+}
+
+function renderSystem() {
+  const s = D.stats; if (!s) return {summary: '', body: '<div class="note">Loading…</div>'};
+  const c = D.cpu;
+  let body = `<div class="grid2">
+    <div><div class="sub">CPU</div><div class="big mono">${s.cpu_pct}<small>%</small></div>${bar(s.cpu_pct)}</div>
+    <div><div class="sub">Memory</div><div class="big mono">${Math.round(s.ram_pct)}<small>%</small></div>${bar(s.ram_pct)}</div></div>
+    <div class="sub" style="margin-top:10px">${esc(s.cpu_count)} threads · load ${esc(s.load_1m)}${s.cpu_temp_c != null ? ' · ' + esc(s.cpu_temp_c) + ' °C' : ''} · ${s.ram_used_gb} / ${s.ram_total_gb} GB</div>`;
+  if (cardSize('system') === 'detailed' && c) {
+    body += `<div class="sub" style="margin-top:12px">${esc(c.model)}</div>` + (c.cores || []).map(core => {
+      const label = core.length > 1 ? `CPU ${core[0]}/${core[1]}` : `CPU ${core[0]}`;
+      const bars = core.slice(0, 2).map(i => bar(c.threads[i] || 0)).join('');
+      return `<div class="core"><span class="mono sub">${label}</span>${bars}${core.length > 1 ? '' : '<span></span>'}</div>`;
+    }).join('');
+  }
+  return {summary: 'up ' + uptime(s.uptime_sec), body};
+}
+
+function renderArray() {
+  const a = D.array, op = D.op; if (!a) return {summary: '', body: '<div class="note">Loading…</div>'};
+  const started = a.array_state === 'started';
+  const us = a.user_share || {};
+  const row = (op?.rows || [])[0];
+  const busy = op?.transition;
+  let body = `<div class="row"><span class="tag ${started ? 'ok' : 'err'}">${esc((busy || a.array_state || '').toUpperCase())}</span>
+    <span class="sub">${us.pct != null ? `${bytes(us.used_bytes)} of ${bytes(us.size_bytes)} used` : 'Not mounted'}</span></div>` +
+    (us.pct != null ? bar(us.pct) : '');
+  if (cardSize('array') === 'detailed') {
+    const disks = [...(a.parity || []).map(d => ({...d, role: 'Parity'})), ...(a.disks || []).map(d => ({...d, role: 'Data'}))];
+    body += `<div class="list" style="margin-top:8px">` + disks.map(d => `<div class="item"><i class="dot ${d.present === false ? 'err' : d.mounted || d.role === 'Parity' ? 'ok' : 'warn'}"></i>
+      <div class="grow"><div class="name">${esc(d.name)}</div><div class="meta">${esc(d.role)} · ${esc(d.fstype || '')} ${d.size ? '· ' + esc(d.size) : ''}${d.temp_c ? ' · ' + esc(d.temp_c) + ' °C' : ''}</div>
+      ${d.pct != null ? bar(d.pct) : ''}</div><span class="mono sub">${d.pct != null ? Math.round(d.pct) + '%' : ''}</span></div>`).join('') + `</div>`;
+  }
+  if (row?.button) {
+    const b = row.button;
+    body += `<div style="margin-top:12px"><button class="btn wide ${b.action === 'stop' ? 'danger' : 'primary'}" data-act="array-${esc(b.action)}" ${b.enabled ? '' : 'disabled'}>${esc(b.label)} array</button>
+      ${!b.enabled ? `<div class="sub" style="margin-top:6px">${esc(row.explain)}</div>` : ''}</div>`;
+  }
+  return {summary: us.pct != null ? Math.round(us.pct) + '% used' : '', level: started ? 'ok' : 'err', body};
+}
+
+function renderPools() {
+  const cache = D.array?.cache || [], pools = D.zfs?.available ? D.zfs.pools || [] : [];
+  if (!cache.length && !pools.length) return null;
+  const rows = cache.map(c => ({name: c.name, sub: `${c.fstype || ''} · ${bytes(c.used_bytes)} of ${bytes(c.size_bytes)}${c.temp_c ? ' · ' + c.temp_c + ' °C' : ''}`, pct: c.pct, dot: c.mounted ? 'ok' : 'warn'}))
+    .concat(pools.map(p => {
+      const pct = p.size_bytes ? (p.alloc_bytes / p.size_bytes) * 100 : null;
+      const h = String(p.health || '').toUpperCase();
+      return {name: p.name, sub: `ZFS · ${esc(h)}${p.size_bytes ? ` · ${bytes(p.alloc_bytes)} of ${bytes(p.size_bytes)}` : ''}`, pct, dot: h === 'ONLINE' ? 'ok' : h === 'DEGRADED' ? 'warn' : 'err'};
+    }));
+  const bad = rows.filter(r => r.dot !== 'ok').length;
+  return {summary: `${rows.length} pool${rows.length === 1 ? '' : 's'}`, level: bad ? 'warn' : 'ok',
+    body: `<div class="list">` + rows.map(r => `<div class="item"><i class="dot ${r.dot}"></i><div class="grow"><div class="name">${esc(r.name)}</div>
+      <div class="meta">${esc(r.sub)}</div>${r.pct != null ? bar(r.pct) : ''}</div><span class="mono sub">${r.pct != null ? Math.round(r.pct) + '%' : ''}</span></div>`).join('') + `</div>`};
+}
+
+function renderDocker() {
+  const d = D.docker; if (!d) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (d.available === false) return null;
+  const all = d.containers || [];
+  const running = all.filter(c => c.state === 'running');
+  const summary = `${running.length} running · ${all.length - running.length} stopped`;
+  if (cardSize('docker') === 'compact') {
+    return {summary: `${all.length} total`, body: `<div class="grid2"><div><div class="sub">Running</div><div class="big mono">${running.length}</div></div>
+      <div><div class="sub">Stopped</div><div class="big mono">${all.length - running.length}</div></div></div>`};
+  }
+  const f = ui.dockerFilter;
+  let list = all.filter(c => f === 'all' || (f === 'running' ? c.state === 'running' : c.state !== 'running'));
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  const cap = ui.dockerAll ? list.length : 8;
+  return {summary, body: `<div class="chips">${['running', 'stopped', 'all'].map(k =>
+      `<button class="chip ${f === k ? 'on' : ''}" data-act="dfilter" data-v="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
+    <div class="list">` + (list.length ? list.slice(0, cap).map(c => {
+      const on = c.state === 'running';
+      return `<div class="item"><i class="dot ${on ? 'ok' : c.state === 'restarting' ? 'warn' : ''}"></i>
+        <div class="grow"><div class="name">${esc(c.name)}</div><div class="meta">${esc(c.status || c.state)}</div></div>
+        ${on ? `<button class="btn sm" data-act="ctr-restart" data-n="${esc(c.name)}">Restart</button><button class="btn sm danger" data-act="ctr-stop" data-n="${esc(c.name)}">Stop</button>`
+             : `<button class="btn sm primary" data-act="ctr-start" data-n="${esc(c.name)}">Start</button>`}</div>`;
+    }).join('') : '<div class="note">No containers here.</div>') + `</div>` +
+    (list.length > cap ? `<button class="more" data-act="dall">Show all ${list.length}</button>` : '')};
+}
+
+function renderVMs() {
+  const v = D.vms; if (!v) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (!v.available) return null;
+  const vms = v.vms || [], on = vms.filter(x => x.state === 'running').length;
+  if (!vms.length) return {summary: 'None', body: '<div class="note">No virtual machines yet.</div>'};
+  if (cardSize('vms') === 'compact') return {summary: `${on} of ${vms.length} running`,
+    body: `<div class="sub">${vms.map(x => `<span style="white-space:nowrap"><i class="dot ${x.state === 'running' ? 'ok' : ''}" style="display:inline-block;margin-right:5px"></i>${esc(x.name)}</span>`).join(' &nbsp; ')}</div>`};
+  const cap = ui.vmAll ? vms.length : 6;
+  return {summary: `${on} of ${vms.length} running`, body: `<div class="list">` + vms.slice(0, cap).map(x => {
+    const st = x.state, run = st === 'running', paused = st === 'paused' || st === 'suspended';
+    const btns = run ? `<button class="btn sm danger" data-act="vm-stop" data-n="${esc(x.name)}">Stop</button>`
+               : paused ? `<button class="btn sm primary" data-act="vm-resume" data-n="${esc(x.name)}">Resume</button>`
+               : `<button class="btn sm primary" data-act="vm-start" data-n="${esc(x.name)}">Start</button>`;
+    return `<div class="item"><i class="dot ${run ? 'ok' : paused ? 'warn' : ''}"></i><div class="grow"><div class="name">${esc(x.name)}</div>
+      <div class="meta">${esc(st)} · ${esc(x.vcpus)} vCPU · ${Math.round((x.memory_mb || 0) / 1024)} GB</div></div>${btns}</div>`;
+  }).join('') + `</div>` + (vms.length > cap ? `<button class="more" data-act="vmall">Show all ${vms.length}</button>` : '')};
+}
+
+function renderNotes() {
+  const n = Array.isArray(D.notes) ? D.notes : null; if (!n) return {summary: '', body: '<div class="note">Loading…</div>'};
+  const unread = n.filter(x => !x.read);
+  const cap = cardSize('notifications') === 'compact' ? 2 : (ui.notesAll ? 30 : 6);
+  const lvl = l => l === 'error' || l === 'alert' ? 'err' : l === 'warning' ? 'warn' : 'ok';
+  return {summary: unread.length ? `${unread.length} unread` : 'All read', level: unread.some(x => lvl(x.level) === 'err') ? 'err' : 'ok',
+    body: (n.length ? `<div class="list">` + n.slice(0, cap).map(x => `<div class="item" style="align-items:flex-start">
+      <i class="dot ${lvl(x.level)}" style="margin-top:7px;${x.read ? 'opacity:.35' : ''}"></i>
+      <div class="grow"><div class="name" style="white-space:normal;${x.read ? 'color:var(--muted)' : ''}">${esc(x.title)}</div>
+      <div class="meta" style="white-space:normal">${esc(x.message)} · ${ago(x.ts)}</div></div></div>`).join('') + `</div>` : '<div class="note">No notifications.</div>') +
+      (n.length > cap && cardSize('notifications') === 'detailed' && !ui.notesAll ? `<button class="more" data-act="nall">Show more</button>` : '') +
+      (unread.length ? `<button class="btn wide" style="margin-top:8px" data-act="mark-read">Mark all as read</button>` : '')};
+}
+
+function renderGPU() {
+  const g = D.gpu; if (!g) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (!g.available || !(g.gpus || []).length) return null;
+  const detailed = cardSize('gpu') === 'detailed';
+  return {summary: `${g.gpus.length} GPU${g.gpus.length === 1 ? '' : 's'}`, body: `<div class="list">` + g.gpus.map(x => `<div class="item"><div class="grow">
+    <div class="row"><span class="name grow">${esc(x.name)}</span><span class="mono sub">${Math.round(x.util_pct || 0)}%</span></div>
+    ${bar(x.util_pct || 0)}
+    ${detailed ? `<div class="meta" style="margin-top:4px">VRAM ${Math.round(x.mem_used_mb || 0)} / ${Math.round(x.mem_total_mb || 0)} MB${x.temp_c != null ? ' · ' + x.temp_c + ' °C' : ''}${x.power_w != null ? ' · ' + Math.round(x.power_w) + ' W' : ''}</div>${bar(x.mem_pct || 0, 'warn')}` : ''}
+    </div></div>`).join('') + `</div>`};
+}
+
+function pickIface(ifs) {
+  const names = Object.keys(ifs || {});
+  const good = names.filter(n => ifs[n].ip && ifs[n].up && !/^(br-|docker|veth|virbr|lo|tailscale|wg|tun|helix_)/.test(n));
+  return good.find(n => n === 'br0') || good.find(n => /^(en|eth)/.test(n)) || good[0] || null;
+}
+function renderNet() {
+  const n = D.net; if (!n) return {summary: '', body: '<div class="note">Loading…</div>'};
+  const name = pickIface(n.interfaces);
+  if (!name) return {summary: '', body: '<div class="note">No network address found.</div>'};
+  const i = n.interfaces[name];
+  const r = netRate;
+  let body = `<div class="big mono" style="font-size:22px">${esc(i.ip)}</div><div class="sub">${esc(name)}</div>
+    <div class="grid2" style="margin-top:10px"><div><div class="sub">Download</div><div class="mono">${r ? bytes(r.rx) + '/s' : '—'}</div></div>
+    <div><div class="sub">Upload</div><div class="mono">${r ? bytes(r.tx) + '/s' : '—'}</div></div></div>`;
+  if (cardSize('network') === 'detailed') {
+    const others = Object.keys(n.interfaces).filter(k => k !== name && n.interfaces[k].ip && !/^(veth|br-|docker)/.test(k));
+    if (others.length) body += `<div class="list" style="margin-top:8px">` + others.map(k => `<div class="item"><i class="dot ${n.interfaces[k].up ? 'ok' : ''}"></i>
+      <div class="grow"><div class="name">${esc(k)}</div><div class="meta">${esc(n.interfaces[k].ip)}</div></div></div>`).join('') + `</div>`;
+  }
+  return {summary: i.up ? 'Connected' : 'Down', level: i.up ? 'ok' : 'err', body};
+}
+
+function renderShares() {
+  const s = Array.isArray(D.shares) ? D.shares : null; if (!s) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (!s.length) return {summary: 'None', body: '<div class="note">No shares yet.</div>'};
+  const cap = cardSize('shares') === 'compact' ? 4 : (ui.sharesAll ? s.length : 10);
+  return {summary: `${s.length} share${s.length === 1 ? '' : 's'}`, body: `<div class="list">` + s.slice(0, cap).map(x => {
+    const proto = [x.smb === 'yes' ? 'SMB' : '', x.nfs === 'yes' ? 'NFS' : ''].filter(Boolean).join(' · ') || 'Not exported';
+    return `<div class="item"><div class="grow"><div class="name">${esc(x.name)}</div><div class="meta">${esc(proto)}${x.comment ? ' · ' + esc(x.comment) : ''}</div></div>
+      ${x.smb_security ? `<span class="tag">${esc(x.smb_security)}</span>` : ''}</div>`;
+  }).join('') + `</div>` + (s.length > cap ? `<button class="more" data-act="${cardSize('shares') === 'compact' ? 'expand-shares' : 'sall'}">Show all ${s.length}</button>` : '')};
+}
+
+function renderUPS() {
+  const u = D.ups; if (!u) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (!u.available) return null;
+  const lvl = u.low_battery || u.on_battery ? 'err' : u.online ? 'ok' : 'warn';
+  return {summary: esc(u.status || ''), level: lvl, body: `<div class="grid2">
+    <div><div class="sub">Battery</div><div class="big mono">${u.battery_pct ?? '—'}<small>${u.battery_pct != null ? '%' : ''}</small></div>${u.battery_pct != null ? bar(u.battery_pct, u.battery_pct < 30 ? 'err' : u.battery_pct < 60 ? 'warn' : '') : ''}</div>
+    <div><div class="sub">Load</div><div class="big mono">${u.load_pct ?? '—'}<small>${u.load_pct != null ? '%' : ''}</small></div>${u.load_pct != null ? bar(u.load_pct) : ''}</div></div>
+    <div class="sub" style="margin-top:8px">${u.runtime_min != null ? `${Math.round(u.runtime_min)} min runtime` : 'Runtime unknown'}${u.model ? ' · ' + esc(u.model) : ''}</div>`};
+}
+
+function renderFW() {
+  const f = D.fw; if (!f) return {summary: '', body: '<div class="note">Loading…</div>'};
+  if (!f.available) return null;
+  const mode = {enforce: ['Protecting', 'ok'], learn: ['Learning', 'warn'], off: ['Off', 'err']}[f.mode] || [f.mode, 'warn'];
+  return {summary: mode[0], level: mode[1], body: `<div class="grid2">
+    <div><div class="sub">Rules</div><div class="big mono">${esc(f.rules)}</div></div>
+    <div><div class="sub">Blocked today</div><div class="big mono">${esc(f.blocked_today ?? 0)}</div></div></div>
+    ${f.bans ? `<div class="sub" style="margin-top:8px">${esc(f.bans)} banned address${f.bans === 1 ? '' : 'es'}</div>` : ''}
+    ${f.mode === 'off' ? '<div class="sub" style="margin-top:8px;color:var(--err)">Everything is reachable.</div>' : ''}`};
+}
+
+// ── Rendering ───────────────────────────────────────────────────
+const cardSize = id => (layout.cards.find(c => c.id === id) || {}).size || 'compact';
+function visibleIds() { return layout.cards.map(c => c.id); }
+
+function renderAll() {
+  const main = $('cards');
+  // Build the frame once per layout change, then only fill bodies.
+  const key = JSON.stringify(layout) + editing;
+  if (main.dataset.key !== key) {
+    main.dataset.key = key;
+    main.innerHTML = layout.cards.map((c, i) => `<section class="card" data-w="${c.id}">
+      <div class="card-h"><div class="card-t">${esc(CARDS[c.id].title)}</div><div class="card-s"></div></div>
+      <div class="card-b"></div>
+      <div class="edit-bar"><span class="handle" data-handle aria-label="Drag to move">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 9h14M5 15h14"/></svg></span>
+        <span class="edit-name">${esc(CARDS[c.id].title)}</span>
+        <span class="seg"><button data-act="size" data-id="${c.id}" data-v="compact" class="${c.size === 'compact' ? 'on' : ''}">Compact</button><button data-act="size" data-id="${c.id}" data-v="detailed" class="${c.size === 'detailed' ? 'on' : ''}">Detailed</button></span>
+        <button class="mini up-btn" data-act="up" data-id="${c.id}" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="mini down-btn" data-act="down" data-id="${c.id}" aria-label="Move down" ${i === layout.cards.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="mini hide-btn" data-act="hide" data-id="${c.id}" aria-label="Hide">✕</button></div></section>`).join('');
+    $('hidden-list').innerHTML = layout.hidden.length ? layout.hidden.map(id => `<div class="item"><div class="grow name">${esc(CARDS[id].title)}</div>
+      <button class="btn sm primary" data-act="show" data-id="${id}">Show</button></div>`).join('') : '<div class="note">Every card is on your dashboard.</div>';
+  }
+  if (editing) return;
+  for (const sec of main.querySelectorAll('.card')) {
+    if (sec.contains(document.activeElement) && document.activeElement !== document.body) continue;
+    const id = sec.dataset.w;
+    let out;
+    try { out = CARDS[id].render(); } catch (e) { console.warn(id, e); out = {summary: '', body: '<div class="note">Could not show this card.</div>'}; }
+    if (!out) {
+      const err = CARDS[id].needs.some(k => failed[k]);
+      out = {summary: '', body: `<div class="note">${err ? 'Could not load this.' : 'Not available on this server.'}</div>`};
+    }
+    const s = sec.querySelector('.card-s');
+    s.innerHTML = out.level ? `<span class="row" style="justify-content:flex-end"><i class="dot ${out.level}"></i>${esc(out.summary)}</span>` : esc(out.summary);
+    const b = sec.querySelector('.card-b');
+    if (b.innerHTML !== out.body) b.innerHTML = out.body;
+  }
+  // Header state + bell
+  const a = D.array, op = D.op;
+  if (a) {
+    const started = a.array_state === 'started';
+    $('hdr-dot').className = 'dot ' + (op?.transition ? 'warn' : started ? 'ok' : 'err');
+    $('hdr-state').textContent = op?.footer || ('Array ' + (started ? 'started' : 'stopped'));
+  }
+  const unread = Array.isArray(D.notes) ? D.notes.filter(x => !x.read).length : 0;
+  $('bell-n').hidden = !unread; $('bell-n').textContent = unread > 99 ? '99+' : unread;
+}
+
+// ── Polling ─────────────────────────────────────────────────────
+let polling = false;
+async function poll(force) {
+  if (polling || document.hidden || editing) return;
+  polling = true;
+  try {
+    const need = new Set();
+    for (const id of visibleIds()) CARDS[id].needs.forEach(k => need.add(k));
+    need.add('stats'); need.add('array'); need.add('op'); need.add('notes');   // header + bell
+    const now = Date.now() / 1000;
+    const due = [...need].filter(k => force || !fetchedAt[k] || now - fetchedAt[k] >= EP[k].every);
+    await Promise.all(due.map(async k => {
+      try { D[k] = await api(EP[k].url); failed[k] = false; }
+      catch (e) { if (e instanceof AuthError) throw e; failed[k] = true; }
+      fetchedAt[k] = now;
+    }));
+    if (due.includes('net') && D.net) {
+      const name = pickIface(D.net.interfaces), i = name && D.net.interfaces[name];
+      if (i) {
+        if (netPrev && netPrev.name === name && now > netPrev.t) {
+          const dt = now - netPrev.t;
+          netRate = {rx: Math.max(0, (i.rx_mb - netPrev.rx) * 1e6 / dt), tx: Math.max(0, (i.tx_mb - netPrev.tx) * 1e6 / dt)};
+        }
+        netPrev = {name, t: now, rx: i.rx_mb, tx: i.tx_mb};
+      }
+    }
+    if (D.stats?.hostname) { $('hostname').textContent = D.stats.hostname; document.title = D.stats.hostname + ' · Helix OS'; }
+    renderAll();
+  } catch (e) {
+    if (e instanceof AuthError) showLogin();
+  } finally { polling = false; }
+}
+
+// ── Layout persistence ──────────────────────────────────────────
+async function loadLayout() {
+  try {
+    const r = await api('/api/mobile/layout');
+    user = r.user;
+    layout = normalize(r.layout);
+  } catch (e) {
+    if (e instanceof AuthError) throw e;
+    try { layout = normalize(JSON.parse(localStorage.getItem('helix_mobile_layout') || 'null')); } catch (x) { layout = defaultLayout(); }
+  }
+}
+async function saveLayout() {
+  try { localStorage.setItem('helix_mobile_layout', JSON.stringify(layout)); } catch (e) {}
+  try { await api('/api/mobile/layout', {method: 'PUT', body: layout}); toast('Layout saved'); }
+  catch (e) { toast('Could not save the layout: ' + e.message); }
+}
+
+function setEditing(on) {
+  editing = on;
+  document.body.classList.toggle('editing', on);
+  renderAll();
+  if (!on) { saveLayout(); poll(true); }
+}
+function move(id, delta) {
+  const i = layout.cards.findIndex(c => c.id === id), j = i + delta;
+  if (i < 0 || j < 0 || j >= layout.cards.length) return;
+  const [c] = layout.cards.splice(i, 1); layout.cards.splice(j, 0, c);
+  renderAll();
+}
+
+// Touch drag on the ≡ handle: the card follows the finger and swaps with its neighbours.
+let drag = null;
+document.addEventListener('pointerdown', e => {
+  const h = e.target.closest('[data-handle]');
+  if (!h || !editing) return;
+  const card = h.closest('.card');
+  e.preventDefault();
+  drag = {card, id: card.dataset.w, startY: e.clientY, shift: 0};
+  card.classList.add('lifted');
+  h.setPointerCapture(e.pointerId);
+});
+document.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dy = e.clientY - drag.startY;
+  drag.card.style.transform = `translateY(${dy - drag.shift}px)`;
+  const r = drag.card.getBoundingClientRect(), mid = r.top + r.height / 2;
+  const prev = drag.card.previousElementSibling, next = drag.card.nextElementSibling;
+  if (next && mid > next.getBoundingClientRect().top + next.offsetHeight / 2) {
+    drag.shift += next.offsetHeight + 12; next.after(drag.card);
+    drag.card.style.transform = `translateY(${dy - drag.shift}px)`;
+  } else if (prev && mid < prev.getBoundingClientRect().top + prev.offsetHeight / 2) {
+    drag.shift -= prev.offsetHeight + 12; prev.before(drag.card);
+    drag.card.style.transform = `translateY(${dy - drag.shift}px)`;
+  }
+});
+function endDrag() {
+  if (!drag) return;
+  drag.card.classList.remove('lifted'); drag.card.style.transform = '';
+  const order = [...$('cards').children].map(s => s.dataset.w);
+  layout.cards.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  drag = null;
+  renderAll();
+}
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
+
+// ── Actions ─────────────────────────────────────────────────────
+document.addEventListener('click', async e => {
+  const el = e.target.closest('[data-act]');
+  if (!el || el.disabled) return;
+  const act = el.dataset.act, n = el.dataset.n, id = el.dataset.id;
+  const run = async (label, fn) => {
+    el.disabled = true;
+    try { const r = await fn(); toast(r?.message || label); }
+    catch (err) { if (err instanceof AuthError) return showLogin(); toast(err.message); }
+    finally { el.disabled = false; Object.keys(fetchedAt).forEach(k => delete fetchedAt[k]); setTimeout(() => poll(true), 800); }
+  };
+  switch (act) {
+    case 'size': { const c = layout.cards.find(x => x.id === id); c.size = el.dataset.v; renderAll(); break; }
+    case 'up': move(id, -1); break;
+    case 'down': move(id, 1); break;
+    case 'hide': layout.cards = layout.cards.filter(c => c.id !== id); layout.hidden.push(id); renderAll(); break;
+    case 'show': layout.hidden = layout.hidden.filter(h => h !== id); layout.cards.push({id, size: 'compact'}); renderAll(); break;
+    case 'done': setEditing(false); break;
+    case 'reset-layout':
+      if (await ask('Reset your layout?', 'Every card goes back to its default place and size.', 'Reset')) {
+        layout = defaultLayout();
+        try { await api('/api/mobile/layout', {method: 'DELETE'}); } catch (err) {}
+        renderAll();
+      }
+      break;
+    case 'dfilter': ui.dockerFilter = el.dataset.v; ui.dockerAll = false; renderAll(); break;
+    case 'dall': ui.dockerAll = true; renderAll(); break;
+    case 'vmall': ui.vmAll = true; renderAll(); break;
+    case 'sall': ui.sharesAll = true; renderAll(); break;
+    case 'nall': ui.notesAll = true; renderAll(); break;
+    case 'expand-shares': layout.cards.find(c => c.id === 'shares').size = 'detailed'; ui.sharesAll = true; saveLayout(); renderAll(); break;
+    case 'ctr-start': run(`${n} started`, () => api(`/api/docker/containers/${encodeURIComponent(n)}/start`, {method: 'POST'})); break;
+    case 'ctr-stop':
+      if (await ask(`Stop ${n}?`, 'The app stops until you start it again.', 'Stop', true))
+        run(`${n} stopped`, () => api(`/api/docker/containers/${encodeURIComponent(n)}/stop`, {method: 'POST'}));
+      break;
+    case 'ctr-restart':
+      if (await ask(`Restart ${n}?`, 'The app is unavailable for a few seconds.', 'Restart'))
+        run(`${n} restarted`, () => api(`/api/docker/containers/${encodeURIComponent(n)}/restart`, {method: 'POST'}));
+      break;
+    case 'vm-start': run(`${n} starting`, () => api(`/api/vms/${encodeURIComponent(n)}/start`, {method: 'POST'})); break;
+    case 'vm-resume': run(`${n} resumed`, () => api(`/api/vms/${encodeURIComponent(n)}/resume`, {method: 'POST'})); break;
+    case 'vm-stop':
+      if (await ask(`Shut down ${n}?`, 'The VM is asked to shut down cleanly.', 'Shut down', true))
+        run(`${n} shutting down`, () => api(`/api/vms/${encodeURIComponent(n)}/stop`, {method: 'POST'}));
+      break;
+    case 'array-start':
+    case 'array-stop': {
+      const row = (D.op?.rows || [])[0] || {};
+      const stop = act === 'array-stop';
+      const text = [row.explain, row.warn, row.confirm].filter(Boolean).join(' ');
+      if (!await ask(stop ? 'Stop the array?' : 'Start the array?', text, stop ? 'Stop array' : 'Start array', stop)) break;
+      const q = row.confirm ? '?confirm=true' : '';
+      run(stop ? 'Stopping the array' : 'Starting the array', () => api(`/api/array/${stop ? 'stop' : 'start'}${q}`, {method: 'POST'}));
+      break;
+    }
+    case 'mark-read': run('Marked as read', () => api('/api/notifications/mark-read', {method: 'POST', body: {ids: []}})); break;
+  }
+});
+
+$('bell-btn').addEventListener('click', () => {
+  if (editing) return;
+  if (!layout.cards.some(c => c.id === 'notifications')) {
+    layout.hidden = layout.hidden.filter(h => h !== 'notifications');
+    layout.cards.unshift({id: 'notifications', size: 'detailed'});
+    renderAll(); poll(true);
+  }
+  const el = document.querySelector('.card[data-w="notifications"]');
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+});
+
+$('menu-btn').addEventListener('click', () => {
+  const s = document.createElement('div');
+  s.className = 'scrim';
+  s.innerHTML = `<div class="sheet">
+    ${user ? `<div class="sub" style="margin-bottom:6px">Signed in as <b>${esc(user)}</b></div>` : ''}
+    <button class="menu-i" data-m="edit">Customize dashboard</button>
+    <button class="menu-i" data-m="refresh">Refresh now</button>
+    <button class="menu-i" data-m="full">Open full site</button>
+    ${user ? '<button class="menu-i" data-m="logout" style="color:var(--err)">Sign out</button>' : ''}
+    <button class="btn wide" style="margin-top:12px;height:46px" data-m="close">Close</button></div>`;
+  s.addEventListener('click', async e => {
+    const m = e.target.closest('[data-m]')?.dataset.m;
+    if (!m && e.target !== s) return;
+    s.remove();
+    if (m === 'edit') { setEditing(true); window.scrollTo({top: 0}); }
+    if (m === 'refresh') { Object.keys(fetchedAt).forEach(k => delete fetchedAt[k]); poll(true); }
+    if (m === 'full') { try { sessionStorage.setItem('helix_view', 'desktop'); } catch (x) {} location.href = '/'; }
+    if (m === 'logout') { try { await api('/api/login/logout', {method: 'POST'}); } catch (x) {} location.reload(); }
+  });
+  document.body.appendChild(s);
+});
+
+// ── Sign-in ─────────────────────────────────────────────────────
+function showLogin() {
+  $('app').hidden = true; $('login').hidden = false;
+  $('login-host').textContent = location.host;
+}
+$('login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('lg-err').textContent = '';
+  try {
+    await api('/api/login', {method: 'POST', body: {username: $('lg-user').value.trim(), password: $('lg-pass').value,
+                                                    totp: $('lg-code').value.trim() || null}});
+    $('lg-pass').value = ''; $('lg-code').value = '';
+    $('login').hidden = true;
+    start();
+  } catch (err) {
+    if (/totp_required/i.test(err.message)) { $('lg-code-wrap').hidden = false; $('lg-code').focus(); $('lg-err').textContent = 'Enter the code from your authenticator app.'; return; }
+    $('lg-err').textContent = /totp|code/i.test(err.message) ? 'That code is not right.' : err instanceof AuthError ? 'Wrong user name or password.' : err.message;
+  }
+});
+
+// ── Start ───────────────────────────────────────────────────────
+let timer = 0;
+async function start() {
+  try {
+    const st = await api('/api/login/status');
+    if (st.enforced && !st.user) return showLogin();
+    await loadLayout();
+  } catch (e) { if (e instanceof AuthError) return showLogin(); }
+  $('app').hidden = false;
+  renderAll();
+  poll(true);
+  clearInterval(timer);
+  timer = setInterval(poll, 2500);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+start();
+</script>
+</body>
+</html>

@@ -790,6 +790,61 @@ systemctl enable helix-modprobe-restore 2>/dev/null \
     || { mkdir -p /etc/systemd/system/sysinit.target.wants
          ln -sf /etc/systemd/system/helix-modprobe-restore.service /etc/systemd/system/sysinit.target.wants/; }
 
+# ── Persistent system journal (3.3.11) ───────────────────────────────────────
+# /var is RAM, so after a hang + hard reset the log of the hung boot was gone (Tower, 2026-11-27: nobody could
+# tell why sshd/nginx never came up). With a HELIXDATA partition, /mnt/data/journal is bind-mounted over
+# /var/log/journal and the runtime journal is flushed into it, so `journalctl -b -1` shows the previous boot.
+# Capped at 200 MB, written out every 30 s (default 5 min would lose the minutes that matter in a hang; errors
+# are written at once anyway). No HELIXDATA (ISO, read-only boot) = stays in RAM as before.
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/helix.conf <<'JDCONF'
+[Journal]
+Storage=auto
+SystemMaxUse=200M
+SystemKeepFree=1G
+MaxRetentionSec=30day
+RuntimeMaxUse=64M
+SyncIntervalSec=30s
+JDCONF
+cat > /usr/local/sbin/helix-journal-persist <<'JPSCRIPT'
+#!/bin/sh
+# Keep the system journal on HELIXDATA. Safe to run twice. Never fails the boot.
+D=/mnt/data
+mountpoint -q "$D" || { echo "[helix-journal-persist] no HELIXDATA, journal stays in RAM"; exit 0; }
+mkdir -p "$D/journal" /var/log/journal || exit 0
+if ! mountpoint -q /var/log/journal; then
+    # journald already flushed this boot's log into the RAM copy of /var/log/journal (Debian ships the directory).
+    # Archive it, move it to HELIXDATA, then mount over it - otherwise those files are hidden and journald keeps
+    # writing into them.
+    journalctl --rotate 2>/dev/null
+    cp -a /var/log/journal/. "$D/journal/" 2>/dev/null
+    mount --bind "$D/journal" /var/log/journal || { echo "[helix-journal-persist] bind mount failed"; exit 0; }
+    systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null
+    systemctl restart systemd-journald 2>/dev/null   # reopen files inside the mount
+fi
+journalctl --flush 2>/dev/null
+echo "[helix-journal-persist] journal kept in $D/journal"
+exit 0
+JPSCRIPT
+chmod 0755 /usr/local/sbin/helix-journal-persist
+cat > /etc/systemd/system/helix-journal-persist.service <<'JPSVC'
+[Unit]
+Description=Helix OS — keep the system journal on the data partition
+After=helix-firstboot.service
+Wants=helix-firstboot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/helix-journal-persist
+
+[Install]
+WantedBy=multi-user.target
+JPSVC
+systemctl enable helix-journal-persist 2>/dev/null \
+    || { mkdir -p /etc/systemd/system/multi-user.target.wants
+         ln -sf /etc/systemd/system/helix-journal-persist.service /etc/systemd/system/multi-user.target.wants/; }
+
 # ── VFIO: hand saved PCI devices to vfio-pci before any GPU driver loads ────
 # /boot/config/vfio-pci.cfg (`BIND=<addr> ...`, written by the VM page) lists devices by PCI address. Binding by
 # vendor:device ID would also take an identical second GPU. driver_override is set before udev's coldplug, so the

@@ -66,6 +66,14 @@ Excluded from git: Unraid zip/extracted trees, images, `gitkey`, `output/`, buil
   - `HELIX_CONFIG` = first writable of `/mnt/data/config` (HELIXDATA ext4) → `/boot/config` (FAT, `uid=1000`) →
     `$STATE_DIR/config` (RAM fallback). `STATE_DIR=/var/local/helix` (RAM): caches and job status only.
   - Array/pools: Docker data-root, libvirt state, add-in .deb caches, app data. HELIXDATA: NPM, Let's Encrypt, tunnel secrets.
+  - **System journal (3.3.11, in repo, not yet released):** `helix-journal-persist.service` (After `helix-firstboot`) copies
+    the RAM journal to `/mnt/data/journal`, bind-mounts it over `/var/log/journal` and restarts journald; drop-in
+    `journald.conf.d/helix.conf` (200 MB cap, 30 s sync). After a hang + hard reset read the dead boot with
+    `sudo journalctl -b -1` (journal is root/`systemd-journal` only). No HELIXDATA = RAM as before. Trap: Debian ships
+    `/var/log/journal`, so journald has already flushed into the RAM copy by then — bind-mounting without
+    rotate+copy+restart hides those files and journald keeps writing into them (seen on Tower, 2026-11-27).
+    Hang of 2026-11-27 after the 3.3.10 OTA (ping + rpcbind up, sshd/nginx/backend not, ~8 min, then hard reset): cause
+    unknown, the RAM journal was lost; the update itself was complete. Hot-applied on Tower the same day (RAM-only).
 - **RAM-root state restored** by `helpers/helix-restore-state` (from `helix-firstboot`): users/passwd/shadow, Samba
   passdb, crontab, `/etc/wireguard`, Docker `daemon.json`. New features writing to the RAM root need the same.
 - **Backend** runs as `helix` (NOPASSWD sudo); privileged work via `services/privileged.py` (`sudo -n`) or helpers run as

@@ -14,8 +14,9 @@ history: `git show 50e47e5:CLAUDE.md` (former §§1–58) and `git show 6fbfe53:
 
 ## 1. Current state (2026-11-27) — read first
 
-- **Released: 3.3.9** (2026-11-21, tag `v3.3.9` → `34db8e3`, GitHub "Latest"): OTA amd64 + arm64,
-  `helix-os-3.3.9.img.xz`, `helix-os-pi-3.3.9.img.xz`, no ISO. 3.3.6 withdrawn, 3.3.7 never published, 3.3.5 amd64-only.
+- **Released: 3.3.10** (2026-11-27, tag `v3.3.10` → `98e0819`, GitHub "Latest"): OTA amd64 + arm64,
+  `helix-os-3.3.10.img.xz`, `helix-os-pi-3.3.10.img.xz`, no ISO. Adds the Processor card, free-form dashboard grid,
+  mobile dashboard `/m` (§4.13) and the AMD VM-graphics add-in. 3.3.6 withdrawn, 3.3.7 never published, 3.3.5 amd64-only.
 - **Tower (`.142`) runs 3.3.8** plus RAM-only hot patches (`proxy.py`, `helix-addin`, and §4.13's dashboard/mobile work;
   backups `/boot/config/backups/{cores-tile,dash-grid,mobile}-20261127/`). They vanish at reboot until 3.3.10 is applied.
   Its 3.3.8 updater has a 120 s limit: after a UI update, check `/boot/boot` for leftover `*.new` /
@@ -24,10 +25,6 @@ history: `git show 50e47e5:CLAUDE.md` (former §§1–58) and `git show 6fbfe53:
 - **Checkouts:** dev = `/home/pi/Downloads/helix-os` on `.88` (remotes `origin` = GitHub, `build` = `.142`).
   Build checkout = **`/mnt/disk1/helix-work/src`** on `.142` (origin = bare repo `/mnt/disk1/helix-work/helix-os.git`);
   `build/tools/sync-to-build-host.sh` (run on `.88`) **hard-resets it**.
-- **⚠ Unsaved work in the build checkout (2026-11-27):** branch `feature/amd-vm-graphics` has 2 commits not in the bare
-  repo (AMD add-in, VM-list fix) plus uncommitted: `routers/{system,settings,mobile}.py`, `main.py`, `services/authz.py`,
-  `frontend/{index.html,firewall.js,mobile.html}`, this file. **Commit and push to the bare repo (or move to `.88`)
-  before the next sync**, then ship as 3.3.10.
 - **Use `/mnt/disk1/helix-work/...`, never `/mnt/user/helix-work/...`.** Through mergerfs, new and rewritten files land on
   another disk: on 2026-11-27 the checkout (even `.git/HEAD`) was split across disk1/disk2, so the disk1 path alone was
   broken. Consolidated onto disk1 (backup `/mnt/disk1/helix-work/disk2-src-backup-20261127.tgz`).
